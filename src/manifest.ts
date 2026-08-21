@@ -120,3 +120,10 @@ export async function scanStaticDirectory(
   };
   return { manifest, files };
 }
+
+export async function buildManifestFromDirectory(
+  root: string,
+): Promise<{ manifest: XyleManifest }> {
+  const { manifest } = await scanStaticDirectory(root);
+  return { manifest };
+}

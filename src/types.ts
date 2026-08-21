@@ -61,6 +61,15 @@ export interface Publisher {
   publish(next: PublishSnapshot): Promise<PublishResult>;
 }
 
+export interface MediaItem {
+  path: string;
+  contentType: string;
+  size: number;
+  digest: XyleDigest;
+  source: "site" | "xyle-upload";
+  usedBySimpleImg: boolean;
+}
+
 export interface AssetChange {
   type: "add";
   path: string;
