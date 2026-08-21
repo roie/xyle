@@ -1,14 +1,11 @@
 import { mkdir, readFile, writeFile, chmod, appendFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { join, resolve } from "node:path";
-import { createHmac, randomUUID } from "node:crypto";
-import {
-  generateEditorKey,
-} from "./auth.ts";
+import { generateEditorKey } from "./auth.ts";
 import { FilesystemPublisher } from "./publishers/filesystem.ts";
 import { createXyleHandler, type RuntimeContext } from "./server.ts";
 import { digestBytes } from "./manifest.ts";
-import type { AuthConfig, LocalXyleState, XyleDigest } from "./types.ts";
+import type { AuthConfig, LocalXyleState } from "./types.ts";
 
 const SECRETS_DIR = ".xyle";
 const SECRETS_FILE = "secrets.local.json";
@@ -19,7 +16,7 @@ interface Secrets {
   sessionSecretB64: string;
 }
 
-async function writeIfMissing(path: string, contents: string, mode?: number): Promise<boolean> {
+async function _writeIfMissing(path: string, contents: string, mode?: number): Promise<boolean> {
   try {
     await readFile(path);
     return false;
@@ -30,7 +27,9 @@ async function writeIfMissing(path: string, contents: string, mode?: number): Pr
   }
 }
 
-export async function loadOrCreateSecrets(directory: string): Promise<{ secrets: Secrets; freshKey: string | null }> {
+export async function loadOrCreateSecrets(
+  directory: string,
+): Promise<{ secrets: Secrets; freshKey: string | null }> {
   const secretsDir = join(directory, SECRETS_DIR);
   const secretsPath = join(secretsDir, SECRETS_FILE);
   try {
@@ -58,8 +57,10 @@ export async function loadOrCreateSecrets(directory: string): Promise<{ secrets:
   }
 }
 
-
-export async function buildAuthConfig(secrets: Secrets, maxAgeSeconds = 8 * 60 * 60): Promise<AuthConfig> {
+export async function buildAuthConfig(
+  secrets: Secrets,
+  maxAgeSeconds = 8 * 60 * 60,
+): Promise<AuthConfig> {
   const sessionSecret = new Uint8Array(Buffer.from(secrets.sessionSecretB64, "base64"));
   return {
     editorKeyDigest: await digestBytes(new TextEncoder().encode(secrets.editorKey)),
@@ -86,12 +87,12 @@ export async function readOrCreateState(directory: string): Promise<LocalXyleSta
   }
 }
 
-export async function updateState(directory: string, patch: Partial<LocalXyleState>): Promise<void> {
+export async function updateState(
+  directory: string,
+  patch: Partial<LocalXyleState>,
+): Promise<void> {
   const state = await readOrCreateState(directory);
-  await writeFile(
-    join(directory, STATE_FILE),
-    JSON.stringify({ ...state, ...patch }, null, 2),
-  );
+  await writeFile(join(directory, STATE_FILE), JSON.stringify({ ...state, ...patch }, null, 2));
 }
 
 export interface DevServerOptions {
@@ -156,12 +157,9 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
   });
 
   const address = server.address();
-  const actualPort =
-    typeof address === "object" && address !== null ? address.port : requestedPort;
+  const actualPort = typeof address === "object" && address !== null ? address.port : requestedPort;
   const publicBaseUrl =
-    options.publicBaseUrl ??
-    process.env.XYLE_BASE_URL ??
-    `http://${host}:${actualPort}`;
+    options.publicBaseUrl ?? process.env.XYLE_BASE_URL ?? `http://${host}:${actualPort}`;
 
   const context: RuntimeContext = { root, publicBaseUrl, publisher, auth };
   handler = createXyleHandler(context);

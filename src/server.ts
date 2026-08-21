@@ -1,18 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import type { AuthConfig } from "./auth.ts";
-import {
-  createSessionCookie,
-  hashEditorKey,
-  logoutCookie,
-  verifyEditorKey,
-  verifySessionCookie,
-} from "./auth.ts";
-import {
-  computeSnapshotDigest,
-  digestBytes,
-  normalizeSitePath,
-} from "./manifest.ts";
+import { createSessionCookie, logoutCookie, verifyEditorKey, verifySessionCookie } from "./auth.ts";
+import { computeSnapshotDigest, digestBytes, normalizeSitePath } from "./manifest.ts";
 import { preparePreview, patchHtml } from "./html.ts";
 import { discoverMedia, validateUpload, uploadPathFor } from "./media.ts";
 import type { Publisher, SiteFile, XyleManifest, XyleDigest } from "./types.ts";
@@ -55,7 +45,11 @@ function json(body: unknown, status = 200, headers: Record<string, string> = {})
 function htmlResponse(body: string, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(body, {
     status,
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...headers },
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      ...headers,
+    },
   });
 }
 
@@ -189,7 +183,8 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
   }
 
   const changedFiles: SiteFile[] = [];
-  const updatedEntries: Record<string, { digest: XyleDigest; size: number; contentType: string }> = {};
+  const updatedEntries: Record<string, { digest: XyleDigest; size: number; contentType: string }> =
+    {};
 
   for (const change of metadata.pages) {
     let pagePath: string;
@@ -211,10 +206,7 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
         operations: change.operations,
       });
     } catch (error) {
-      return json(
-        { error: `patch failed for ${pagePath}: ${(error as Error).message}` },
-        400,
-      );
+      return json({ error: `patch failed for ${pagePath}: ${(error as Error).message}` }, 400);
     }
     const patchedDigest = await digestBytes(patched);
     changedFiles.push({
@@ -231,20 +223,27 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
   }
 
   const addedFiles: SiteFile[] = [];
-  const uploads = form.getAll("assets").filter((v): v is File => v instanceof File);
-  for (const upload of uploads) {
-    if (!upload.name.startsWith("asset-")) continue;
-    const bytes = new Uint8Array(await upload.arrayBuffer());
-    const validation = validateUpload(upload.name.replace(/^asset-/, ""), bytes);
+  for (const [name, value] of form.entries()) {
+    if (!(value instanceof File) || !name.startsWith("/__media/")) continue;
+    const bytes = new Uint8Array(await value.arrayBuffer());
+    const validation = validateUpload(value.name, bytes);
     if (!validation.ok) {
       return json({ error: `upload rejected: ${validation.reason}` }, 400);
     }
-    const path = await uploadPathFor(bytes, validation.contentType);
-    const existing = current.manifest.files[path];
     const digest = await digestBytes(bytes);
+    // never trust the submitted path; recompute the content-derived destination
+    const path = await uploadPathFor(bytes, validation.contentType);
+    if (path !== name) {
+      return json({ error: "upload path mismatch" }, 400);
+    }
+    const existing = current.manifest.files[path];
     if (!existing || existing.digest !== digest) {
       addedFiles.push({ path, bytes, digest, contentType: validation.contentType });
-      updatedEntries[path] = { digest, size: bytes.byteLength, contentType: validation.contentType };
+      updatedEntries[path] = {
+        digest,
+        size: bytes.byteLength,
+        contentType: validation.contentType,
+      };
     }
   }
 
@@ -298,14 +297,13 @@ export function createXyleHandler(
           context.auth.sessionSecret,
           Date.now(),
         );
-        return authenticated
-          ? htmlResponse(editorShellPage())
-          : htmlResponse(LOGIN_PAGE);
+        return authenticated ? htmlResponse(editorShellPage()) : htmlResponse(LOGIN_PAGE);
       }
 
       if (pathname === "/__xyle/editor.js") {
         const bundle = await loadEditorBundle();
-        if (!bundle) return new Response("// editor bundle missing; run pnpm build", { status: 503 });
+        if (!bundle)
+          return new Response("// editor bundle missing; run pnpm build", { status: 503 });
         return bundle;
       }
 

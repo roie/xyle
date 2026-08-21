@@ -27,9 +27,7 @@ describe("detectImageType", () => {
   });
 
   it("detects WebP by RIFF+WEBP signature", () => {
-    const webp = new Uint8Array([
-      0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50,
-    ]);
+    const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
     expect(detectImageType(webp)).toBe("image/webp");
   });
 
@@ -114,10 +112,7 @@ describe("discoverMedia", () => {
 
   it("finds images anywhere in the tree and classifies usage", () => {
     const html = new Map([
-      [
-        "/index.html",
-        `<p><img src="/assets/hero.webp" alt=""></p>`,
-      ],
+      ["/index.html", `<p><img src="/assets/hero.webp" alt=""></p>`],
       ["/about.html", ""],
     ]);
     const items = discoverMedia(manifest, html);

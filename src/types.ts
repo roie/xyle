@@ -107,6 +107,12 @@ export interface PreparedPreview {
   nodes: Map<string, PreviewNode>;
 }
 
+export interface AuthConfig {
+  editorKeyDigest: XyleDigest;
+  sessionSecret: Uint8Array;
+  sessionMaxAgeSeconds: number;
+}
+
 export interface LocalXyleState {
   directory: string;
   publisher: string;

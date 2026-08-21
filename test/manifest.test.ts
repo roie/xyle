@@ -9,9 +9,7 @@ import {
 
 describe("digestBytes", () => {
   it("hashes raw bytes with SHA-256", async () => {
-    expect(
-      await digestBytes(new TextEncoder().encode("abc")),
-    ).toBe(
+    expect(await digestBytes(new TextEncoder().encode("abc"))).toBe(
       "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
   });
@@ -65,9 +63,7 @@ describe("scanStaticDirectory", () => {
 
     const index = files.get("/index.html");
     expect(index).toBeDefined();
-    expect(manifest.files["/index.html"]?.digest).toBe(
-      await digestBytes(index as Uint8Array),
-    );
+    expect(manifest.files["/index.html"]?.digest).toBe(await digestBytes(index as Uint8Array));
   });
 
   it("fails closed on reserved-path collisions", async () => {
@@ -97,8 +93,6 @@ describe("computeSnapshotDigest", () => {
     const b = {
       "/a.html": { ...file("/a.html"), digest: "sha256:other" as const },
     };
-    expect(await computeSnapshotDigest(a)).not.toBe(
-      await computeSnapshotDigest(b),
-    );
+    expect(await computeSnapshotDigest(a)).not.toBe(await computeSnapshotDigest(b));
   });
 });

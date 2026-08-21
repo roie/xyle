@@ -75,11 +75,7 @@ export async function verifySessionToken(
   const equal = constantTimeHexEquals(mac, expected);
   try {
     const payload = JSON.parse(Buffer.from(encoded, "base64url").toString()) as SessionPayload;
-    return (
-      equal &&
-      typeof payload.exp === "number" &&
-      payload.exp > Math.floor(now / 1000)
-    );
+    return equal && typeof payload.exp === "number" && payload.exp > Math.floor(now / 1000);
   } catch {
     return false;
   }

@@ -1,28 +1,78 @@
 import { parse } from "parse5";
 import type { DefaultTreeAdapterTypes } from "parse5";
-import type { PageChange, PageOperation, PreparedPreview, PreviewNode, XyleDigest } from "./types.ts";
+import type {
+  PageChange,
+  PageOperation,
+  PreparedPreview,
+  PreviewNode,
+  XyleDigest,
+} from "./types.ts";
 import { digestBytes } from "./manifest.ts";
 
 type P5Document = DefaultTreeAdapterTypes.Document;
 type P5Node = DefaultTreeAdapterTypes.Node;
 type P5Element = DefaultTreeAdapterTypes.Element;
-type P5TextNode = DefaultTreeAdapterTypes.TextNode;
 type P5Attribute = { name: string; value: string };
 
 const EXCLUDED_TAGS = new Set([
-  "script", "style", "noscript", "template", "svg", "canvas", "code", "pre",
-  "input", "textarea", "select", "option", "button",
+  "script",
+  "style",
+  "noscript",
+  "template",
+  "svg",
+  "canvas",
+  "code",
+  "pre",
+  "input",
+  "textarea",
+  "select",
+  "option",
+  "button",
 ]);
 
 const TEXT_CONTAINER_TAGS = new Set([
-  "h1", "h2", "h3", "h4", "h5", "h6", "p", "blockquote", "figcaption", "li", "dt", "dd",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "p",
+  "blockquote",
+  "figcaption",
+  "li",
+  "dt",
+  "dd",
 ]);
 
 const MULTILINE_TAGS = new Set(["p", "blockquote", "figcaption", "li"]);
 
 const INLINE_TAGS = new Set([
-  "a", "strong", "em", "b", "i", "u", "s", "small", "sub", "sup", "mark", "abbr",
-  "cite", "q", "span", "br", "time", "kbd", "var", "samp", "del", "ins", "wbr", "bdi", "bdo",
+  "a",
+  "strong",
+  "em",
+  "b",
+  "i",
+  "u",
+  "s",
+  "small",
+  "sub",
+  "sup",
+  "mark",
+  "abbr",
+  "cite",
+  "q",
+  "span",
+  "br",
+  "time",
+  "kbd",
+  "var",
+  "samp",
+  "del",
+  "ins",
+  "wbr",
+  "bdi",
+  "bdo",
 ]);
 
 export interface SegmentInfo {
@@ -92,10 +142,7 @@ function hasOnlyInlineDescendants(el: P5Element): boolean {
  * excluded tags and at nested candidates (links, images) so that every
  * source text node is owned by exactly one candidate.
  */
-function collectSegments(
-  root: P5Element,
-  stopAt: (el: P5Element) => boolean,
-): SegmentInfo[] {
+function collectSegments(root: P5Element, stopAt: (el: P5Element) => boolean): SegmentInfo[] {
   const segments: SegmentInfo[] = [];
   const visit = (node: P5Node): void => {
     if (node.nodeName === "#text") {
@@ -118,7 +165,10 @@ function collectAttrRanges(el: P5Element): Map<string, AttrRange> {
   const map = new Map<string, AttrRange>();
   const loc = el.sourceCodeLocation;
   if (!loc?.attrs) return map;
-  for (const [name, range] of Object.entries(loc.attrs) as [string, { startOffset: number; endOffset: number }][]) {
+  for (const [name, range] of Object.entries(loc.attrs) as [
+    string,
+    { startOffset: number; endOffset: number },
+  ][]) {
     map.set(name, { name, sliceStart: range.startOffset, sliceEnd: range.endOffset });
   }
   return map;
@@ -135,11 +185,7 @@ export function analyzePage(source: string): PageAnalysis {
   const isNestedCandidateStop = (el: P5Element): boolean =>
     el.tagName === "a" || el.tagName === "img";
 
-  const visit = (
-    node: P5Node,
-    insidePicture: boolean,
-    insideTextContainer: boolean,
-  ): void => {
+  const visit = (node: P5Node, insidePicture: boolean, insideTextContainer: boolean): void => {
     if (!isElement(node)) return;
 
     const tag = node.tagName;
@@ -161,7 +207,12 @@ export function analyzePage(source: string): PageAnalysis {
     if (tag === "img") {
       const src = attrValue(node, "src");
       const hidden = node.attrs.some((a) => a.name === "hidden");
-      if (src !== null && !node.attrs.some((a) => a.name === "srcset") && !insidePicture && !hidden) {
+      if (
+        src !== null &&
+        !node.attrs.some((a) => a.name === "srcset") &&
+        !insidePicture &&
+        !hidden
+      ) {
         counter += 1;
         const id = `n${counter}`;
         const loc = node.sourceCodeLocation!;
@@ -233,7 +284,11 @@ export function analyzePage(source: string): PageAnalysis {
     }
 
     for (const child of node.childNodes) {
-      visit(child, insidePicture || tag === "picture", insideTextContainer || TEXT_CONTAINER_TAGS.has(tag));
+      visit(
+        child,
+        insidePicture || tag === "picture",
+        insideTextContainer || TEXT_CONTAINER_TAGS.has(tag),
+      );
     }
   };
 
@@ -300,7 +355,8 @@ export function preparePreview(
   const nodes = new Map<string, PreviewNode>();
 
   for (const c of analysis.candidates.values()) {
-    const node: PreviewNode & Partial<Pick<Candidate, "multiline" | "textEditable">> & { segmentCount?: number } = {
+    const node: PreviewNode &
+      Partial<Pick<Candidate, "multiline" | "textEditable">> & { segmentCount?: number } = {
       id: c.id,
       pagePath,
       kind: c.kind,
@@ -385,10 +441,7 @@ function renderTextMarkup(text: string, multilineAllowed: boolean): string {
   return text.split("\n").map(escapeHtmlText).join("<br>");
 }
 
-export async function patchHtml(
-  source: Uint8Array,
-  change: PageChange,
-): Promise<Uint8Array> {
+export async function patchHtml(source: Uint8Array, change: PageChange): Promise<Uint8Array> {
   await assertFreshSource(source, change.baseDigest);
 
   const decoder = new TextDecoder();
@@ -401,14 +454,15 @@ export async function patchHtml(
     string,
     { candidate: Candidate; segment: SegmentInfo; markup: string }
   >();
-  const attrOps: { candidate: Candidate; op: PageOperation & { type: "href" | "src" | "alt" } }[] = [];
+  const attrOps: { candidate: Candidate; op: PageOperation & { type: "href" | "src" | "alt" } }[] =
+    [];
 
   for (const op of change.operations) {
     switch (op.type) {
       case "text": {
         const ref = parseSegmentRef(op.nodeId);
         const candidate = analysis.candidates.get(ref.nodeId);
-        if (!candidate || candidate.kind !== "text" && candidate.kind !== "link") {
+        if (!candidate || (candidate.kind !== "text" && candidate.kind !== "link")) {
           throw new Error(`unknown text target ${op.nodeId}`);
         }
         const segment = candidate.segments[ref.segmentIndex];

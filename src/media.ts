@@ -1,13 +1,11 @@
-import type { MediaItem, XyleDigest, XyleManifest } from "./types.ts";
+import type { MediaItem, XyleManifest } from "./types.ts";
 import { digestBytes } from "./manifest.ts";
 import { simpleImageSources } from "./html.ts";
 
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20 MiB
 export const MEDIA_PREFIX = "/__media/";
 
-export type UploadValidation =
-  | { ok: true; contentType: string }
-  | { ok: false; reason: string };
+export type UploadValidation = { ok: true; contentType: string } | { ok: false; reason: string };
 
 function startsWith(bytes: Uint8Array, magic: number[], offset = 0): boolean {
   if (bytes.length < offset + magic.length) return false;
@@ -57,10 +55,7 @@ export function detectImageType(bytes: Uint8Array): string | null {
   return null;
 }
 
-export function validateUpload(
-  filename: string,
-  bytes: Uint8Array,
-): UploadValidation {
+export function validateUpload(filename: string, bytes: Uint8Array): UploadValidation {
   if (bytes.byteLength === 0) return { ok: false, reason: "empty upload" };
   if (bytes.byteLength > MAX_UPLOAD_BYTES) {
     return { ok: false, reason: `upload exceeds ${MAX_UPLOAD_BYTES} bytes` };

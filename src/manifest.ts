@@ -3,17 +3,11 @@ import { join } from "node:path";
 import type { ManifestFile, XyleDigest, XyleManifest } from "./types.ts";
 
 const RESERVED_PREFIXES = ["/edit", "/__xyle/", "/__media/", "/_xyle/"];
-export const RESERVED_PATHS = [
-  "/edit",
-  "/_xyle/manifest.json",
-  ...RESERVED_PREFIXES,
-];
+export const RESERVED_PATHS = ["/edit", "/_xyle/manifest.json", ...RESERVED_PREFIXES];
 
 export async function digestBytes(bytes: Uint8Array): Promise<XyleDigest> {
   const hash = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
-  const hex = Array.from(new Uint8Array(hash), (b) =>
-    b.toString(16).padStart(2, "0"),
-  ).join("");
+  const hex = Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
   return `sha256:${hex}`;
 }
 

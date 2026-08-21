@@ -6,10 +6,9 @@ import type {
   PublishSnapshot,
   PublishedSnapshot,
   Publisher,
-  SiteFile,
   XyleManifest,
 } from "../types.ts";
-import { buildManifestFromDirectory, digestBytes } from "../manifest.ts";
+import { buildManifestFromDirectory } from "../manifest.ts";
 
 export const MANIFEST_PATH = "/_xyle/manifest.json";
 
@@ -24,7 +23,7 @@ export class StaleSnapshotError extends Error {
 }
 
 function assertInsideRoot(root: string, sitePath: string): string {
-  const target = resolve(root, "." + sitePath);
+  const target = resolve(root, `.${sitePath}`);
   const normalizedRoot = resolve(root);
   if (target !== normalizedRoot && !target.startsWith(normalizedRoot + sep)) {
     throw new Error(`path escapes static root: ${sitePath}`);
@@ -49,7 +48,7 @@ export interface FilesystemPublisherOptions {
 export class FilesystemPublisher implements Publisher {
   private readonly rootAbs: string;
 
-  constructor(private readonly options: FilesystemPublisherOptions) {
+  constructor(readonly options: FilesystemPublisherOptions) {
     this.rootAbs = resolve(options.root);
   }
 
@@ -103,9 +102,7 @@ export class FilesystemPublisher implements Publisher {
       }
 
       // manifest goes last
-      const manifestBytes = new TextEncoder().encode(
-        JSON.stringify(next.manifest, null, 2),
-      );
+      const manifestBytes = new TextEncoder().encode(JSON.stringify(next.manifest, null, 2));
       const manifestFinal = assertInsideRoot(this.rootAbs, MANIFEST_PATH);
       await mkdir(dirname(manifestFinal), { recursive: true });
       const manifestTemp = `${manifestFinal}.xyle-tmp-${randomUUID()}`;

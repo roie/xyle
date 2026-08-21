@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FilesystemPublisher, MANIFEST_PATH } from "../src/publishers/filesystem.ts";
-import { buildManifestFromDirectory, digestBytes } from "../src/manifest.ts";
+import { digestBytes } from "../src/manifest.ts";
 import type { SiteFile } from "../src/types.ts";
 
 const enc = new TextEncoder();
@@ -107,7 +107,7 @@ describe("FilesystemPublisher", () => {
     const publisher = new FilesystemPublisher({ root });
     const base = await publisher.readSnapshot();
 
-    const html = await makeSiteFile("/index.html", "<img src=\"/__media/pic.png\">");
+    const html = await makeSiteFile("/index.html", '<img src="/__media/pic.png">');
     const pngBytes = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
       "base64",

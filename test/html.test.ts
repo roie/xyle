@@ -73,7 +73,7 @@ describe("preparePreview source locations", () => {
       "<pre>not editable</pre>",
       "<code>nope</code>",
       "<button>nope</button>",
-      '<div hidden><p>hidden nope</p></div>',
+      "<div hidden><p>hidden nope</p></div>",
       "</div>",
     ].join("");
     const analysis = analyzePage(source);
@@ -121,7 +121,9 @@ describe("patchHtml text fidelity", () => {
   it("preserves nbsp as an entity", async () => {
     const source = `<p>A\u00A0B</p>`;
     const id = firstNodeId(source);
-    const out = await patchAndGetText(source, [{ type: "text", nodeId: `${id}#0`, value: "X\u00A0Y" }]);
+    const out = await patchAndGetText(source, [
+      { type: "text", nodeId: `${id}#0`, value: "X\u00A0Y" },
+    ]);
     expect(out).toBe(`<p>X&nbsp;Y</p>`);
   });
 
@@ -141,7 +143,7 @@ describe("patchHtml text fidelity", () => {
     await expect(
       patchHtml(enc.encode(source), {
         pagePath: "/",
-        baseDigest: "sha256:" + "0".repeat(64) as XyleDigest,
+        baseDigest: `sha256:${"0".repeat(64)}` as XyleDigest,
         operations: [{ type: "text", nodeId: "n1#0", value: "b" }],
       }),
     ).rejects.toThrow(/stale/);
@@ -161,9 +163,7 @@ describe("patchHtml text fidelity", () => {
   it("applies controlled line breaks to multiline containers only", async () => {
     const p = `<p>Serving Edmonton and surrounding areas.</p>`;
     const pId = firstNodeId(p);
-    const out = await patchAndGetText(p, [
-      { type: "lineBreak", nodeId: `${pId}#0`, position: 16 },
-    ]);
+    const out = await patchAndGetText(p, [{ type: "lineBreak", nodeId: `${pId}#0`, position: 16 }]);
     expect(out).toBe(`<p>Serving Edmonton<br> and surrounding areas.</p>`);
 
     const h = `<h1>Plumbing you can depend on</h1>`;
@@ -205,9 +205,7 @@ describe("attribute patching", () => {
   it("escapes quotes in attribute values", async () => {
     const source = `<img src="/a.png" alt="old alt">`;
     const id = firstNodeId(source);
-    const out = await patchAndGetText(source, [
-      { type: "alt", nodeId: id, value: 'say "hello"' },
-    ]);
+    const out = await patchAndGetText(source, [{ type: "alt", nodeId: id, value: 'say "hello"' }]);
     expect(out).toBe(`<img src="/a.png" alt="say &quot;hello&quot;">`);
   });
 
@@ -235,12 +233,16 @@ describe("attribute patching", () => {
     ).rejects.toThrow();
   });
 
-  it.each(["about.html", "/root/rel", "#frag", "https://example.com/x?a=1", "mailto:a@b.c", "tel:+15550142"])(
-    "accepts safe link destination %j",
-    (good) => {
-      expect(isValidSiteUrl(good)).toBe(true);
-    },
-  );
+  it.each([
+    "about.html",
+    "/root/rel",
+    "#frag",
+    "https://example.com/x?a=1",
+    "mailto:a@b.c",
+    "tel:+15550142",
+  ])("accepts safe link destination %j", (good) => {
+    expect(isValidSiteUrl(good)).toBe(true);
+  });
 
   it("rejects unknown node ids", async () => {
     const source = `<h1>x</h1>`;
