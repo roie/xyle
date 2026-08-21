@@ -283,11 +283,16 @@ export function analyzePage(source: string): PageAnalysis {
       });
     }
 
+    // A candidate owns its own subtree's text; nested text containers stay
+    // suppressed only when this candidate actually formed. Links and images
+    // remain discoverable inside candidates either way.
+    const suppressesChildren = becameCandidate;
+
     for (const child of node.childNodes) {
       visit(
         child,
         insidePicture || tag === "picture",
-        insideTextContainer || TEXT_CONTAINER_TAGS.has(tag),
+        insideTextContainer || suppressesChildren,
       );
     }
   };

@@ -13,12 +13,14 @@ import { buildManifestFromDirectory } from "../manifest.ts";
 export const MANIFEST_PATH = "/_xyle/manifest.json";
 
 export class StaleSnapshotError extends Error {
-  constructor(
-    public readonly currentDigest: string,
-    public readonly expectedDigest: string,
-  ) {
+  readonly currentDigest: string;
+  readonly expectedDigest: string;
+
+  constructor(currentDigest: string, expectedDigest: string) {
     super(`stale snapshot: expected ${expectedDigest}, current ${currentDigest}`);
     this.name = "StaleSnapshotError";
+    this.currentDigest = currentDigest;
+    this.expectedDigest = expectedDigest;
   }
 }
 
@@ -47,8 +49,10 @@ export interface FilesystemPublisherOptions {
 
 export class FilesystemPublisher implements Publisher {
   private readonly rootAbs: string;
+  private readonly options: FilesystemPublisherOptions;
 
-  constructor(readonly options: FilesystemPublisherOptions) {
+  constructor(options: FilesystemPublisherOptions) {
+    this.options = options;
     this.rootAbs = resolve(options.root);
   }
 

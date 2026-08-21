@@ -54,11 +54,13 @@ function htmlResponse(body: string, status = 200, headers: Record<string, string
 }
 
 export class HttpError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly body: unknown,
-  ) {
+  readonly status: number;
+  readonly body: unknown;
+
+  constructor(status: number, body: unknown) {
     super(String(status));
+    this.status = status;
+    this.body = body;
   }
 }
 

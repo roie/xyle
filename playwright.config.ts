@@ -10,7 +10,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "node --experimental-strip-types e2e/serve-example.mts",
+    command: "node e2e/start-xyle.mts",
     url: "http://127.0.0.1:4173/",
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

@@ -51,6 +51,18 @@ const state = {
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document): T =>
   root.querySelector(sel) as T;
 
+/** Test observability hook (read-only). */
+function exposeTestHook(): void {
+  (window as unknown as { __xyle: unknown }).__xyle = {
+    get ops(): unknown[] {
+      return state.ops.map((entry) => ({ pagePath: entry.pagePath, op: entry.op }));
+    },
+    get count(): number {
+      return state.ops.length;
+    },
+  };
+}
+
 function api(path: string, init?: RequestInit): Promise<Response> {
   return fetch(path, init);
 }
@@ -72,6 +84,7 @@ async function boot(): Promise<void> {
   }
 
   buildChrome();
+  exposeTestHook();
   const params = new URLSearchParams(location.search);
   await loadPage(params.get("page") ?? "/index.html", { pushHistory: false });
 
@@ -156,6 +169,26 @@ function wirePreview(): void {
     handlePreviewNavigation(anchor as HTMLAnchorElement);
   });
   doc.body.addEventListener("submit", (e) => e.preventDefault(), true);
+
+  // global shortcuts must also fire while focus is inside the preview
+  doc.body.addEventListener("keydown", (event) => {
+    const keyboardEvent = event as KeyboardEvent;
+    if (!(keyboardEvent.ctrlKey || keyboardEvent.metaKey)) return;
+    if (keyboardEvent.key !== "z" && keyboardEvent.key !== "Z" && keyboardEvent.key !== "y") {
+      return;
+    }
+    if (keyboardEvent.key === "z" || keyboardEvent.key === "Z") {
+      // inside an active field the browser's native undo wins
+      if (!session) {
+        event.preventDefault();
+        if (keyboardEvent.shiftKey) redo();
+        else undo();
+      }
+    } else if (!session) {
+      event.preventDefault();
+      redo();
+    }
+  });
 
   applyShowEditables();
   restoreOpsIntoDom();
@@ -323,7 +356,7 @@ function collectSegments(rootEl: HTMLElement): SegmentPair[] {
       if (SKIP_TAGS.has(childEl.tagName.toLowerCase())) continue;
       if (isNestedCandidate(childEl, rootEl)) continue;
       if (childEl.tagName === "BR") {
-        if (openKey) seen.get(openKey)?.push("");
+        if (openKey !== null) seen.get(openKey)?.push("");
         continue;
       }
       walk(childEl, false);
@@ -369,8 +402,8 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
     rememberOriginalSegment(`${meta.id}#${i}`, value);
   }
 
-  const plainOnly =
-    meta.segmentCount === 1 && !Array.from(el.children).some((c) => c.tagName !== "BR");
+  const hasNoElementChildren = !Array.from(el.children).some((c) => c.tagName !== "BR");
+  const plainOnly = meta.segmentCount === 1 && !meta.multiline && hasNoElementChildren;
 
   (el as unknown as { contentEditable: string }).contentEditable =
     plainOnly && supportsPlaintextOnly() ? "plaintext-only" : "true";
@@ -380,6 +413,27 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
   el.addEventListener("beforeinput", onBeforeInput);
   el.addEventListener("input", onInput);
   el.addEventListener("keydown", onKeyDown);
+  el.addEventListener("paste", onPaste, true);
+}
+
+/** Plain-text-only paste; rich payloads are flattened or refused. */
+function onPaste(event: ClipboardEvent): void {
+  if (!session) return;
+  const text = event.clipboardData?.getData("text/plain");
+  const html = event.clipboardData?.getData("text/html");
+  event.preventDefault();
+  event.stopPropagation();
+  if (!text) return;
+  if (html && session.meta.segmentCount !== 1 && /<[a-z][\s\S]*>/i.test(html)) {
+    flash("Formatted paste is not supported here.");
+    return;
+  }
+  if (text.includes("\n") && !allowedMultiline()) {
+    flash("Line breaks are not supported here.");
+    return;
+  }
+  const win = iframe.contentWindow!;
+  win.document.execCommand("insertText", false, text);
 }
 
 function supportsPlaintextOnly(): boolean {
@@ -404,8 +458,13 @@ function allowedMultiline(): boolean {
   return session?.meta.multiline === true;
 }
 
+/** Selection lives in the preview window, not the shell. */
+function previewSelection(): Selection | null {
+  return iframe?.contentWindow?.getSelection() ?? null;
+}
+
 function selectionInsideEditable(): boolean {
-  const selection = getSelection();
+  const selection = previewSelection();
   if (!selection || selection.rangeCount === 0 || !session) return false;
   return session.el.contains(selection.anchorNode) && session.el.contains(selection.focusNode);
 }
@@ -451,11 +510,12 @@ function onBeforeInput(event: InputEvent): void {
 }
 
 function insertManualBr(): void {
-  const selection = getSelection()!;
-  if (selection.rangeCount === 0) return;
+  const selection = previewSelection();
+  if (!selection || selection.rangeCount === 0) return;
   const range = selection.getRangeAt(0);
+  const doc = previewDoc()!;
   range.deleteContents();
-  const br = document.createElement("br");
+  const br = doc.createElement("br");
   range.insertNode(br);
   range.setStartAfter(br);
   range.collapse(true);
@@ -514,6 +574,7 @@ function endEdit(recordChanges: boolean): void {
   s.el.removeEventListener("beforeinput", onBeforeInput);
   s.el.removeEventListener("input", onInput);
   s.el.removeEventListener("keydown", onKeyDown);
+  s.el.removeEventListener("paste", onPaste, true);
   s.el.classList.remove("xyle-editing");
   (s.el as unknown as { contentEditable: string }).contentEditable = "false";
 
@@ -872,17 +933,15 @@ function chooseExistingMedia(path: string): void {
 function applyOp(pagePath: string, op: Op, label: string): void {
   const key = opKey(op);
   removeOpsFor(key);
-  const beforeOps = [...state.ops];
   state.ops.push({ pagePath, op });
 
   const undo = (): void => {
-    state.ops = beforeOps
-      .filter((entry) => entryKey(entry) !== key)
-      .concat(state.ops.filter((entry) => entryKey(entry) !== key));
+    removeOpsFor(key);
     revertOpInDom(pagePath, op);
     updateDirtyUi();
   };
   const redo = (): void => {
+    if (state.ops.some((entry) => entryKey(entry) === key)) return;
     state.ops.push({ pagePath, op });
     updateDirtyUi();
   };
