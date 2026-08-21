@@ -273,6 +273,24 @@ export function isValidSiteUrl(url: string): boolean {
   }
 }
 
+/** src values of simple <img> candidates Xyle understands, for usage marking. */
+export function simpleImageSources(source: string): string[] {
+  const analysis = analyzePage(source);
+  const sources: string[] = [];
+  for (const c of analysis.candidates.values()) {
+    if (c.kind !== "image") continue;
+    const attr = c.attrs.get("src");
+    if (!attr) continue;
+    const value = source.slice(attr.sliceStart, attr.sliceEnd);
+    // slice includes name="value"; extract between the first = and final quote
+    const eq = value.indexOf("=");
+    const raw = value.slice(eq + 1).trim();
+    const unquoted = raw.startsWith('"') || raw.startsWith("'") ? raw.slice(1, -1) : raw;
+    sources.push(unquoted);
+  }
+  return sources;
+}
+
 export function preparePreview(
   source: string,
   pagePath: string,
