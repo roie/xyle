@@ -87,6 +87,10 @@ export interface PreviewNode {
   kind: "text" | "link" | "image";
   sourceStart: number;
   sourceEnd: number;
+  tag?: string;
+  multiline?: boolean;
+  textEditable?: boolean;
+  segmentCount?: number;
 }
 
 export interface PreparedPreview {
