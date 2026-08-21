@@ -1,0 +1,29 @@
+{
+  "name": "xyle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "rolldown -c",
+    "dev": "tsx src/cli.ts dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "check": "pnpm typecheck && pnpm test && pnpm exec biome check ."
+  },
+  "dependencies": {
+    "parse5": "^8.0.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.9",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.13.3",
+    "rolldown": "^1.2.5",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}

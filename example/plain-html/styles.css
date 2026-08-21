@@ -1,0 +1,103 @@
+:root {
+  --ink: #1d2733;
+  --accent: #0f6ea8;
+  --paper: #fbfaf7;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  color: var(--ink);
+  background: var(--paper);
+  line-height: 1.6;
+}
+
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid #e4e0d8;
+}
+
+.brand {
+  font-weight: bold;
+  font-size: 1.15rem;
+  text-decoration: none;
+  color: var(--accent);
+}
+
+nav a {
+  margin-left: 1rem;
+  color: var(--ink);
+}
+
+main {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+h1, h2 { line-height: 1.25; }
+
+.lede { font-size: 1.2rem; }
+
+.cta {
+  display: inline-block;
+  margin: 0.5rem 0 1.5rem;
+  padding: 0.6em 1.2em;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  border-radius: 6px;
+}
+
+img, picture img {
+  max-width: 100%;
+  height: auto;
+}
+
+figure figcaption {
+  font-size: 0.85rem;
+  color: #5c6672;
+}
+
+blockquote {
+  margin: 1.5rem 0;
+  padding-left: 1rem;
+  border-left: 3px solid var(--accent);
+  font-style: italic;
+}
+
+.contact-form label {
+  display: block;
+  margin-top: 0.75rem;
+}
+
+.contact-form input,
+.contact-form textarea {
+  width: 100%;
+  max-width: 26rem;
+  font: inherit;
+  padding: 0.4em;
+}
+
+.contact-form button {
+  margin-top: 0.75rem;
+  padding: 0.5em 1.4em;
+  font: inherit;
+}
+
+.site-footer {
+  padding: 1rem 2rem 2rem;
+  border-top: 1px solid #e4e0d8;
+  color: #5c6672;
+}
+
+@media (max-width: 40rem) {
+  .site-header, .site-footer { padding-inline: 1.25rem; }
+}
