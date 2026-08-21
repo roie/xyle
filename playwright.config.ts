@@ -4,7 +4,9 @@ export default defineConfig({
   testDir: "e2e",
   timeout: 30_000,
   retries: process.env.CI ? 1 : 0,
-  fullyParallel: true,
+  // specs share one live site copy; publishing tests must not race
+  fullyParallel: false,
+  workers: 1,
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "retain-on-failure",

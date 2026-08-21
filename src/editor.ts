@@ -167,8 +167,7 @@ function wirePreview(): void {
     event.preventDefault();
     if (anchor.hasAttribute("data-xyle-node")) return; // link editing handles it
     handlePreviewNavigation(anchor as HTMLAnchorElement);
-  });
-  doc.body.addEventListener("submit", (e) => e.preventDefault(), true);
+  });  doc.body.addEventListener("submit", (e) => e.preventDefault(), true);
 
   // global shortcuts must also fire while focus is inside the preview
   doc.body.addEventListener("keydown", (event) => {
@@ -612,13 +611,16 @@ function wireLink(el: HTMLElement, meta: NodeMeta): void {
 function openHrefDialog(el: HTMLElement, meta: NodeMeta): void {
   const dialog = document.createElement("dialog");
   dialog.setAttribute("data-xyle-editing-url", "1");
+  const currentHref = el.getAttribute("href") ?? "";
+  const internalTarget = resolveInternalPath(currentHref);
   dialog.innerHTML = `
     <form method="dialog" style="display:grid;gap:.6rem;font:system-ui,sans-serif">
       <label style="font-weight:600">Link destination</label>
       <input name="href" style="padding:.45em .6em;font:inherit;border:1px solid #bbb;border-radius:6px;min-width:22rem"
-        value="${(el.getAttribute("href") ?? "").replaceAll('"', "&quot;")}">
+        value="${currentHref.replaceAll('"', "&quot;")}">
       <p class="err" style="color:#b3261e;font-size:.8rem;margin:0"></p>
       <div style="display:flex;gap:.5rem;justify-content:flex-end">
+        ${internalTarget ? `<button value="follow" style="font:inherit;padding:.4em .9em;border-radius:6px;border:1px solid #ccc;background:#fff">Follow link</button>` : ""}
         <button value="cancel" style="font:inherit;padding:.4em .9em;border-radius:6px;border:1px solid #ccc;background:#fff">Cancel</button>
         <button value="save" style="font:inherit;padding:.4em .9em;border-radius:6px;border:0;background:#0f6ea8;color:#fff">Save</button>
       </div>
@@ -633,6 +635,13 @@ function openHrefDialog(el: HTMLElement, meta: NodeMeta): void {
       } else {
         flash("That destination is not allowed.");
       }
+    } else if (dialog.returnValue === "follow") {
+      const target = resolveInternalPath(value) ?? internalTarget;
+      if (target) {
+        loadPage(target, { pushHistory: true }).then(() => restoreOpsIntoDom());
+      } else {
+        flash("Only internal pages can be followed in edit mode.");
+      }
     }
     dialog.remove();
   });
@@ -646,6 +655,18 @@ function openHrefDialog(el: HTMLElement, meta: NodeMeta): void {
   });
   (dialog.querySelector("input") as HTMLInputElement).select();
   dialog.showModal();
+}
+
+/** Site-internal page path for a link, or null for external/asset targets. */
+function resolveInternalPath(href: string): string | null {
+  try {
+    const url = new URL(href, location.origin + state.current!.pagePath);
+    if (url.origin !== location.origin) return null;
+    if (!/\.(html?)$/i.test(url.pathname)) return null;
+    return url.pathname;
+  } catch {
+    return null;
+  }
 }
 
 function isSafeUrl(url: string): boolean {
