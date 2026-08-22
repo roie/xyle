@@ -121,6 +121,15 @@ test.describe("editor shell and preview", () => {
 });
 
 test.describe("chrome layout rules", () => {
+  test("preview iframe fills the viewport", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const box = await page.locator("#xyle-preview").boundingBox();
+    expect(box).toBeTruthy();
+    const viewport = page.viewportSize()!;
+    expect(box!.width).toBeGreaterThan(viewport.width * 0.95);
+    expect(box!.height).toBeGreaterThan(viewport.height * 0.9);
+  });
+
   test("no full-width top toolbar exists; bottom controls are compact", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const bars = await page.evaluate(() => {
@@ -225,6 +234,35 @@ test.describe("editing affordances", () => {
 });
 
 test.describe("changes drawer and undo", () => {
+  test("drawer renders edited markup as inert text (no shell XSS)", async ({ page }) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    await editNode(page, id!);
+    await focusCaret(page, id!, "end");
+    // simulate hostile content arriving via paste
+    await page.evaluate(() => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const target = frame.contentDocument!.querySelector(".xyle-editing")!;
+      const dt = new DataTransfer();
+      dt.setData("text/plain", '<img src=x onerror="window.__xylePwned=1">');
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: dt });
+      target.dispatchEvent(event);
+    });
+    await clickOutsideCommit(page);
+
+    await page.click("#xyle-changes");
+    await page.waitForTimeout(200);
+    const pwned = await page.evaluate(
+      () => (window as unknown as { __xylePwned?: boolean }).__xylePwned,
+    );
+    expect(pwned).toBeUndefined();
+    const injectedImages = await page.evaluate(
+      () => document.querySelectorAll("#xyle-changes-drawer img").length,
+    );
+    expect(injectedImages).toBe(0);
+  });
+
   test("drawer lists edits with working per-change undo", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const id = await findNodeByText(page, "Riverbend Plumbing started");

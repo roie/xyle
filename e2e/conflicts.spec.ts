@@ -65,6 +65,46 @@ test.describe("conflicts and recovery", () => {
     await contextB.close();
   });
 
+  test("edits on multiple pages publish together after navigation", async ({ page }) => {
+    await loginAndOpenEditor(page, "/about.html");
+
+    const idA = await findNodeByText(page, "Riverbend Plumbing started");
+    await editNode(page, idA!);
+    await focusCaret(page, idA!, "end");
+    await page.keyboard.type(" MULTI-A");
+    await clickOutsideCommit(page);
+    expect(await opsCount(page)).toBe(1);
+
+    // navigate the preview to another page (candidate links open the
+    // link-editing dialog; navigation uses the explicit Follow affordance)
+    await page.evaluate(() => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const link = frame.contentDocument!.querySelector('nav a[href="/"]') as HTMLAnchorElement;
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await expect(page.locator("dialog")).toBeVisible();
+    await page.click("dialog button[value='follow']");
+    await page.waitForFunction(() => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
+      return !!doc?.body && doc.body.textContent?.includes("Plumbing you can depend on");
+    });
+
+    const idB = await findNodeByText(page, "Burst pipe at midnight");
+    await editNode(page, idB!);
+    await focusCaret(page, idB!, "end");
+    await page.keyboard.type(" MULTI-B");
+    await clickOutsideCommit(page);
+    expect(await opsCount(page)).toBe(2);
+
+    await page.click("#xyle-publish");
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+
+    const about = await (await page.request.get("/about.html")).text();
+    const index = await (await page.request.get("/index.html")).text();
+    expect(about).toContain("MULTI-A");
+    expect(index).toContain("MULTI-B");
+  });
+
   test("published content survives a server restart", async ({ page }) => {
     await loginAndOpenEditor(page, "/contact.html");
     const id = await findNodeByText(page, "Talk to a plumber");

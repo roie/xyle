@@ -89,7 +89,11 @@ async function boot(): Promise<void> {
   await loadPage(params.get("page") ?? "/index.html", { pushHistory: false });
 
   window.addEventListener("beforeunload", (event) => {
-    if (dirtyCount() > 0) event.preventDefault();
+    if (dirtyCount() > 0) {
+      // preventDefault alone does not trigger the browser dialog
+      event.preventDefault();
+      event.returnValue = "";
+    }
   });
 }
 
@@ -101,6 +105,7 @@ async function loadPage(pagePath: string, opts: { pushHistory: boolean }): Promi
   }
   const data = (await res.json()) as PageData & { baseDigest: string };
   state.current = data;
+  cachedBaseDigest.set(data.pagePath, data.baseDigest);
   state.publishedSnapshotDigest = state.publishedSnapshotDigest || (await snapshotDigest());
 
   renderPreview();
@@ -119,6 +124,7 @@ function renderPreview(): void {
   iframe = document.createElement("iframe");
   iframe.setAttribute("sandbox", "allow-same-origin");
   iframe.id = "xyle-preview";
+  iframe.style.cssText = "display:block;width:100%;height:100%;border:0;background:#fff";
   host.append(iframe);
   iframe.srcdoc = state.current!.html;
   iframe.addEventListener("load", () => wirePreview(), { once: true });
@@ -663,8 +669,9 @@ function resolveInternalPath(href: string): string | null {
   try {
     const url = new URL(href, location.origin + state.current!.pagePath);
     if (url.origin !== location.origin) return null;
-    if (!/\.(html?)$/i.test(url.pathname)) return null;
-    return url.pathname;
+    const path = url.pathname;
+    if (/\.(html?)$/i.test(path) || path.endsWith("/")) return path;
+    return null;
   } catch {
     return null;
   }
@@ -691,19 +698,45 @@ function wireImage(el: HTMLElement, meta: NodeMeta): void {
   img.addEventListener("click", () => selectImage(img, meta));
 
   img.addEventListener("mouseenter", () => showImageTools(img, meta));
-  img.addEventListener("mouseleave", () => hideImageTools(img));
+  img.addEventListener("mouseleave", () => scheduleHide(img));
+}
+
+/** Grace period before hover tools disappear, so moving onto them survives. */
+const toolsHideTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function cancelHide(nodeId: string): void {
+  const timer = toolsHideTimers.get(nodeId);
+  if (timer !== undefined) {
+    clearTimeout(timer as never);
+    toolsHideTimers.delete(nodeId);
+  }
+}
+
+function scheduleHide(img: HTMLImageElement): void {
+  const nodeId = img.getAttribute("data-xyle-node") ?? "";
+  cancelHide(nodeId);
+  toolsHideTimers.set(
+    nodeId,
+    setTimeout(() => {
+      toolsHideTimers.delete(nodeId);
+      hideImageTools(img);
+    }, 150),
+  );
 }
 
 function showImageTools(img: HTMLImageElement, meta: NodeMeta): void {
   const doc = previewDoc()!;
   const overlay = doc.getElementById("xyle-overlay-root")!;
   hideImageTools(img);
+  cancelHide(meta.id);
   const rect = img.getBoundingClientRect();
   const tools = doc.createElement("div");
   tools.className = "xyle-img-tools";
   tools.dataset.forNode = meta.id;
   tools.style.left = `${rect.left + windowScrollX(doc)}px`;
   tools.style.top = `${rect.bottom - 34 + windowScrollY(doc)}px`;
+  tools.addEventListener("mouseenter", () => cancelHide(meta.id));
+  tools.addEventListener("mouseleave", () => scheduleHide(img));
   const replace = doc.createElement("button");
   replace.textContent = "Replace";
   replace.addEventListener("click", (event) => {
@@ -759,6 +792,14 @@ async function useFileForImage(img: HTMLImageElement, meta: NodeMeta, file: File
     return;
   }
   const objectUrl = URL.createObjectURL(file);
+  // revoke the previous pending preview for this image, if any
+  const previousUrl = img.src;
+  for (const [path, asset] of [...state.assets]) {
+    if (asset.objectUrl === previousUrl) {
+      state.assets.delete(path);
+      URL.revokeObjectURL(asset.objectUrl);
+    }
+  }
   img.src = objectUrl;
 
   const digestHex = await sha256Hex(new Uint8Array(buffer));
@@ -771,8 +812,6 @@ async function useFileForImage(img: HTMLImageElement, meta: NodeMeta, file: File
     { type: "src", nodeId: meta.id, value: assetPath, assetName: file.name },
     "Replace image",
   );
-  img.setAttribute("src", assetPath);
-  img.src = objectUrl; // keep blob preview until publish
   updateDirtyUi();
 }
 
@@ -1211,9 +1250,14 @@ function openChangesDrawer(): void {
     const row = document.createElement("div");
     row.style.cssText =
       "border:1px solid #eee;border-radius:8px;padding:.6rem .75rem;font-size:.86rem";
-    row.innerHTML = `
-      <div style="color:#5c6672">${entry.pagePath}</div>
-      <div>${describeOp(entry.op)}</div>`;
+    // textContent (not innerHTML): op values are user-edited content and must
+    // never be interpreted as markup in the privileged shell document
+    const pageLabel = document.createElement("div");
+    pageLabel.style.color = "#5c6672";
+    pageLabel.textContent = entry.pagePath;
+    const descLabel = document.createElement("div");
+    descLabel.textContent = describeOp(entry.op);
+    row.append(pageLabel, descLabel);
     const undoButton = document.createElement("button");
     undoButton.textContent = "Undo";
     undoButton.style.cssText =

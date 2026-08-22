@@ -106,7 +106,17 @@ export async function setSelection(
     } else {
       const textNodes: Text[] = [];
       const walk = (node: Node): void => {
-        if (node.nodeType === Node.TEXT_NODE) textNodes.push(node as Text);
+        if (node.nodeType === Node.TEXT_NODE) {
+          textNodes.push(node as Text);
+          return;
+        }
+        // mirror editor enumeration: skip nested candidate subtrees
+        if (
+          node.nodeType === Node.ELEMENT_NODE &&
+          (node as HTMLElement).hasAttribute("data-xyle-node")
+        ) {
+          return;
+        }
         for (const child of Array.from(node.childNodes)) walk(child);
       };
       for (const child of Array.from(el.childNodes)) walk(child);
