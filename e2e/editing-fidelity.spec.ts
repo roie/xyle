@@ -72,18 +72,16 @@ test.describe("editing fidelity gate", () => {
     await clickOutsideToCommit(page);
     const op = await textOpFor(page);
     expect(op).toBeTruthy();
-    expect((op!.value[0] as string)).not.toBe("R");
+    expect(op!.value[0] as string).not.toBe("R");
   });
 
   test("selection replacement within a single segment", async () => {
     const id = await findNodeByText(page, "The crew behind Riverbend");
     await editNode(page, id!);
     await page.evaluate((nodeId) => {
-      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
-        .contentDocument!;
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       const el = doc.querySelector(`[data-xyle-node="${nodeId}"]`)!;
-      const win = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
-        .contentWindow!;
+      const win = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentWindow!;
       const range = win.document.createRange();
       range.selectNodeContents(el);
       const selection = win.getSelection()!;
@@ -130,10 +128,9 @@ test.describe("editing fidelity gate", () => {
     await page.waitForTimeout(200);
     const skeletonAfter = await nodeSkeleton(page, id!);
     // either refused+reverted or flattened — never structural damage
-    expect(
-      skeletonAfter === skeletonBefore ||
-        !(await nodeHtml(page, id!)).includes("<b"),
-    ).toBe(true);
+    expect(skeletonAfter === skeletonBefore || !(await nodeHtml(page, id!)).includes("<b")).toBe(
+      true,
+    );
   });
 
   test("emoji typing", async () => {
@@ -165,8 +162,12 @@ test.describe("editing fidelity gate", () => {
     await page.evaluate(() => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
       const target = frame.contentDocument!.querySelector(".xyle-editing") as HTMLElement;
-      target.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "こんにちは" }));
-      target.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "こんにちは" }));
+      target.dispatchEvent(
+        new CompositionEvent("compositionupdate", { bubbles: true, data: "こんにちは" }),
+      );
+      target.dispatchEvent(
+        new CompositionEvent("compositionend", { bubbles: true, data: "こんにちは" }),
+      );
     });
     await commitAndAssertOp("こんにちは");
   });
@@ -200,7 +201,9 @@ test.describe("editing fidelity gate", () => {
       await page.evaluate((nodeId) => {
         const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
         const win = frame.contentWindow!;
-        const container = frame.contentDocument!.querySelector(`[data-xyle-node="${nodeId}"]`) as HTMLElement;
+        const container = frame.contentDocument!.querySelector(
+          `[data-xyle-node="${nodeId}"]`,
+        ) as HTMLElement;
         const strong = container.querySelector("strong")!;
         const range = win.document.createRange();
         range.selectNodeContents(strong);
@@ -225,7 +228,9 @@ test.describe("editing fidelity gate", () => {
     await page.evaluate((nodeId) => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
       const win = frame.contentWindow!;
-      const container = frame.contentDocument!.querySelector(`[data-xyle-node="${nodeId}"]`) as HTMLElement;
+      const container = frame.contentDocument!.querySelector(
+        `[data-xyle-node="${nodeId}"]`,
+      ) as HTMLElement;
       const strong = container.querySelector("strong")!;
       const first = container.firstChild as Text;
       const inner = strong.firstChild as Text;
@@ -272,8 +277,10 @@ test.describe("editing fidelity gate", () => {
     // simulate a drop that would inject foreign markup
     await page.evaluate((nodeId) => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
-      const win = frame.contentWindow!;
-      const target = frame.contentDocument!.querySelector(`[data-xyle-node="${nodeId}"]`) as HTMLElement;
+      const _win = frame.contentWindow!;
+      const target = frame.contentDocument!.querySelector(
+        `[data-xyle-node="${nodeId}"]`,
+      ) as HTMLElement;
       const dt = new DataTransfer();
       dt.setData("text/html", "<div>DROPPED-BLOCK</div>");
       const event = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt });

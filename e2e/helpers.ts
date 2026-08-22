@@ -21,14 +21,20 @@ export async function waitForEditorReady(page: Page): Promise<void> {
 }
 
 export async function opsCount(page: Page): Promise<number> {
-  return page.evaluate(() => (window as never as { __xyle?: { count: number } }).__xyle?.count ?? -1);
+  return page.evaluate(
+    () => (window as never as { __xyle?: { count: number } }).__xyle?.count ?? -1,
+  );
 }
 
-export async function currentOps(page: Page): Promise<Array<{ pagePath: string; op: Record<string, unknown> }>> {
+export async function currentOps(
+  page: Page,
+): Promise<Array<{ pagePath: string; op: Record<string, unknown> }>> {
   return page.evaluate(
     () =>
       (
-        window as unknown as { __xyle?: { ops: Array<{ pagePath: string; op: Record<string, unknown> }> } }
+        window as unknown as {
+          __xyle?: { ops: Array<{ pagePath: string; op: Record<string, unknown> }> };
+        }
       ).__xyle?.ops ?? [],
   );
 }
@@ -61,9 +67,7 @@ export async function nodeSkeleton(page: Page, nodeId: string): Promise<string> 
 }
 
 export async function flashText(page: Page): Promise<string> {
-  return page.evaluate(
-    () => document.getElementById("xyle-flash")?.textContent ?? "",
-  );
+  return page.evaluate(() => document.getElementById("xyle-flash")?.textContent ?? "");
 }
 
 export async function clickNode(page: Page, nodeId: string): Promise<void> {
@@ -79,10 +83,7 @@ export async function clickNode(page: Page, nodeId: string): Promise<void> {
 export async function editNode(page: Page, nodeId: string): Promise<void> {
   // A real Playwright click moves browser focus into the iframe, so
   // subsequent keyboard input reaches the preview document.
-  await page
-    .frameLocator("#xyle-preview")
-    .locator(`[data-xyle-node="${nodeId}"]`)
-    .click();
+  await page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${nodeId}"]`).click();
   await page.waitForFunction((id) => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
     const el = doc.querySelector(`[data-xyle-node="${id}"]`) as HTMLElement | null;
@@ -90,7 +91,10 @@ export async function editNode(page: Page, nodeId: string): Promise<void> {
   }, nodeId);
 }
 
-export async function setSelection(page: Page, opts: { nodeId: string; startOffset?: number; endOffset?: number; selectAll?: boolean }): Promise<void> {
+export async function setSelection(
+  page: Page,
+  opts: { nodeId: string; startOffset?: number; endOffset?: number; selectAll?: boolean },
+): Promise<void> {
   await page.evaluate(({ nodeId, startOffset, endOffset, selectAll }) => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
     const win = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentWindow!;
@@ -117,7 +121,11 @@ export async function setSelection(page: Page, opts: { nodeId: string; startOffs
   }, opts);
 }
 
-export async function focusCaret(page: Page, nodeId: string, where: "start" | "end"): Promise<void> {
+export async function focusCaret(
+  page: Page,
+  nodeId: string,
+  where: "start" | "end",
+): Promise<void> {
   await setSelection(page, {
     nodeId,
     ...(where === "start" ? { startOffset: 0, endOffset: 0 } : {}),
@@ -146,7 +154,11 @@ export async function clickOutsideToCommit(page: Page): Promise<void> {
   });
 }
 
-export async function pressInEditor(page: Page, key: string, opts?: { delay?: number }): Promise<void> {
+export async function pressInEditor(
+  page: Page,
+  key: string,
+  opts?: { delay?: number },
+): Promise<void> {
   await page.keyboard.press(key, opts);
 }
 

@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
   TEST_KEY,
-  currentOps,
   editNode,
   findNodeByText,
   focusCaret,
@@ -44,16 +43,17 @@ test.describe("editor shell and preview", () => {
   test("preview renders styles and assets through the injected base", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const applied = await page.evaluate(() => {
-      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
-        .contentDocument!;
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       const h1 = doc.querySelector("h1")!;
-      return getComputedStyle(h1).lineHeight !== "normal" || getComputedStyle(doc.body).backgroundColor !== "rgba(0, 0, 0, 0)";
+      return (
+        getComputedStyle(h1).lineHeight !== "normal" ||
+        getComputedStyle(doc.body).backgroundColor !== "rgba(0, 0, 0, 0)"
+      );
     });
     expect(applied).toBe(true);
 
     const imgLoaded = await page.evaluate(() => {
-      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
-        .contentDocument!;
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       const img = doc.querySelector('img[src="/assets/hero.webp"]') as HTMLImageElement;
       return img.complete && img.naturalWidth > 0;
     });
@@ -64,8 +64,7 @@ test.describe("editor shell and preview", () => {
     await loginAndOpenEditor(page, "/index.html");
     await page.waitForTimeout(500);
     const mutated = await page.evaluate(() => {
-      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
-        .contentDocument!;
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       return {
         marker: !!doc.getElementById("script-ran"),
         title: doc.title,
@@ -93,25 +92,28 @@ test.describe("editor shell and preview", () => {
     expect(navigated).toBe(false);
     const stillThere = await page.evaluate(
       () =>
-        !!(document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!.querySelector(
-          "form",
-        ),
+        !!(
+          document.querySelector("#xyle-preview") as HTMLIFrameElement
+        ).contentDocument!.querySelector("form"),
     );
     expect(stillThere).toBe(true);
   });
 
-  test("internal navigation stays inside the editor via the follow affordance", async ({ page }) => {
+  test("internal navigation stays inside the editor via the follow affordance", async ({
+    page,
+  }) => {
     await loginAndOpenEditor(page, "/index.html");
     await page.evaluate(() => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
-      const link = frame.contentDocument!.querySelector('a[href="/about.html"]') as HTMLAnchorElement;
+      const link = frame.contentDocument!.querySelector(
+        'a[href="/about.html"]',
+      ) as HTMLAnchorElement;
       link.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await expect(page.locator("dialog")).toBeVisible();
     await page.click("dialog button[value='follow']");
     await page.waitForFunction(() => {
-      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
-        .contentDocument;
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
       return !!doc?.body && doc.body.textContent?.includes("crew behind Riverbend");
     });
     expect(page.url()).toContain("/edit");
@@ -250,9 +252,7 @@ test.describe("changes drawer and undo", () => {
     await focusCaret(page, id!, "end");
     await page.keyboard.type("!!!");
     await page.keyboard.press("Escape");
-    await expect
-      .poll(async () => opsCount(page), { timeout: 3000 })
-      .toBe(0);
+    await expect.poll(async () => opsCount(page), { timeout: 3000 }).toBe(0);
     expect(await textOf(page, id!)).toBe(original);
   });
 
@@ -316,9 +316,9 @@ test.beforeEach(() => {
 
 async function clickOutsideCommit(page: import("@playwright/test").Page): Promise<void> {
   await page.evaluate(() => {
-    document.getElementById("xyle-bar-left")!.dispatchEvent(
-      new MouseEvent("mousedown", { bubbles: true }),
-    );
+    document
+      .getElementById("xyle-bar-left")!
+      .dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   });
 }
 

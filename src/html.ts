@@ -289,11 +289,7 @@ export function analyzePage(source: string): PageAnalysis {
     const suppressesChildren = becameCandidate;
 
     for (const child of node.childNodes) {
-      visit(
-        child,
-        insidePicture || tag === "picture",
-        insideTextContainer || suppressesChildren,
-      );
+      visit(child, insidePicture || tag === "picture", insideTextContainer || suppressesChildren);
     }
   };
 

@@ -10,14 +10,17 @@ import {
 
 async function clickOutsideCommit(page: import("@playwright/test").Page): Promise<void> {
   await page.evaluate(() => {
-    document.getElementById("xyle-bar-left")!.dispatchEvent(
-      new MouseEvent("mousedown", { bubbles: true }),
-    );
+    document
+      .getElementById("xyle-bar-left")!
+      .dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   });
 }
 
 test.describe("conflicts and recovery", () => {
-  test("first publish wins; second tab gets 409 and keeps local edits", async ({ page, browser }) => {
+  test("first publish wins; second tab gets 409 and keeps local edits", async ({
+    page,
+    browser,
+  }) => {
     await loginAndOpenEditor(page, "/about.html");
 
     // Tab B starts from the same snapshot
@@ -103,10 +106,7 @@ test.describe("conflicts and recovery", () => {
   });
 });
 
-async function textOf(
-  page: import("@playwright/test").Page,
-  nodeId: string,
-): Promise<string> {
+async function textOf(page: import("@playwright/test").Page, nodeId: string): Promise<string> {
   return page.evaluate((id) => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
     return (doc.querySelector(`[data-xyle-node="${id}"]`) as HTMLElement)?.textContent ?? "";

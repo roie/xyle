@@ -49,10 +49,8 @@ export interface FilesystemPublisherOptions {
 
 export class FilesystemPublisher implements Publisher {
   private readonly rootAbs: string;
-  private readonly options: FilesystemPublisherOptions;
 
   constructor(options: FilesystemPublisherOptions) {
-    this.options = options;
     this.rootAbs = resolve(options.root);
   }
 

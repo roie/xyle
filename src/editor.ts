@@ -167,7 +167,8 @@ function wirePreview(): void {
     event.preventDefault();
     if (anchor.hasAttribute("data-xyle-node")) return; // link editing handles it
     handlePreviewNavigation(anchor as HTMLAnchorElement);
-  });  doc.body.addEventListener("submit", (e) => e.preventDefault(), true);
+  });
+  doc.body.addEventListener("submit", (e) => e.preventDefault(), true);
 
   // global shortcuts must also fire while focus is inside the preview
   doc.body.addEventListener("keydown", (event) => {

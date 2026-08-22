@@ -1,17 +1,13 @@
 import { expect, test } from "@playwright/test";
-import {
-  clickNode,
-  currentOps,
-  findNodeByText,
-  loginAndOpenEditor,
-  opsCount,
-} from "./helpers.ts";
+import { clickNode, currentOps, findNodeByText, loginAndOpenEditor, opsCount } from "./helpers.ts";
 
 const PNG_BYTES = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
   "base64",
 );
-const SVG_BYTES = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>`);
+const SVG_BYTES = Buffer.from(
+  `<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>`,
+);
 
 test.describe("media editing", () => {
   test("simple images expose Replace/Media controls inside the image box", async ({ page }) => {
@@ -37,9 +33,7 @@ test.describe("media editing", () => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       return doc.querySelectorAll(".xyle-img-tools button").length;
     });
-    await expect
-      .poll(async () => tools, { timeout: 3000 })
-      .toBe(2);
+    await expect.poll(async () => tools, { timeout: 3000 }).toBe(2);
 
     // picture/srcset image is not a candidate at all
     const pictureCandidates = await page.evaluate(() => {
@@ -145,8 +139,8 @@ test.describe("media editing", () => {
       const res = await fetch("/__xyle/api/media");
       (window as unknown as { __mediaItems?: unknown }).__mediaItems = await res.json();
     });
-    const items = await page.evaluate(() =>
-      (window as unknown as { __mediaItems?: Array<{ path: string }> }).__mediaItems,
+    const items = await page.evaluate(
+      () => (window as unknown as { __mediaItems?: Array<{ path: string }> }).__mediaItems ?? [],
     );
     const paths = items.map((i) => i.path);
     expect(paths).toContain("/misc/team.jpg");
@@ -154,8 +148,9 @@ test.describe("media editing", () => {
     expect(paths).toContain("/assets/hero.webp"); // non-uniform folders included
 
     const usedFlag = await page.evaluate(() => {
-      const items2 = (window as unknown as { __mediaItems?: Array<{ path: string; usedBySimpleImg: boolean }> })
-        .__mediaItems!;
+      const items2 = (
+        window as unknown as { __mediaItems?: Array<{ path: string; usedBySimpleImg: boolean }> }
+      ).__mediaItems!;
       return items2.find((i) => i.path === "/assets/hero.webp")!.usedBySimpleImg;
     });
     expect(usedFlag).toBe(true);
@@ -185,9 +180,7 @@ test.describe("media editing", () => {
     expect(await res1.text()).toMatch(/SVG|unsupported/i);
 
     const bigBytes = Buffer.alloc(21 * 1024 * 1024, 8);
-    const pngHeader = Buffer.from([
-      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    ]);
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     pngHeader.copy(bigBytes, 0);
     const bigForm = new FormData();
     bigForm.set(
