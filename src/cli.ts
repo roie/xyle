@@ -274,3 +274,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return 2;
   }
 }
+
+const invokedAsCli = /cli\.(ts|mts|js|mjs)$/.test(process.argv[1] ?? "");
+if (invokedAsCli) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((error: unknown) => {
+      console.error(error);
+      process.exit(1);
+    });
+}

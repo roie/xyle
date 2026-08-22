@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { evaluateDeployGuard } from "../src/cli.ts";
 import type { XyleDigest } from "../src/types.ts";
 
-const A = "sha256:" + "a".repeat(64) as XyleDigest;
-const B = "sha256:" + "b".repeat(64) as XyleDigest;
+const A = ("sha256:" + "a".repeat(64)) as XyleDigest;
+const B = ("sha256:" + "b".repeat(64)) as XyleDigest;
 
 describe("developer redeploy guard", () => {
   it("allows the first managed deployment", () => {
