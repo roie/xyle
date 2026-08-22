@@ -5,7 +5,7 @@ import { generateEditorKey } from "./auth.ts";
 import { FilesystemPublisher } from "./publishers/filesystem.ts";
 import { createXyleHandler, type RuntimeContext } from "./server.ts";
 import { digestBytes } from "./manifest.ts";
-import type { AuthConfig, LocalXyleState } from "./types.ts";
+import type { AuthConfig, LocalXyleState, XyleDigest } from "./types.ts";
 
 const SECRETS_DIR = ".xyle";
 const SECRETS_FILE = "secrets.local.json";
@@ -95,6 +95,35 @@ export async function updateState(
   await writeFile(join(directory, STATE_FILE), JSON.stringify({ ...state, ...patch }, null, 2));
 }
 
+export interface DeployGuardDecision {
+  allowed: boolean;
+  reason?: string;
+}
+
+/**
+ * Refuse managed redeploys that would silently overwrite remote edits made
+ * after the developer's last managed deployment.
+ */
+export function evaluateDeployGuard(
+  lastManagedSnapshotDigest: XyleDigest | null,
+  currentRemoteDigest: XyleDigest,
+  force = false,
+): DeployGuardDecision {
+  if (force) return { allowed: true };
+  if (lastManagedSnapshotDigest === null) return { allowed: true };
+  if (lastManagedSnapshotDigest === currentRemoteDigest) return { allowed: true };
+  return {
+    allowed: false,
+    reason:
+      "The live site contains changes made after your last managed deployment.\n" +
+      "Xyle is refusing to overwrite them.\n\n" +
+      `Recorded snapshot: ${lastManagedSnapshotDigest}\n` +
+      `Live snapshot:     ${currentRemoteDigest}\n\n` +
+      "Reconcile the site first, or redeploy deliberately with:\n" +
+      "  xyle deploy --force",
+  };
+}
+
 export interface DevServerOptions {
   directory: string;
   host?: string;
@@ -165,4 +194,83 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
   handler = createXyleHandler(context);
 
   return { server, url: publicBaseUrl };
+}
+
+/* ---------- CLI entrypoint ---------- */
+
+interface CliArgs {
+  command: string;
+  directory: string;
+  force: boolean;
+  port?: number;
+}
+
+function parseArgs(argv: string[]): CliArgs {
+  const [command = "dev", positional] = argv.filter((a) => !a.startsWith("--"));
+  const force = argv.includes("--force");
+  const portFlag = argv.find((a) => a.startsWith("--port="));
+  const parsedPort = portFlag ? Number(portFlag.split("=")[1]) : undefined;
+  return {
+    command: command || "dev",
+    directory: positional ?? ".",
+    force,
+    ...(parsedPort !== undefined ? { port: parsedPort } : {}),
+  };
+}
+
+async function runDeploy(directory: string, force: boolean): Promise<number> {
+  const root = resolve(directory);
+  const state = await readOrCreateState(root);
+  const publisher = new FilesystemPublisher({ root });
+  const current = await publisher.readSnapshot();
+
+  const decision = evaluateDeployGuard(
+    state.lastManagedSnapshotDigest,
+    current.snapshotDigest,
+    force,
+  );
+  if (!decision.allowed) {
+    console.error(decision.reason);
+    return 1;
+  }
+
+  await updateState(root, { lastManagedSnapshotDigest: current.snapshotDigest });
+  console.log(`Managed deployment recorded: ${current.snapshotDigest}`);
+  console.log("The filesystem publisher writes in place; nothing further to upload.");
+  return 0;
+}
+
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+  const args = parseArgs(argv);
+
+  switch (args.command) {
+    case "init": {
+      const root = resolve(args.directory);
+      const { freshKey } = await loadOrCreateSecrets(root);
+      await readOrCreateState(root);
+      console.log(`Xyle initialized for ${root}`);
+      if (freshKey) {
+        console.log("\nEditor key (stored in .xyle/secrets.local.json — shown once):\n");
+        console.log(`  ${freshKey}\n`);
+      }
+      return 0;
+    }
+    case "dev": {
+      const { url } = await startXyleDevServer({
+        directory: args.directory,
+        ...(args.port !== undefined ? { port: args.port } : {}),
+      });
+      console.log(`Public site: ${url}`);
+      console.log(`Editor:      ${url}/edit`);
+      console.log("Press Ctrl+C to stop.");
+      await new Promise(() => {});
+      return 0;
+    }
+    case "deploy":
+      return runDeploy(args.directory, args.force);
+    default:
+      console.error(`Unknown command: ${args.command}`);
+      console.error("Usage: xyle <init|dev|deploy> [directory] [--force] [--port=N]");
+      return 2;
+  }
 }
