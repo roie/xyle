@@ -125,9 +125,9 @@ function renderPreview(): void {
   iframe.setAttribute("sandbox", "allow-same-origin");
   iframe.id = "xyle-preview";
   iframe.style.cssText = "display:block;width:100%;height:100%;border:0;background:#fff";
-  host.append(iframe);
-  iframe.srcdoc = state.current!.html;
   iframe.addEventListener("load", () => wirePreview(), { once: true });
+  iframe.srcdoc = state.current!.html;
+  host.append(iframe);
 }
 
 function previewDoc(): Document | null {

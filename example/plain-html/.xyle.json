@@ -1,7 +1,7 @@
 {
   "directory": ".",
-  "publisher": "filesystem",
-  "lastManagedSnapshotDigest": null,
+  "publisher": "cloudflare-pages",
+  "lastManagedSnapshotDigest": "sha256:c7f000bac16122a92b62f32bd0b8aa66ae106d1e8a9d6d59d4de4df91acc8443",
   "editorPath": "/edit",
   "ignorePaths": [],
   "ignoreSelectors": []

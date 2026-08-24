@@ -29,7 +29,6 @@ export class CloudflareConfigurationError extends Error {
 
 interface PagesProject {
   source?: unknown;
-  uses_functions?: boolean;
 }
 
 export class CloudflarePagesPublisher implements Publisher {
@@ -66,9 +65,9 @@ export class CloudflarePagesPublisher implements Publisher {
     if (!response.ok)
       throw new CloudflareConfigurationError(`cannot inspect Pages project (${response.status})`);
     const body = (await response.json()) as { result?: PagesProject };
-    if (body.result?.source || body.result?.uses_functions) {
+    if (body.result?.source) {
       throw new CloudflareConfigurationError(
-        "Xyle supports only Direct Upload Pages projects without Functions or worker behavior.",
+        "Xyle supports only Direct Upload Pages projects; Git-integrated projects are refused.",
       );
     }
   }
@@ -101,6 +100,7 @@ export class CloudflarePagesPublisher implements Publisher {
         recursive: true,
         filter: (source) => !relative(this.root, source).split("/").includes(".xyle"),
       });
+      await this.stageControlRuntime(staging);
       for (const file of [...next.changedFiles, ...next.addedFiles]) {
         const target = join(staging, file.path.replace(/^\/+/, ""));
         await mkdir(dirname(target), { recursive: true });
@@ -128,6 +128,7 @@ export class CloudflarePagesPublisher implements Publisher {
         recursive: true,
         filter: (source) => !relative(this.root, source).split("/").includes(".xyle"),
       });
+      await this.stageControlRuntime(staging);
       const manifestPath = join(staging, MANIFEST_PATH.replace(/^\//, ""));
       await mkdir(dirname(manifestPath), { recursive: true });
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
@@ -138,14 +139,28 @@ export class CloudflarePagesPublisher implements Publisher {
     }
   }
 
+  private async stageControlRuntime(staging: string): Promise<void> {
+    await cp(join(process.cwd(), "functions"), join(staging, "functions"), { recursive: true });
+    await mkdir(join(staging, "__xyle"), { recursive: true });
+    await cp(join(process.cwd(), "dist", "editor.js"), join(staging, "__xyle", "editor.js"));
+    await cp(
+      join(process.cwd(), "functions", "blake3_js_bg.wasm"),
+      join(staging, "blake3_js_bg.wasm"),
+    );
+    await writeFile(
+      join(staging, "_routes.json"),
+      JSON.stringify({ version: 1, include: ["/edit", "/__xyle/*"], exclude: [] }),
+    );
+  }
+
   private runWrangler(directory: string): Promise<string> {
     const { accountId, apiToken } = this.credentials();
     const { promise, resolve: resolveDeployment, reject } = Promise.withResolvers<string>();
     const child = spawn(
       this.wrangler,
-      ["pages", "deploy", ".", `--project-name=${this.options.projectName}`],
+      ["pages", "deploy", directory, `--project-name=${this.options.projectName}`],
       {
-        cwd: directory,
+        cwd: process.cwd(),
         env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId, CLOUDFLARE_API_TOKEN: apiToken },
         stdio: ["ignore", "pipe", "pipe"],
       },
