@@ -190,6 +190,11 @@ export function analyzePage(source: string): PageAnalysis {
 
     const tag = node.tagName;
     if (tag === "base") baseTagNeeded = false;
+    if (tag === "script") {
+      const loc = node.sourceCodeLocation;
+      if (loc) removals.push({ start: loc.startOffset, end: loc.endOffset });
+      return;
+    }
     if (EXCLUDED_TAGS.has(tag)) return;
     if (node.attrs.some((a) => a.name === "hidden")) return;
 

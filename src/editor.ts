@@ -129,7 +129,8 @@ function renderPreview(): void {
   host.append(iframe);
   iframe.srcdoc = state.current!.html;
   window.setTimeout(() => {
-    if (iframe.contentDocument?.body && !iframe.contentDocument.getElementById("xyle-overlay-root")) wirePreview();
+    if (iframe.contentDocument?.body && !iframe.contentDocument.getElementById("xyle-overlay-root"))
+      wirePreview();
   }, 0);
 }
 
