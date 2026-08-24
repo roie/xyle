@@ -128,10 +128,13 @@ function renderPreview(): void {
   iframe.addEventListener("load", () => wirePreview(), { once: true });
   host.append(iframe);
   iframe.srcdoc = state.current!.html;
-  window.setTimeout(() => {
-    if (iframe.contentDocument?.body && !iframe.contentDocument.getElementById("xyle-overlay-root"))
-      wirePreview();
-  }, 0);
+  let attempts = 0;
+  const retryWire = (): void => {
+    if (iframe.contentDocument?.querySelector("[data-xyle-node]")) wirePreview();
+    if (!iframe.contentDocument?.getElementById("xyle-overlay-root") && attempts++ < 40)
+      window.setTimeout(retryWire, 50);
+  };
+  window.setTimeout(retryWire, 0);
 }
 
 function previewDoc(): Document | null {
@@ -140,7 +143,13 @@ function previewDoc(): Document | null {
 
 function wirePreview(): void {
   const doc = previewDoc();
-  if (!doc || !state.current) return;
+  if (
+    !doc ||
+    !state.current ||
+    !doc.querySelector("[data-xyle-node]") ||
+    doc.getElementById("xyle-overlay-root")
+  )
+    return;
 
   metaById.clear();
   for (const meta of state.current.nodes) metaById.set(meta.id, meta);
@@ -168,6 +177,22 @@ function wirePreview(): void {
     const id = el.getAttribute("data-xyle-node")!;
     wireCandidate(el, metaById.get(id));
   }
+  doc.body.addEventListener(
+    "click",
+    (event) => {
+      const target = event.target instanceof Element ? event.target : event.target.parentElement;
+      const candidate = target?.closest<HTMLElement>("[data-xyle-node]");
+      const meta = candidate
+        ? metaById.get(candidate.getAttribute("data-xyle-node") ?? "")
+        : undefined;
+      if (candidate && meta?.textEditable && !session) {
+        event.preventDefault();
+        event.stopPropagation();
+        startEdit(candidate, meta);
+      }
+    },
+    true,
+  );
 
   // suppress all navigation inside the preview; route through the shell
   doc.body.addEventListener("click", (event) => {
