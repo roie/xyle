@@ -3,8 +3,9 @@ import { createServer, type Server } from "node:http";
 import { join, resolve } from "node:path";
 import { generateEditorKey } from "./auth.ts";
 import { FilesystemPublisher } from "./publishers/filesystem.ts";
+import { CloudflarePagesPublisher } from "./publishers/cloudflare.ts";
 import { createXyleHandler, type RuntimeContext } from "./server.ts";
-import { digestBytes } from "./manifest.ts";
+import { buildManifestFromDirectory, digestBytes } from "./manifest.ts";
 import type { AuthConfig, LocalXyleState, XyleDigest } from "./types.ts";
 
 const SECRETS_DIR = ".xyle";
@@ -141,7 +142,14 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
 
   const { secrets } = await loadOrCreateSecrets(root);
   const auth = await buildAuthConfig(secrets);
-  const publisher = new FilesystemPublisher({ root });
+  const projectName = process.env.XYLE_CLOUDFLARE_PROJECT;
+  const publisher = projectName
+    ? new CloudflarePagesPublisher({
+        root,
+        projectName,
+        wranglerCommand: join(process.cwd(), "node_modules/.bin/wrangler"),
+      })
+    : new FilesystemPublisher({ root });
 
   let handler: (request: Request) => Promise<Response>;
 
@@ -221,9 +229,44 @@ function parseArgs(argv: string[]): CliArgs {
 async function runDeploy(directory: string, force: boolean): Promise<number> {
   const root = resolve(directory);
   const state = await readOrCreateState(root);
+  const projectName = process.env.XYLE_CLOUDFLARE_PROJECT;
+  if (projectName) {
+    const publisher = new CloudflarePagesPublisher({
+      root,
+      projectName,
+      wranglerCommand: join(process.cwd(), "node_modules/.bin/wrangler"),
+    });
+    const { manifest } = await buildManifestFromDirectory(root);
+    try {
+      const current = await publisher.readSnapshot();
+      const decision = evaluateDeployGuard(
+        state.lastManagedSnapshotDigest,
+        current.snapshotDigest,
+        force,
+      );
+      if (!decision.allowed) {
+        console.error(decision.reason);
+        return 1;
+      }
+    } catch (error) {
+      if (!force) {
+        console.error(
+          `${(error as Error).message}\nUse xyle deploy --force for explicit initial adoption.`,
+        );
+        return 1;
+      }
+    }
+    const result = await publisher.bootstrap(manifest);
+    await updateState(root, {
+      publisher: "cloudflare-pages",
+      lastManagedSnapshotDigest: result.snapshot.snapshotDigest,
+    });
+    console.log(`Cloudflare Pages deployment created: ${result.id}`);
+    return 0;
+  }
+
   const publisher = new FilesystemPublisher({ root });
   const current = await publisher.readSnapshot();
-
   const decision = evaluateDeployGuard(
     state.lastManagedSnapshotDigest,
     current.snapshotDigest,
@@ -233,7 +276,6 @@ async function runDeploy(directory: string, force: boolean): Promise<number> {
     console.error(decision.reason);
     return 1;
   }
-
   await updateState(root, { lastManagedSnapshotDigest: current.snapshotDigest });
   console.log(`Managed deployment recorded: ${current.snapshotDigest}`);
   console.log("The filesystem publisher writes in place; nothing further to upload.");

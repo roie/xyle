@@ -1,27 +1,25 @@
 import { expect, test } from "@playwright/test";
+import { CloudflarePagesPublisher } from "../src/publishers/cloudflare.ts";
 
 /**
- * Credential-gated live Cloudflare E2E (Task 13/14 gate).
- * Skips entirely unless CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are set.
+ * Credential-gated read-side smoke test. Full deploy/redeploy evidence is
+ * recorded in docs/cloudflare-spike.md and uses a disposable project.
  */
-const gated = !!process.env.CLOUDFLARE_API_TOKEN && !!process.env.CLOUDFLARE_ACCOUNT_ID;
+const projectName = process.env.XYLE_CLOUDFLARE_PROJECT ?? process.env.CLOUDFLARE_PROJECT;
+const gated =
+  !!process.env.CLOUDFLARE_API_TOKEN && !!process.env.CLOUDFLARE_ACCOUNT_ID && !!projectName;
 
 test.describe("cloudflare live publishing", () => {
-  test.skip(!gated, "set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID to run");
+  test.skip(!gated, "set Cloudflare credentials and XYLE_CLOUDFLARE_PROJECT to run");
 
-  test("deploys, fetches bytes, republishes, and refuses foreign projects", async ({ page }) => {
-    const { CloudflarePagesPublisher } = await import("../src/publishers/cloudflare.ts");
-    const { buildManifestFromDirectory } = await import("../src/manifest.ts");
-    void page;
-
+  test("reads the current Xyle-managed Direct Upload snapshot", async () => {
     const publisher = new CloudflarePagesPublisher({
-      projectName: process.env.CLOUDFLARE_PROJECT ?? "xyle-spike",
+      root: process.cwd(),
+      projectName: projectName!,
     });
-    void publisher;
-    void buildManifestFromDirectory;
-
-    // Full matrix per docs/cloudflare-spike.md; implemented against live API
-    // once credentials exist. Assertion placeholders keep the contract visible.
-    expect(gated).toBe(true);
+    const snapshot = await publisher.readSnapshot();
+    expect(snapshot.manifest.version).toBe(1);
+    expect(snapshot.snapshotDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(Object.keys(snapshot.manifest.files)).not.toHaveLength(0);
   });
 });
