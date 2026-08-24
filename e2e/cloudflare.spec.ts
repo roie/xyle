@@ -23,3 +23,16 @@ test.describe("cloudflare live publishing", () => {
     expect(Object.keys(snapshot.manifest.files)).not.toHaveLength(0);
   });
 });
+const hostedUrl = process.env.XYLE_HOSTED_URL;
+
+test("hosted publish rejects missing mutation header", async ({ request }) => {
+  test.skip(!hostedUrl || !process.env.XYLE_TEST_KEY, "set XYLE_HOSTED_URL + XYLE_TEST_KEY to run");
+  const login = await request.post(`${hostedUrl}/__xyle/api/login`, {
+    data: { key: process.env.XYLE_TEST_KEY },
+  });
+  expect(login.ok()).toBe(true);
+  const response = await request.post(`${hostedUrl}/__xyle/api/publish`, {
+    multipart: { metadata: JSON.stringify({ pages: [] }) },
+  });
+  expect(response.status()).toBe(403);
+});
