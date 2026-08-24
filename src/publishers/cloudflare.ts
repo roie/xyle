@@ -141,8 +141,7 @@ export class CloudflarePagesPublisher implements Publisher {
 
   private async stageControlRuntime(staging: string): Promise<void> {
     await cp(join(process.cwd(), "functions"), join(staging, "functions"), { recursive: true });
-    await mkdir(join(staging, "__xyle"), { recursive: true });
-    await cp(join(process.cwd(), "dist", "editor.js"), join(staging, "__xyle", "editor.js"));
+    await cp(join(process.cwd(), "dist", "editor.js"), join(staging, "editor.js"));
     await cp(
       join(process.cwd(), "functions", "blake3_js_bg.wasm"),
       join(staging, "blake3_js_bg.wasm"),
