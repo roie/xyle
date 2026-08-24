@@ -126,8 +126,11 @@ function renderPreview(): void {
   iframe.id = "xyle-preview";
   iframe.style.cssText = "display:block;width:100%;height:100%;border:0;background:#fff";
   iframe.addEventListener("load", () => wirePreview(), { once: true });
-  iframe.srcdoc = state.current!.html;
   host.append(iframe);
+  iframe.srcdoc = state.current!.html;
+  window.setTimeout(() => {
+    if (iframe.contentDocument?.body && !iframe.contentDocument.getElementById("xyle-overlay-root")) wirePreview();
+  }, 0);
 }
 
 function previewDoc(): Document | null {
