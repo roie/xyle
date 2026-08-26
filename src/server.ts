@@ -1,10 +1,11 @@
-import { readFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { readFile, realpath } from "node:fs/promises";
+import { extname, resolve } from "node:path";
 import type { AuthConfig } from "./auth.ts";
 import { createSessionCookie, logoutCookie, verifyEditorKey, verifySessionCookie } from "./auth.ts";
 import { computeSnapshotDigest, digestBytes, normalizeSitePath } from "./manifest.ts";
+import { isControlSitePath, isPathInsideRoot } from "./control-paths.ts";
 import { preparePreview, patchHtml } from "./html.ts";
-import { discoverMedia, validateUpload, uploadPathFor } from "./media.ts";
+import { discoverMedia, MAX_UPLOAD_BYTES, validateUpload, uploadPathFor } from "./media.ts";
 import type { Publisher, SiteFile, XyleManifest, XyleDigest } from "./types.ts";
 
 export interface RuntimeContext {
@@ -12,6 +13,8 @@ export interface RuntimeContext {
   publicBaseUrl: string;
   publisher: Publisher;
   auth: AuthConfig;
+  ignorePaths?: string[];
+  ignoreSelectors?: string[];
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -87,53 +90,132 @@ function assertMutationAllowed(request: Request, context: RuntimeContext): void 
   }
 }
 
+function isIgnoredPath(sitePath: string, ignorePaths: string[] = []): boolean {
+  return ignorePaths.some((configured) => {
+    try {
+      const normalized = normalizeSitePath(configured);
+      return normalized === "/" || sitePath === normalized || sitePath.startsWith(`${normalized}/`);
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function readSiteFile(root: string, sitePath: string): Promise<Uint8Array> {
+  if (isControlSitePath(sitePath)) throw new HttpError(404, { error: "reserved path" });
+  const rootReal = await realpath(root);
+  const target = resolve(root, `.${sitePath}`);
+  const targetReal = await realpath(target);
+  if (!isPathInsideRoot(rootReal, targetReal))
+    throw new HttpError(403, { error: "path escapes static root" });
+  return new Uint8Array(await readFile(targetReal));
+}
+
 async function serveStatic(context: RuntimeContext, pathname: string): Promise<Response> {
+  const directoryRequest = pathname.endsWith("/");
   let sitePath: string;
   try {
     sitePath = normalizeSitePath(pathname);
   } catch {
     return new Response("forbidden", { status: 403 });
   }
-  if (sitePath.endsWith("/")) sitePath += "index.html";
+  if (directoryRequest) sitePath = `${sitePath === "/" ? "" : sitePath}/index.html`;
+  if (isControlSitePath(sitePath)) return new Response("not found", { status: 404 });
   try {
-    const bytes = await readFile(join(context.root, sitePath));
+    const bytes = await readSiteFile(context.root, sitePath);
     const type = MIME_TYPES[extname(sitePath).toLowerCase()] ?? "application/octet-stream";
+    // SAFETY: Node's Uint8Array is accepted by the Fetch BodyInit implementation.
     return new Response(bytes as unknown as BodyInit, {
       headers: { "content-type": type, "cache-control": "no-cache" },
     });
-  } catch {
-    return new Response("not found", { status: 404 });
+  } catch (error) {
+    return new Response("not found", { status: error instanceof HttpError ? error.status : 404 });
   }
 }
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Xyle — Sign in</title><style>
-body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f6f5f2;color:#1d2733}
-form{display:grid;gap:.75rem;padding:2rem;background:#fff;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.08);min-width:20rem}
-input{padding:.55em .7em;font:inherit;border:1px solid #ccc;border-radius:6px}
-button{padding:.55em;font:inherit;background:#0f6ea8;color:#fff;border:0;border-radius:6px;cursor:pointer}
-label{font-weight:600;font-size:.9rem}
-p{color:#b3261e;font-size:.85rem;min-height:1em;margin:0}
-</style></head><body>
-<form id="login">
-<label for="key">Editor key</label>
-<input id="key" name="key" type="password" autofocus autocomplete="current-password">
-<p id="err"></p>
-<button type="submit">Sign in</button>
+:root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#101110;color:#f2f3ef}
+*{box-sizing:border-box}
+body{display:grid;place-items:center;min-height:100svh;margin:0;padding:1rem;background:#101110}
+main{width:min(100%,26rem)}
+.xyle-mark{display:inline-flex;align-items:center;gap:.65rem;margin-bottom:1.5rem;color:#f2f3ef;font-size:.83rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.xyle-mark svg{width:1.75rem;height:1.75rem;padding:.35rem;border:1px solid #667a6166;border-radius:6px;background:#667a6126;color:#a1b69a;stroke:currentColor;stroke-width:1.8;fill:none}
+form{display:grid;gap:1.15rem;padding:clamp(1.25rem,7vw,2rem);border:1px solid #3a3c38;border-radius:12px;background:#1c1d1b;box-shadow:0 18px 48px #00000066}
+h1{margin:0;color:#f2f3ef;font-size:clamp(1.65rem,8vw,2.15rem);line-height:1.05;letter-spacing:-.045em}
+.description{margin:-.45rem 0 .2rem;color:#a5a8a0;font-size:.95rem;line-height:1.55}
+.field{display:grid;gap:.5rem}
+label{color:#d9ded7;font-size:.82rem;font-weight:600}
+input{width:100%;min-height:2.9rem;padding:.65rem .8rem;border:1px solid #3a3c38;border-radius:6px;outline:0;background:#141513;color:#f2f3ef;font:inherit}
+input:hover{border-color:#5b6058}
+input:focus-visible{border-color:#a1b69a;box-shadow:0 0 0 3px #667a6140}
+input[aria-invalid="true"]{border-color:#d26d6d;box-shadow:0 0 0 3px #d26d6d26}
+.error{min-height:1.2em;margin:0;color:#e38a8a;font-size:.8rem;line-height:1.45}
+button{min-height:2.9rem;padding:.7rem 1rem;border:1px solid #667a61;border-radius:6px;background:#667a61;color:#fff;font:600 .9rem/1 inherit;cursor:pointer;transition:background-color .15s ease,transform .15s ease}
+button:hover{background:#7f9378}
+button:active{transform:translateY(1px)}
+button:focus-visible{outline:3px solid #667a6166;outline-offset:3px}
+button:disabled{cursor:wait;opacity:.7}
+.help{margin:.25rem 0 0;color:#777b73;font-size:.75rem;line-height:1.5;text-align:center}
+@media(max-width:22rem){body{padding:.75rem}form{border-radius:10px}.xyle-mark{margin-left:.25rem;margin-bottom:1rem}}
+@media(prefers-reduced-motion:reduce){button{transition:none}}
+</style></head><body><main>
+<div class="xyle-mark" aria-label="Xyle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5l12 14M18 5L6 19"/></svg><span>Xyle</span></div>
+<form id="login" novalidate>
+<h1>Open your site editor</h1>
+<p id="login-description" class="description">Enter the editor key for this site to make and publish content changes.</p>
+<div class="field"><label for="key">Editor key</label><input id="key" name="key" type="password" autocomplete="current-password" required aria-describedby="login-description login-error" aria-invalid="false"></div>
+<p id="login-error" class="error" aria-live="polite"></p>
+<button type="submit"><span id="submit-label">Sign in to Xyle</span></button>
 </form>
-<script type="module">
+<p class="help">The editor key is stored with your Xyle site setup.</p>
+</main><script type="module">
 const form = document.getElementById("login");
+const input = document.getElementById("key");
+const error = document.getElementById("login-error");
+const button = form.querySelector("button");
+const submitLabel = document.getElementById("submit-label");
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const key = document.getElementById("key").value;
-  const res = await fetch("/__xyle/api/login", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ key }),
-  });
-  if (res.ok) location.reload();
-  else document.getElementById("err").textContent = "That key was not accepted.";
+  error.textContent = "";
+  input.setAttribute("aria-invalid", "false");
+  if (!input.value) {
+    input.setAttribute("aria-invalid", "true");
+    error.textContent = "Enter your editor key.";
+    input.focus();
+    return;
+  }
+  button.disabled = true;
+  submitLabel.textContent = "Signing in…";
+  try {
+    const res = await fetch("/__xyle/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: input.value }),
+    });
+    if (res.ok) {
+      location.reload();
+      return;
+    }
+    input.setAttribute("aria-invalid", "true");
+    error.textContent = res.status === 401 ? "That editor key was not accepted." : "Xyle could not sign you in. Try again.";
+    input.focus();
+    input.select();
+  } catch {
+    input.setAttribute("aria-invalid", "true");
+    error.textContent = "Xyle could not be reached. Check your connection and try again.";
+    input.focus();
+  } finally {
+    button.disabled = false;
+    submitLabel.textContent = "Sign in to Xyle";
+  }
+});
+input.addEventListener("input", () => {
+  if (input.getAttribute("aria-invalid") === "true") {
+    input.setAttribute("aria-invalid", "false");
+    error.textContent = "";
+  }
 });
 </script></body></html>`;
 
@@ -153,12 +235,62 @@ interface PublishMetadata {
     operations: Parameters<typeof patchHtml>[1]["operations"];
   }[];
 }
+const MAX_PUBLISH_REQUEST_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024;
+
+function isDigest(value: unknown): value is XyleDigest {
+  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
+}
+function validatePublishMetadata(value: unknown): PublishMetadata | null {
+  if (!value || typeof value !== "object") return null;
+  const metadata = value as Partial<PublishMetadata>;
+  if (
+    !isDigest(metadata.baseSnapshotDigest) ||
+    !Array.isArray(metadata.pages) ||
+    metadata.pages.length > 100
+  )
+    return null;
+  const pagePaths = new Set<string>();
+  for (const page of metadata.pages) {
+    if (
+      !page ||
+      typeof page.pagePath !== "string" ||
+      !isDigest(page.baseDigest) ||
+      !Array.isArray(page.operations) ||
+      page.operations.length > 500
+    )
+      return null;
+    if (
+      page.operations.some(
+        (op) =>
+          !op ||
+          typeof op !== "object" ||
+          !["text", "lineBreak", "href", "src", "alt"].includes(
+            (op as { type?: string }).type ?? "",
+          ),
+      )
+    )
+      return null;
+    let normalizedPath: string;
+    try {
+      normalizedPath = normalizeSitePath(page.pagePath);
+    } catch {
+      return null;
+    }
+    if (pagePaths.has(normalizedPath)) return null;
+    pagePaths.add(normalizedPath);
+  }
+  return metadata as PublishMetadata;
+}
 
 async function handlePublish(request: Request, context: RuntimeContext): Promise<Response> {
   await requireSession(request, context);
   assertMutationAllowed(request, context);
 
-  const form = await request.formData();
+  const contentLength = Number(request.headers.get("content-length") ?? "0");
+  if (!Number.isSafeInteger(contentLength) || contentLength > MAX_PUBLISH_REQUEST_BYTES)
+    return json({ error: "request too large" }, 413);
+  const form = await request.formData().catch(() => null);
+  if (!form) return json({ error: "invalid multipart body" }, 400);
   const metadataRaw = form.get("metadata");
   if (typeof metadataRaw !== "string") {
     return json({ error: "missing metadata part" }, 400);
@@ -169,6 +301,9 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
   } catch {
     return json({ error: "invalid metadata JSON" }, 400);
   }
+  const validMetadata = validatePublishMetadata(metadata);
+  if (!validMetadata) return json({ error: "invalid publish metadata" }, 400);
+  metadata = validMetadata;
 
   // re-read current snapshot for conflict detection
   const current = await context.publisher.readSnapshot();
@@ -199,14 +334,18 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
     if (!entry || entry.contentType !== "text/html") {
       return json({ error: `page not editable: ${pagePath}` }, 400);
     }
-    const bytes = new Uint8Array(await readFile(join(context.root, pagePath)));
+    const bytes = await readSiteFile(context.root, pagePath);
     let patched: Uint8Array;
     try {
-      patched = await patchHtml(bytes, {
-        pagePath,
-        baseDigest: change.baseDigest,
-        operations: change.operations,
-      });
+      patched = await patchHtml(
+        bytes,
+        {
+          pagePath,
+          baseDigest: change.baseDigest,
+          operations: change.operations,
+        },
+        context.ignoreSelectors ? { ignoreSelectors: context.ignoreSelectors } : {},
+      );
     } catch (error) {
       return json({ error: `patch failed for ${pagePath}: ${(error as Error).message}` }, 400);
     }
@@ -277,6 +416,7 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
 async function loadEditorBundle(): Promise<Response | null> {
   try {
     const bundle = await readFile(new URL("../dist/editor.js", import.meta.url));
+    // SAFETY: Node's Uint8Array is accepted by the Fetch BodyInit implementation.
     return new Response(bundle as unknown as BodyInit, {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" },
     });
@@ -289,10 +429,9 @@ export function createXyleHandler(
   context: RuntimeContext,
 ): (request: Request) => Promise<Response> {
   return async (request: Request): Promise<Response> => {
-    const url = new URL(request.url);
-    const pathname = url.pathname;
-
     try {
+      const url = new URL(request.url);
+      const pathname = url.pathname;
       if (pathname === "/edit") {
         const authenticated = await verifySessionCookie(
           request.headers.get("cookie"),
@@ -327,7 +466,12 @@ export function createXyleHandler(
         return json({ ok: true }, 200, { "set-cookie": cookie });
       }
 
-      if (pathname === "/__xyle/api/logout" && request.method === "POST") {
+      if (pathname === "/__xyle/api/logout") {
+        if (request.method !== "POST") {
+          throw new HttpError(403, { error: "mutation rejected" });
+        }
+        assertMutationAllowed(request, context);
+        await requireSession(request, context);
         return json({ ok: true }, 200, { "set-cookie": logoutCookie() });
       }
 
@@ -352,18 +496,34 @@ export function createXyleHandler(
         if (!requested) return json({ error: "missing path" }, 400);
         let sitePath: string;
         try {
-          sitePath = normalizeSitePath(requested).replace(/\/$/, "") || "/";
+          const directoryRequest = requested.endsWith("/");
+          sitePath = normalizeSitePath(requested);
+          if (directoryRequest) sitePath = `${sitePath === "/" ? "" : sitePath}/index.html`;
         } catch {
           return json({ error: "unsafe path" }, 400);
         }
-        if (sitePath.endsWith("/")) sitePath += "index.html";
+        if (isIgnoredPath(sitePath, context.ignorePaths)) {
+          return json({ error: "page is ignored" }, 404);
+        }
         const snapshot = await context.publisher.readSnapshot();
         const file = snapshot.manifest.files[sitePath];
         if (!file || file.contentType !== "text/html") {
           return json({ error: "not an editable page" }, 404);
         }
-        const source = await readFile(join(context.root, sitePath), "utf8");
-        const prepared = preparePreview(source, sitePath, context.publicBaseUrl);
+        let source: string;
+        try {
+          source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+            await readSiteFile(context.root, sitePath),
+          );
+        } catch {
+          return json({ error: "page is not valid UTF-8" }, 400);
+        }
+        const prepared = preparePreview(
+          source,
+          sitePath,
+          context.publicBaseUrl,
+          context.ignoreSelectors,
+        );
         return json({
           pagePath: sitePath,
           baseDigest: file.digest,
@@ -379,7 +539,12 @@ export function createXyleHandler(
         for (const [path, file] of Object.entries(snapshot.manifest.files)) {
           if (file.contentType !== "text/html") continue;
           try {
-            sources.set(path, await readFile(join(context.root, path), "utf8"));
+            sources.set(
+              path,
+              new TextDecoder("utf-8", { fatal: true }).decode(
+                await readSiteFile(context.root, path),
+              ),
+            );
           } catch {
             // unreadable page contributes no usage info
           }

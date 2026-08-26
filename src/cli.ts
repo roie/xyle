@@ -6,6 +6,7 @@ import { FilesystemPublisher } from "./publishers/filesystem.ts";
 import { CloudflarePagesPublisher } from "./publishers/cloudflare.ts";
 import { createXyleHandler, type RuntimeContext } from "./server.ts";
 import { buildManifestFromDirectory, digestBytes } from "./manifest.ts";
+import { MAX_UPLOAD_BYTES } from "./media.ts";
 import type { AuthConfig, LocalXyleState, XyleDigest } from "./types.ts";
 
 const SECRETS_DIR = ".xyle";
@@ -15,17 +16,6 @@ const STATE_FILE = ".xyle.json";
 interface Secrets {
   editorKey: string;
   sessionSecretB64: string;
-}
-
-async function _writeIfMissing(path: string, contents: string, mode?: number): Promise<boolean> {
-  try {
-    await readFile(path);
-    return false;
-  } catch {
-    await writeFile(path, contents, mode ? { mode } : undefined);
-    if (mode !== undefined) await chmod(path, mode);
-    return true;
-  }
 }
 
 export async function loadOrCreateSecrets(
@@ -125,6 +115,8 @@ export function evaluateDeployGuard(
   };
 }
 
+class HttpRequestTooLargeError extends Error {}
+
 export interface DevServerOptions {
   directory: string;
   host?: string;
@@ -138,10 +130,14 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
 }> {
   const root = resolve(options.directory);
   const host = options.host ?? "127.0.0.1";
-  const requestedPort = options.port ?? Number(process.env.XYLE_PORT ?? 4173);
+  const configuredPort =
+    options.port ??
+    (process.env.XYLE_PORT === undefined ? undefined : Number(process.env.XYLE_PORT));
+  const requestedPort = configuredPort ?? 4173;
 
   const { secrets } = await loadOrCreateSecrets(root);
   const auth = await buildAuthConfig(secrets);
+  const state = await readOrCreateState(root);
   const projectName = process.env.XYLE_CLOUDFLARE_PROJECT;
   const publisher = projectName
     ? new CloudflarePagesPublisher({
@@ -165,9 +161,26 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
       const method = req.method ?? "GET";
       let body: Uint8Array | undefined;
       if (!["GET", "HEAD"].includes(method)) {
+        const limit = MAX_UPLOAD_BYTES + 1024 * 1024;
+        const declaredLength = Number(req.headers["content-length"] ?? "0");
+        if (!Number.isSafeInteger(declaredLength) || declaredLength > limit) {
+          res.writeHead(413, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "request too large" }));
+          req.resume();
+          return;
+        }
         body = await new Promise<Uint8Array>((resolveBody, reject) => {
           const chunks: Buffer[] = [];
-          req.on("data", (chunk: Buffer) => chunks.push(chunk));
+          let size = 0;
+          req.on("data", (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > limit) {
+              reject(new HttpRequestTooLargeError());
+              req.resume();
+              return;
+            }
+            chunks.push(chunk);
+          });
           req.on("end", () => resolveBody(new Uint8Array(Buffer.concat(chunks))));
           req.on("error", reject);
         });
@@ -175,6 +188,7 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
       const requestInit: RequestInit & { duplex?: string } = {
         method,
         headers,
+        // SAFETY: Node's Uint8Array is accepted by the Fetch BodyInit implementation.
         body: body ? (body as unknown as BodyInit) : null,
       };
       requestInit.duplex = "half";
@@ -183,22 +197,42 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
       res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
       res.end(Buffer.from(await response.arrayBuffer()));
     } catch (error) {
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: (error as Error).message }));
+      const status = error instanceof HttpRequestTooLargeError ? 413 : 500;
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({ error: status === 413 ? "request too large" : (error as Error).message }),
+      );
     }
   });
 
-  await new Promise<void>((resolveListen, rejectListen) => {
-    server.once("error", rejectListen);
-    server.listen(requestedPort, host, resolveListen);
-  });
+  const listen = (port: number): Promise<void> =>
+    new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(port, host, resolveListen);
+    });
+
+  try {
+    await listen(requestedPort);
+  } catch (error) {
+    if (configuredPort !== undefined || (error as NodeJS.ErrnoException).code !== "EADDRINUSE") {
+      throw error;
+    }
+    await listen(0);
+  }
 
   const address = server.address();
   const actualPort = typeof address === "object" && address !== null ? address.port : requestedPort;
   const publicBaseUrl =
     options.publicBaseUrl ?? process.env.XYLE_BASE_URL ?? `http://${host}:${actualPort}`;
 
-  const context: RuntimeContext = { root, publicBaseUrl, publisher, auth };
+  const context: RuntimeContext = {
+    root,
+    publicBaseUrl,
+    publisher,
+    auth,
+    ignorePaths: state.ignorePaths,
+    ignoreSelectors: state.ignoreSelectors,
+  };
   handler = createXyleHandler(context);
 
   return { server, url: publicBaseUrl };

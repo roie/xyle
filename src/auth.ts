@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { digestBytes } from "./manifest.ts";
+import { digestBytes } from "./digest.ts";
 import type { XyleDigest } from "./types.ts";
 
 export const SESSION_COOKIE_NAME = "xyle_session";

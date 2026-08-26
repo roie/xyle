@@ -1,4 +1,4 @@
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -63,13 +63,26 @@ describe("static serving", () => {
   it("404s unknown files", async () => {
     expect((await fetch(`${base}/nope.html`)).status).toBe(404);
   });
+
+  it("does not follow a symlink outside the site root", async () => {
+    const secret = join(tmpdir(), `xyle-outside-${Date.now()}.txt`);
+    await writeFile(secret, "not public");
+    await symlink(secret, join(root, "outside-link.txt"));
+    const response = await fetch(`${base}/outside-link.txt`);
+    expect([403, 404]).toContain(response.status);
+    await rm(secret, { force: true });
+  });
 });
 
 describe("auth", () => {
   it("shows login shell when unauthenticated", async () => {
     const res = await fetch(`${base}/edit`);
     const html = await res.text();
-    expect(html).toContain("Editor key");
+    expect(html).toContain("Open your site editor");
+    expect(html).toContain("Sign in to Xyle");
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('aria-invalid="false"');
+    expect(html).not.toContain("autofocus");
     expect(html).not.toContain("xyle-root");
   });
 
@@ -89,9 +102,56 @@ describe("auth", () => {
     expect(html).toContain("xyle-root");
   });
 
-  it("logout clears the session", async () => {
+  it("logout rejects requests without the same-origin mutation contract", async () => {
     const cookie = await login();
-    const out = await fetch(`${base}/__xyle/api/logout`, { method: "POST", headers: { cookie } });
+    const wrongMethod = await fetch(`${base}/__xyle/api/logout`, { headers: { cookie } });
+    expect(wrongMethod.status).toBe(403);
+
+    const missingHeader = await fetch(`${base}/__xyle/api/logout`, {
+      method: "POST",
+      headers: { cookie, origin: new URL(base).origin, "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(missingHeader.status).toBe(403);
+
+    const crossOrigin = await fetch(`${base}/__xyle/api/logout`, {
+      method: "POST",
+      headers: {
+        cookie,
+        origin: "https://attacker.invalid",
+        "content-type": "application/json",
+        "x-xyle-request": "1",
+      },
+      body: "{}",
+    });
+    expect(crossOrigin.status).toBe(403);
+  });
+
+  it("logout requires authentication", async () => {
+    const out = await fetch(`${base}/__xyle/api/logout`, {
+      method: "POST",
+      headers: {
+        origin: new URL(base).origin,
+        "content-type": "application/json",
+        "x-xyle-request": "1",
+      },
+      body: "{}",
+    });
+    expect(out.status).toBe(401);
+  });
+
+  it("authenticated same-origin logout clears the session", async () => {
+    const cookie = await login();
+    const out = await fetch(`${base}/__xyle/api/logout`, {
+      method: "POST",
+      headers: {
+        cookie,
+        origin: new URL(base).origin,
+        "content-type": "application/json",
+        "x-xyle-request": "1",
+      },
+      body: "{}",
+    });
     expect(out.status).toBe(200);
     const cleared = out.headers.get("set-cookie")!;
     expect(cleared).toContain("Max-Age=0");
@@ -102,6 +162,13 @@ describe("page api", () => {
   it("requires authentication", async () => {
     const res = await fetch(`${base}/__xyle/api/page?path=/about.html`);
     expect(res.status).toBe(401);
+  });
+
+  it("maps directory page URLs to their index document", async () => {
+    const cookie = await login();
+    const res = await fetch(`${base}/__xyle/api/page?path=/`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { pagePath: string }).pagePath).toBe("/index.html");
   });
 
   it("returns prepared preview for manifest HTML pages", async () => {
@@ -171,9 +238,10 @@ describe("mutation guards", () => {
 });
 
 describe("reserved paths", () => {
-  it("never serves /_xyle/manifest.json directly", async () => {
-    // publisher adoption wrote one during startup scan? ensure direct GET is blocked
-    const res = await fetch(`${base}/_xyle/manifest.json`);
-    expect([404, 200]).toContain(res.status); // may exist as static file only after publish
+  it("never serves manifest or local control state", async () => {
+    for (const path of ["/_xyle/manifest.json", "/.xyle.json", "/.xyle/secrets.local.json"]) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status).toBe(404);
+    }
   });
 });

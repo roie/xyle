@@ -10,9 +10,10 @@
     "build": "rolldown -c",
     "dev": "tsx src/cli.ts dev",
     "typecheck": "tsc --noEmit",
+    "typecheck:functions": "tsc -p functions/tsconfig.json",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "check": "pnpm typecheck && pnpm test && pnpm exec biome check ."
+    "check": "pnpm typecheck && pnpm test && ./node_modules/.bin/biome check ."
   },
   "dependencies": {
     "@noble/hashes": "^2.3.0",

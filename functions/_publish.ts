@@ -2,9 +2,9 @@ import { pagesAssetHash, pagesRequest, type PagesEnv } from "./_pages";
 
 export interface PublishFile { path: string; bytes: Uint8Array; contentType: string; }
 
-export async function deployCompleteSnapshot(env: PagesEnv & { CLOUDFLARE_PROJECT?: string }, files: PublishFile[], baseUrl: string): Promise<string> {
+export async function deployCompleteSnapshot(env: PagesEnv & { CLOUDFLARE_PROJECT?: string }, files: PublishFile[]): Promise<string> {
   const projectName = env.CLOUDFLARE_PROJECT ?? "xyle";
-  const assets = await Promise.all(files.map(async (file) => ({ ...file, hash: await pagesAssetHash(file.bytes, file.path, baseUrl) })));
+  const assets = await Promise.all(files.map(async (file) => ({ ...file, hash: await pagesAssetHash(file.bytes, file.path) })));
   const tokenResponse = await pagesRequest(env, `/pages/projects/${projectName}/upload-token`);
   if (!tokenResponse.ok) throw new Error(`Cloudflare upload token failed (${tokenResponse.status})`);
   const tokenBody = await tokenResponse.json() as { result?: { jwt?: string }; jwt?: string };

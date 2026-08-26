@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   computeSnapshotDigest,
@@ -66,11 +69,36 @@ describe("scanStaticDirectory", () => {
     expect(manifest.files["/index.html"]?.digest).toBe(await digestBytes(index as Uint8Array));
   });
 
+  it("keeps content-addressed Xyle uploads in later snapshots", async () => {
+    const root = await mkdtemp(join(tmpdir(), "xyle-manifest-media-"));
+    try {
+      const bytes = new TextEncoder().encode("uploaded bytes");
+      const digest = await digestBytes(bytes);
+      await mkdir(join(root, "__media"));
+      await writeFile(join(root, "__media", `${digest.slice("sha256:".length)}.png`), bytes);
+      const { manifest } = await scanStaticDirectory(root);
+      expect(manifest.files[`/__media/${digest.slice("sha256:".length)}.png`]).toBeDefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed on reserved-path collisions", async () => {
     expect(isReservedSitePath("/edit")).toBe(true);
     expect(isReservedSitePath("/__xyle/api/page")).toBe(true);
     expect(isReservedSitePath("/_xyle/manifest.json")).toBe(true);
     expect(isReservedSitePath("/about.html")).toBe(false);
+  });
+
+  it("does not silently skip a /__xyle collision", async () => {
+    const root = await mkdtemp(join(tmpdir(), "xyle-manifest-reserved-"));
+    try {
+      await mkdir(join(root, "__xyle"));
+      await writeFile(join(root, "__xyle", "owned.html"), "not allowed");
+      await expect(scanStaticDirectory(root)).rejects.toThrow(/reserved Xyle path/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

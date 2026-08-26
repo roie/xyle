@@ -1,21 +1,16 @@
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import type {
-  PublishResult,
-  PublishSnapshot,
-  PublishedSnapshot,
-  Publisher,
-  XyleManifest,
-} from "../types.ts";
-import { buildManifestFromDirectory } from "../manifest.ts";
+import { isControlSitePath, isPathInsideRoot } from "../control-paths.ts";
+import { buildManifestFromDirectory, validateManifest } from "../manifest.ts";
+import type { PublishResult, PublishSnapshot, PublishedSnapshot, Publisher } from "../types.ts";
 
 export const MANIFEST_PATH = "/_xyle/manifest.json";
+const publishQueues = new Map<string, Promise<void>>();
 
 export class StaleSnapshotError extends Error {
   readonly currentDigest: string;
   readonly expectedDigest: string;
-
   constructor(currentDigest: string, expectedDigest: string) {
     super(`stale snapshot: expected ${expectedDigest}, current ${currentDigest}`);
     this.name = "StaleSnapshotError";
@@ -25,11 +20,11 @@ export class StaleSnapshotError extends Error {
 }
 
 function assertInsideRoot(root: string, sitePath: string): string {
-  const target = resolve(root, `.${sitePath}`);
-  const normalizedRoot = resolve(root);
-  if (target !== normalizedRoot && !target.startsWith(normalizedRoot + sep)) {
-    throw new Error(`path escapes static root: ${sitePath}`);
+  if (isControlSitePath(sitePath) || sitePath === MANIFEST_PATH) {
+    throw new Error(`Xyle control path cannot be published: ${sitePath}`);
   }
+  const target = resolve(root, `.${sitePath}`);
+  if (!isPathInsideRoot(root, target)) throw new Error(`path escapes static root: ${sitePath}`);
   return target;
 }
 
@@ -49,42 +44,77 @@ export interface FilesystemPublisherOptions {
 
 export class FilesystemPublisher implements Publisher {
   private readonly rootAbs: string;
-
   constructor(options: FilesystemPublisherOptions) {
     this.rootAbs = resolve(options.root);
   }
-
   get root(): string {
     return this.rootAbs;
   }
 
   async readSnapshot(): Promise<PublishedSnapshot> {
+    // A marker is advisory only. Re-scanning detects external edits after a publish.
+    const markerPath = join(this.rootAbs, MANIFEST_PATH);
     try {
-      const raw = await readFile(join(this.rootAbs, MANIFEST_PATH), "utf8");
-      const manifest = JSON.parse(raw) as XyleManifest;
-      if (manifest?.version === 1 && typeof manifest.snapshotDigest === "string") {
-        return { snapshotDigest: manifest.snapshotDigest, manifest };
-      }
+      // Validate any marker, but never let it define the snapshot. Invalid old
+      // markers are ignored and cannot make a control file part of site state.
+      await validateManifest(JSON.parse(await readFile(markerPath, "utf8")));
     } catch {
-      // fall through to fresh adoption scan
+      // Missing or untrusted markers are equivalent to first adoption.
     }
     const { manifest } = await buildManifestFromDirectory(this.rootAbs);
     return { snapshotDigest: manifest.snapshotDigest, manifest };
   }
 
   async publish(next: PublishSnapshot): Promise<PublishResult> {
-    const current = await this.readSnapshot();
-    if (current.snapshotDigest !== next.baseSnapshotDigest) {
-      throw new StaleSnapshotError(current.snapshotDigest, next.baseSnapshotDigest);
+    const previous = publishQueues.get(this.rootAbs) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    const queued = previous.then(() => gate);
+    publishQueues.set(this.rootAbs, queued);
+    await previous;
+    try {
+      return await this.publishLocked(next);
+    } finally {
+      release();
+      if (publishQueues.get(this.rootAbs) === queued) publishQueues.delete(this.rootAbs);
     }
+  }
 
+  private async publishLocked(next: PublishSnapshot): Promise<PublishResult> {
+    await validateManifest(next.manifest);
+    const current = await this.readSnapshot();
+    if (current.snapshotDigest !== next.baseSnapshotDigest)
+      throw new StaleSnapshotError(current.snapshotDigest, next.baseSnapshotDigest);
     const allFiles = [...next.changedFiles, ...next.addedFiles];
-    // sitePath -> original bytes | null (null = file did not exist before)
+    for (const file of allFiles) {
+      assertInsideRoot(this.rootAbs, file.path);
+      if (file.path.startsWith("/__media/")) {
+        const extension = (
+          {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/avif": "avif",
+          } as Record<string, string>
+        )[file.contentType];
+        if (
+          !extension ||
+          file.path !== `/__media/${file.digest.slice("sha256:".length)}.${extension}`
+        ) {
+          throw new Error(`invalid Xyle upload path: ${file.path}`);
+        }
+      }
+      if (
+        next.manifest.files[file.path]?.digest !== file.digest ||
+        next.manifest.files[file.path]?.size !== file.bytes.byteLength
+      ) {
+        throw new Error(`publish file does not match manifest: ${file.path}`);
+      }
+    }
     const backups = new Map<string, Uint8Array | null>();
-    const renamed: string[] = [];
     const tempPaths: string[] = [];
-    let manifestWritten = false;
-
     try {
       for (const file of allFiles) {
         const finalPath = assertInsideRoot(this.rootAbs, file.path);
@@ -93,54 +123,36 @@ export class FilesystemPublisher implements Publisher {
         await mkdir(dirname(finalPath), { recursive: true });
         await writeDurable(tempPath, file.bytes);
       }
-
       for (let i = 0; i < allFiles.length; i++) {
-        const file = allFiles[i]!;
+        const file = allFiles[i];
+        const tempPath = tempPaths[i];
+        if (!file || !tempPath) throw new Error("publish staging mismatch");
         const finalPath = assertInsideRoot(this.rootAbs, file.path);
-        const tempPath = tempPaths[i]!;
         backups.set(file.path, await readIfExists(finalPath));
         await rename(tempPath, finalPath);
-        renamed.push(finalPath);
       }
-
-      // manifest goes last
       const manifestBytes = new TextEncoder().encode(JSON.stringify(next.manifest, null, 2));
-      const manifestFinal = assertInsideRoot(this.rootAbs, MANIFEST_PATH);
+      const manifestFinal = join(this.rootAbs, MANIFEST_PATH);
       await mkdir(dirname(manifestFinal), { recursive: true });
       const manifestTemp = `${manifestFinal}.xyle-tmp-${randomUUID()}`;
       tempPaths.push(manifestTemp);
       await writeDurable(manifestTemp, manifestBytes);
       await rename(manifestTemp, manifestFinal);
-      manifestWritten = true;
-
       return {
-        snapshot: {
-          snapshotDigest: next.manifest.snapshotDigest,
-          manifest: next.manifest,
-        },
+        snapshot: { snapshotDigest: next.manifest.snapshotDigest, manifest: next.manifest },
         id: `pub-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       };
     } catch (error) {
-      // restore originals in reverse order; manifest restored like any file
-      const restoreTargets: [string, Uint8Array | null][] = [...backups.entries()];
-      if (manifestWritten) {
-        restoreTargets.push([MANIFEST_PATH, null]);
-      }
-      for (const [sitePath, backup] of restoreTargets.reverse()) {
+      for (const [sitePath, backup] of [...backups.entries()].slice().reverse()) {
         try {
           const finalPath = assertInsideRoot(this.rootAbs, sitePath);
-          if (backup === null) {
-            await rm(finalPath, { force: true });
-          } else {
-            await writeDurable(finalPath, backup);
-          }
+          if (backup === null) await rm(finalPath, { force: true });
+          else await writeDurable(finalPath, backup);
         } catch {
-          // best-effort rollback
+          /* best effort */
         }
       }
-      for (const tempPath of tempPaths) {
-        await rm(tempPath, { force: true }).catch(() => {});
-      }
+      for (const tempPath of tempPaths) await rm(tempPath, { force: true }).catch(() => {});
       throw error;
     }
   }
@@ -155,14 +167,16 @@ async function readIfExists(path: string): Promise<Uint8Array | null> {
 }
 
 export function contentTypeForUpload(filename: string): string {
-  const dot = filename.lastIndexOf(".");
-  const ext = dot === -1 ? "" : filename.slice(dot).toLowerCase();
-  const map: Record<string, string> = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".webp": "image/webp",
-    ".avif": "image/avif",
-  };
-  return map[ext] ?? "application/octet-stream";
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  return (
+    (
+      {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".avif": "image/avif",
+      } as Record<string, string>
+    )[ext] ?? "application/octet-stream"
+  );
 }

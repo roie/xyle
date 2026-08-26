@@ -85,7 +85,7 @@ describe("uploadPathFor", () => {
     const a = await uploadPathFor(new Uint8Array(png), "image/png");
     const b = await uploadPathFor(new Uint8Array(png), "image/png");
     expect(a).toBe(b);
-    expect(a).toMatch(/^\/__media\/[0-9a-f]{12}\.png$/);
+    expect(a).toMatch(/^\/__media\/[0-9a-f]{64}\.png$/);
   });
 
   it("differs for different bytes", async () => {
@@ -128,5 +128,24 @@ describe("discoverMedia", () => {
 
     expect(items.some((i) => i.contentType.startsWith("image/"))).toBe(true);
     expect(items.every((i) => !["/index.html", "/styles.css"].includes(i.path))).toBe(true);
+  });
+
+  it("resolves relative image sources from the containing nested page", () => {
+    const nestedManifest: XyleManifest = {
+      ...manifest,
+      files: {
+        ...manifest.files,
+        "/team/index.html": { digest: "sha256:n", size: 1, contentType: "text/html" },
+        "/team/assets/hero.webp": { digest: "sha256:t", size: 1, contentType: "image/webp" },
+      },
+    };
+    const items = discoverMedia(
+      nestedManifest,
+      new Map([["/team/index.html", `<img src="assets/hero.webp" alt="">`]]),
+    );
+    expect(items.find((item) => item.path === "/team/assets/hero.webp")?.usedBySimpleImg).toBe(
+      true,
+    );
+    expect(items.find((item) => item.path === "/assets/hero.webp")?.usedBySimpleImg).toBe(false);
   });
 });

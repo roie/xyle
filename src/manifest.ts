@@ -1,15 +1,14 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { ManifestFile, XyleDigest, XyleManifest } from "./types.ts";
+import { isControlSitePath, isLocalXyleStatePath } from "./control-paths.ts";
+import { computeSnapshotDigest, digestBytes } from "./digest.ts";
+import type { ManifestFile, XyleManifest } from "./types.ts";
 
-const RESERVED_PREFIXES = ["/edit", "/__xyle/", "/__media/", "/_xyle/"];
-export const RESERVED_PATHS = ["/edit", "/_xyle/manifest.json", ...RESERVED_PREFIXES];
+export { computeSnapshotDigest, digestBytes } from "./digest.ts";
 
-export async function digestBytes(bytes: Uint8Array): Promise<XyleDigest> {
-  const hash = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
-  const hex = Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
-  return `sha256:${hex}`;
-}
+const XYLE_MANIFEST_PATH = "/_xyle/manifest.json";
+const RESERVED_PREFIXES = ["/edit", "/__xyle/", "/__media/"];
+export const RESERVED_PATHS = ["/edit", XYLE_MANIFEST_PATH, ...RESERVED_PREFIXES];
 
 export function normalizeSitePath(path: string): string {
   if (path.includes("\0")) throw new Error("path contains NUL byte");
@@ -54,32 +53,84 @@ function contentTypeFor(ext: string): string {
   return map[ext.toLowerCase()] ?? "application/octet-stream";
 }
 
-export async function computeSnapshotDigest(
-  files: Record<string, ManifestFile>,
-): Promise<XyleDigest> {
-  const paths = Object.keys(files).sort();
-  const parts: number[] = [];
-  for (const path of paths) {
-    const entry = files[path];
-    if (!entry) throw new Error(`missing manifest entry for ${path}`);
-    for (const chunk of [path, "\0", entry.digest, "\n"]) {
-      parts.push(...new TextEncoder().encode(chunk));
+/** Reject attacker-controlled manifest data before it influences publish state. */
+export async function validateManifest(manifest: unknown): Promise<XyleManifest> {
+  if (!manifest || typeof manifest !== "object") throw new Error("malformed Xyle manifest");
+  const candidate = manifest as Partial<XyleManifest>;
+  if (
+    candidate.version !== 1 ||
+    typeof candidate.snapshotDigest !== "string" ||
+    !candidate.snapshotDigest.startsWith("sha256:") ||
+    !candidate.files ||
+    typeof candidate.files !== "object" ||
+    Array.isArray(candidate.files)
+  ) {
+    throw new Error("malformed Xyle manifest");
+  }
+  for (const [path, entry] of Object.entries(candidate.files)) {
+    if (
+      normalizeSitePath(path) !== path ||
+      isControlSitePath(path) ||
+      (isReservedSitePath(path) && !path.startsWith("/__media/"))
+    ) {
+      throw new Error(`untrusted manifest path: ${path}`);
+    }
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      typeof entry.digest !== "string" ||
+      !entry.digest.startsWith("sha256:") ||
+      !Number.isSafeInteger(entry.size) ||
+      entry.size < 0 ||
+      typeof entry.contentType !== "string"
+    ) {
+      throw new Error(`malformed manifest entry: ${path}`);
     }
   }
-  return digestBytes(new Uint8Array(parts));
+  const typed = candidate as XyleManifest;
+  if ((await computeSnapshotDigest(typed.files)) !== typed.snapshotDigest) {
+    throw new Error("manifest snapshot digest does not match its files");
+  }
+  return typed;
 }
 
 async function walk(dir: string, base: string, out: string[]): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
-    const full = join(dir, entry.name);
     const rel = base ? `${base}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) {
-      await walk(full, rel, out);
-    } else if (entry.isFile()) {
-      out.push(rel);
-    }
+    const sitePath = normalizeSitePath(rel);
+    // Do not follow links: a symlink can point outside the site root.
+    if (entry.isSymbolicLink() || isLocalXyleStatePath(sitePath)) continue;
+    if (entry.isDirectory()) await walk(join(dir, entry.name), rel, out);
+    else if (entry.isFile()) out.push(rel);
   }
+}
+
+function xyleUploadExtension(contentType: string): string | null {
+  return (
+    (
+      {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/avif": "avif",
+      } as Record<string, string>
+    )[contentType] ?? null
+  );
+}
+
+async function isValidXyleUploadPath(
+  sitePath: string,
+  bytes: Uint8Array,
+  contentType: string,
+): Promise<boolean> {
+  if (!sitePath.startsWith("/__media/")) return false;
+  const extension = xyleUploadExtension(contentType);
+  if (!extension) return false;
+  const name = sitePath.slice("/__media/".length);
+  const digest = await digestBytes(bytes);
+  const expectedDigest = digest.slice("sha256:".length);
+  return name === `${expectedDigest}.${extension}`;
 }
 
 export async function scanStaticDirectory(
@@ -87,26 +138,36 @@ export async function scanStaticDirectory(
 ): Promise<{ manifest: XyleManifest; files: Map<string, Uint8Array> }> {
   const relativePaths: string[] = [];
   await walk(root, "", relativePaths);
-
   const files = new Map<string, Uint8Array>();
-  const manifestFiles: Record<string, ManifestFile> = {};
-
-  for (const rel of relativePaths.sort()) {
+  const manifestFiles = Object.create(null) as Record<string, ManifestFile>;
+  for (const rel of relativePaths.sort((a, b) => a.localeCompare(b))) {
     const sitePath = normalizeSitePath(rel);
-    if (isReservedSitePath(sitePath)) {
-      throw new Error(`site file collides with reserved Xyle path: ${sitePath}`);
+    const bytes = new Uint8Array(await readFile(join(root, rel)));
+    if (sitePath === XYLE_MANIFEST_PATH) {
+      try {
+        await validateManifest(JSON.parse(new TextDecoder().decode(bytes)));
+        continue;
+      } catch {
+        throw new Error(`site file collides with reserved Xyle path: ${sitePath}`);
+      }
     }
-    const bytes = await readFile(join(root, rel));
+    const contentType = contentTypeFor(rel.slice(rel.lastIndexOf(".")));
+    if (isReservedSitePath(sitePath)) {
+      const validUpload = sitePath.startsWith("/__media/")
+        ? await isValidXyleUploadPath(sitePath, bytes, contentType)
+        : false;
+      if (!validUpload) {
+        throw new Error(`site file collides with reserved Xyle path: ${sitePath}`);
+      }
+    }
     const info = await stat(join(root, rel));
-    files.set(sitePath, new Uint8Array(bytes));
-    const ext = rel.slice(rel.lastIndexOf("."));
+    files.set(sitePath, bytes);
     manifestFiles[sitePath] = {
-      digest: await digestBytes(new Uint8Array(bytes)),
+      digest: await digestBytes(bytes),
       size: info.size,
-      contentType: contentTypeFor(ext),
+      contentType,
     };
   }
-
   const manifest: XyleManifest = {
     version: 1,
     snapshotDigest: await computeSnapshotDigest(manifestFiles),

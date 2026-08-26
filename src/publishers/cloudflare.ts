@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
-import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { access, cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import type {
   PublishResult,
   PublishSnapshot,
@@ -10,6 +9,7 @@ import type {
   XyleManifest,
 } from "../types.ts";
 import { MANIFEST_PATH, StaleSnapshotError } from "./filesystem.ts";
+import { scanStaticDirectory, validateManifest } from "../manifest.ts";
 
 /** Direct Upload only. Every deployment is a complete materialized snapshot. */
 export interface CloudflarePublisherOptions {
@@ -34,8 +34,10 @@ interface PagesProject {
 export class CloudflarePagesPublisher implements Publisher {
   private readonly root: string;
   private readonly wrangler: string;
+  private readonly options: CloudflarePublisherOptions;
 
-  constructor(private readonly options: CloudflarePublisherOptions) {
+  constructor(options: CloudflarePublisherOptions) {
+    this.options = options;
     this.root = resolve(options.root);
     this.wrangler = options.wranglerCommand ?? "wrangler";
   }
@@ -58,7 +60,29 @@ export class CloudflarePagesPublisher implements Publisher {
     });
   }
 
+  private async assertLocalControlState(): Promise<void> {
+    const unsupported = [
+      [join(this.root, "functions"), "a local Functions directory"],
+      [join(this.root, "_worker.js"), "a local worker script"],
+      [join(this.root, "_worker"), "a local worker directory"],
+      [join(this.root, "_routes.json"), "a local _routes.json file"],
+    ] as const;
+    for (const [path, description] of unsupported) {
+      try {
+        await access(path);
+        throw new CloudflareConfigurationError(
+          `Refusing this Pages project: ${description} is outside Xyle's control.`,
+        );
+      } catch (error) {
+        if (error instanceof CloudflareConfigurationError) throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      }
+    }
+  }
+
   private async assertSupportedProject(): Promise<void> {
+    await this.assertLocalControlState();
     const response = await this.request(
       `/pages/projects/${encodeURIComponent(this.options.projectName)}`,
     );
@@ -72,8 +96,21 @@ export class CloudflarePagesPublisher implements Publisher {
     }
   }
 
+  private async assertRemoteRuntime(): Promise<void> {
+    const response = await fetch(
+      `https://${this.options.projectName}.pages.dev/__xyle/api/session`,
+      { cache: "no-store" },
+    );
+    if (!response.ok || response.headers.get("x-xyle-runtime") !== "1") {
+      throw new CloudflareConfigurationError(
+        "Refusing this Pages project: the deployed Xyle control runtime is missing or foreign.",
+      );
+    }
+  }
+
   async readSnapshot(): Promise<PublishedSnapshot> {
     await this.assertSupportedProject();
+    await this.assertRemoteRuntime();
     const response = await fetch(`https://${this.options.projectName}.pages.dev${MANIFEST_PATH}`, {
       cache: "no-store",
     });
@@ -82,24 +119,25 @@ export class CloudflarePagesPublisher implements Publisher {
         "Refusing to adopt this Pages project: its current deployment has no Xyle manifest.",
       );
     }
-    const manifest = (await response.json()) as XyleManifest;
-    if (manifest?.version !== 1 || typeof manifest.snapshotDigest !== "string") {
+    let manifest: XyleManifest;
+    try {
+      manifest = await validateManifest(await response.json());
+    } catch {
       throw new CloudflareConfigurationError("Refusing malformed remote Xyle manifest.");
     }
     return { snapshotDigest: manifest.snapshotDigest, manifest };
   }
 
   async publish(next: PublishSnapshot): Promise<PublishResult> {
+    await validateManifest(next.manifest);
     const current = await this.readSnapshot();
     if (current.snapshotDigest !== next.baseSnapshotDigest) {
       throw new StaleSnapshotError(current.snapshotDigest, next.baseSnapshotDigest);
     }
-    const staging = await mkdtemp(join(tmpdir(), "xyle-cf-"));
+    // Stage beside installed dependencies while deploying only this isolated directory.
+    const staging = await mkdtemp(join(process.cwd(), ".xyle-stage-"));
     try {
-      await cp(this.root, staging, {
-        recursive: true,
-        filter: (source) => !relative(this.root, source).split("/").includes(".xyle"),
-      });
+      await this.stageStaticSnapshot(staging);
       await this.stageControlRuntime(staging);
       for (const file of [...next.changedFiles, ...next.addedFiles]) {
         const target = join(staging, file.path.replace(/^\/+/, ""));
@@ -109,6 +147,12 @@ export class CloudflarePagesPublisher implements Publisher {
       const manifestPath = join(staging, MANIFEST_PATH.replace(/^\//, ""));
       await mkdir(dirname(manifestPath), { recursive: true });
       await writeFile(manifestPath, JSON.stringify(next.manifest, null, 2));
+      // Pages Direct Upload has no CAS API, so verify the global snapshot again
+      // at the last point before starting a deployment.
+      const latest = await this.readSnapshot();
+      if (latest.snapshotDigest !== next.baseSnapshotDigest) {
+        throw new StaleSnapshotError(latest.snapshotDigest, next.baseSnapshotDigest);
+      }
       const id = await this.runWrangler(staging);
       return {
         snapshot: { snapshotDigest: next.manifest.snapshotDigest, manifest: next.manifest },
@@ -122,12 +166,11 @@ export class CloudflarePagesPublisher implements Publisher {
   /** Explicit initial adoption: uploads the complete local snapshot and marker. */
   async bootstrap(manifest: XyleManifest): Promise<PublishResult> {
     await this.assertSupportedProject();
-    const staging = await mkdtemp(join(tmpdir(), "xyle-cf-"));
+    await validateManifest(manifest);
+    // See publish(): this keeps Wrangler's dependency resolution available.
+    const staging = await mkdtemp(join(process.cwd(), ".xyle-stage-"));
     try {
-      await cp(this.root, staging, {
-        recursive: true,
-        filter: (source) => !relative(this.root, source).split("/").includes(".xyle"),
-      });
+      await this.stageStaticSnapshot(staging);
       await this.stageControlRuntime(staging);
       const manifestPath = join(staging, MANIFEST_PATH.replace(/^\//, ""));
       await mkdir(dirname(manifestPath), { recursive: true });
@@ -139,8 +182,19 @@ export class CloudflarePagesPublisher implements Publisher {
     }
   }
 
+  private async stageStaticSnapshot(staging: string): Promise<void> {
+    const { files } = await scanStaticDirectory(this.root);
+    for (const [path, bytes] of files) {
+      const target = join(staging, path.replace(/^\/+/, ""));
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, bytes);
+    }
+  }
+
   private async stageControlRuntime(staging: string): Promise<void> {
+    // Functions import shared HTML/manifest code, so stage that source beside them.
     await cp(join(process.cwd(), "functions"), join(staging, "functions"), { recursive: true });
+    await cp(join(process.cwd(), "src"), join(staging, "src"), { recursive: true });
     await cp(join(process.cwd(), "dist", "editor.js"), join(staging, "editor.js"));
     await cp(
       join(process.cwd(), "functions", "blake3_js_bg.wasm"),
@@ -159,7 +213,7 @@ export class CloudflarePagesPublisher implements Publisher {
       this.wrangler,
       ["pages", "deploy", directory, `--project-name=${this.options.projectName}`],
       {
-        cwd: process.cwd(),
+        cwd: directory,
         env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId, CLOUDFLARE_API_TOKEN: apiToken },
         stdio: ["ignore", "pipe", "pipe"],
       },

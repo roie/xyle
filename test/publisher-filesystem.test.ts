@@ -81,6 +81,19 @@ describe("FilesystemPublisher", () => {
     expect(reread.snapshotDigest).toBe(result.snapshot.snapshotDigest);
   });
 
+  it("detects external edits even when an older manifest marker exists", async () => {
+    const publisher = new FilesystemPublisher({ root });
+    const before = await publisher.readSnapshot();
+    await mkdir(join(root, "_xyle"), { recursive: true });
+    await writeFile(join(root, MANIFEST_PATH), JSON.stringify(before.manifest));
+    await writeFile(join(root, "index.html"), "<h1>changed outside Xyle</h1>");
+    const after = await publisher.readSnapshot();
+    expect(after.snapshotDigest).not.toBe(before.snapshotDigest);
+    expect(after.manifest.files["/index.html"]?.digest).not.toBe(
+      before.manifest.files["/index.html"]?.digest,
+    );
+  });
+
   it("rejects stale base snapshots", async () => {
     const publisher = new FilesystemPublisher({ root });
     const base = await publisher.readSnapshot();
@@ -107,15 +120,17 @@ describe("FilesystemPublisher", () => {
     const publisher = new FilesystemPublisher({ root });
     const base = await publisher.readSnapshot();
 
-    const html = await makeSiteFile("/index.html", '<img src="/__media/pic.png">');
     const pngBytes = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
       "base64",
     );
+    const imageDigest = await digestBytes(new Uint8Array(pngBytes));
+    const imagePath = `/__media/${imageDigest.slice("sha256:".length)}.png`;
+    const html = await makeSiteFile("/index.html", `<img src="${imagePath}">`);
     const image: SiteFile = {
-      path: "/__media/pic.png",
+      path: imagePath,
       bytes: new Uint8Array(pngBytes),
-      digest: await digestBytes(new Uint8Array(pngBytes)),
+      digest: imageDigest,
       contentType: "image/png",
     };
 
@@ -129,7 +144,7 @@ describe("FilesystemPublisher", () => {
         size: html.bytes.length,
         contentType: "text/html",
       },
-      "/__media/pic.png": {
+      [imagePath]: {
         digest: image.digest,
         size: image.bytes.length,
         contentType: "image/png",
@@ -148,7 +163,40 @@ describe("FilesystemPublisher", () => {
       addedFiles: [image],
     });
 
-    expect(await readFile(join(root, "__media/pic.png"))).toEqual(pngBytes);
+    expect(await readFile(join(root, imagePath.slice(1)))).toEqual(pngBytes);
+    expect((await publisher.readSnapshot()).manifest.files[imagePath]).toBeDefined();
+  });
+
+  it("serializes concurrent compare-and-swap publishes", async () => {
+    const publisher = new FilesystemPublisher({ root });
+    const base = await publisher.readSnapshot();
+    const changed = await makeSiteFile("/index.html", "<h1>first winner</h1>");
+    const files = {
+      ...base.manifest.files,
+      "/index.html": {
+        digest: changed.digest,
+        size: changed.bytes.byteLength,
+        contentType: changed.contentType,
+      },
+    };
+    const manifest = {
+      version: 1 as const,
+      snapshotDigest: await (await import("../src/manifest.ts")).computeSnapshotDigest(files),
+      files,
+    };
+    const request = {
+      baseSnapshotDigest: base.snapshotDigest,
+      manifest,
+      changedFiles: [changed],
+      addedFiles: [],
+    };
+    const results = await Promise.allSettled([
+      publisher.publish(request),
+      publisher.publish(request),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(await readFile(join(root, "index.html"), "utf8")).toBe("<h1>first winner</h1>");
   });
 
   it("rolls back all files when a later write fails", async () => {

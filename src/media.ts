@@ -1,5 +1,5 @@
 import type { MediaItem, XyleManifest } from "./types.ts";
-import { digestBytes } from "./manifest.ts";
+import { digestBytes } from "./digest.ts";
 import { simpleImageSources } from "./html.ts";
 
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20 MiB
@@ -81,7 +81,8 @@ export function validateUpload(filename: string, bytes: Uint8Array): UploadValid
 /** Deterministic, collision-resistant Xyle-owned upload path. */
 export async function uploadPathFor(bytes: Uint8Array, contentType: string): Promise<string> {
   const digest = await digestBytes(bytes);
-  const hex = digest.slice("sha256:".length, "sha256:".length + 12);
+  // The complete SHA-256 digest makes distinct assets unambiguous without a collision table.
+  const hex = digest.slice("sha256:".length);
   const ext =
     { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/avif": "avif" }[
       contentType
@@ -96,9 +97,10 @@ export function discoverMedia(
   htmlSources: Map<string, string>,
 ): MediaItem[] {
   const used = new Set<string>();
-  for (const source of htmlSources.values()) {
+  for (const [pagePath, source] of htmlSources) {
     for (const src of simpleImageSources(source)) {
-      used.add(resolveRelative(src));
+      const resolved = resolveRelative(src, pagePath);
+      if (resolved) used.add(resolved);
     }
   }
 
@@ -117,11 +119,13 @@ export function discoverMedia(
   return items.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function resolveRelative(src: string): string {
+function resolveRelative(src: string, pagePath: string): string | null {
   try {
-    const url = new URL(src, "https://xyle.invalid/");
-    return url.pathname;
+    const base = new URL(pagePath, "https://xyle.invalid/");
+    const url = new URL(src, base);
+    // External URLs are not files in this static snapshot.
+    return url.origin === "https://xyle.invalid" ? url.pathname : null;
   } catch {
-    return src;
+    return null;
   }
 }
