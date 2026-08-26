@@ -1,6 +1,10 @@
 import { blake3 } from "@noble/hashes/blake3.js";
 
-export interface PagesEnv { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string; }
+export interface PagesEnv {
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
+  XYLE_WORKER_BUNDLE_B64?: string;
+}
 
 export function pagesAssetHash(bytes: Uint8Array, path: string): string {
   const extension = path.slice(path.lastIndexOf(".") + 1);

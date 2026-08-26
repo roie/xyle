@@ -21,8 +21,19 @@ export async function deployCompleteSnapshot(env: PagesEnv & { CLOUDFLARE_PROJEC
   }
   const upsertResponse = await fetch("https://api.cloudflare.com/client/v4/pages/assets/upsert-hashes", { method: "POST", headers: assetHeaders, body: JSON.stringify({ hashes: assets.map((asset) => asset.hash) }) });
   if (!upsertResponse.ok) throw new Error(`Cloudflare asset hash registration failed (${upsertResponse.status})`);
+  if (!env.XYLE_WORKER_BUNDLE_B64) {
+    throw new Error("Xyle Cloudflare runtime bundle is not configured");
+  }
   const form = new FormData();
   form.set("manifest", JSON.stringify(Object.fromEntries(assets.map((asset) => [asset.path, asset.hash]))));
+  form.set("_worker.bundle", new File([bytesFromBase64(env.XYLE_WORKER_BUNDLE_B64)], "_worker.bundle"));
+  form.set(
+    "_routes.json",
+    new File(
+      [JSON.stringify({ version: 1, include: ["/edit", "/__xyle/*"], exclude: [] })],
+      "_routes.json",
+    ),
+  );
   const deployment = await pagesRequest(env, `/pages/projects/${projectName}/deployments`, { method: "POST", body: form });
   if (!deployment.ok) throw new Error(`Cloudflare deployment failed (${deployment.status})`);
   const body = await deployment.json() as { result?: { id?: string; url?: string } };
@@ -33,4 +44,11 @@ function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
+}
+
+function bytesFromBase64(value: string): ArrayBuffer {
+  const binary = atob(value);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes.buffer;
 }
