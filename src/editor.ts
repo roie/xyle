@@ -2113,7 +2113,9 @@ let mediaDrawerTrigger: HTMLElement | null = null;
 async function detectMediaSupport(): Promise<void> {
   try {
     const res = await api("/__xyle/api/media");
-    if (res.status === 501) mediaManagementUnavailable = true;
+    if (!res.ok) return;
+    const body = (await res.json().catch(() => null)) as { available?: boolean } | null;
+    mediaManagementUnavailable = body?.available === false;
   } catch {
     // The regular page load reports connection failures to the user.
   }
@@ -2140,8 +2142,13 @@ async function openMediaDrawer(trigger?: HTMLElement): Promise<void> {
     );
     return;
   }
-  const items = (await res.json()) as MediaItem[];
-  renderMediaDrawer(items);
+  const body = (await res.json()) as MediaItem[] | { available?: boolean };
+  if (!Array.isArray(body)) {
+    drawerOpen = false;
+    flash("Media management is unavailable for this deployment.");
+    return;
+  }
+  renderMediaDrawer(body);
 }
 
 function focusPreviewElement(element: HTMLElement | null): void {

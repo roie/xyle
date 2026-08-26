@@ -45,7 +45,7 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     const prepared = preparePreview(await response.text(), path, url.origin);
     return Response.json({ pagePath: path, baseDigest: entry.digest, html: prepared.html, nodes: [...prepared.nodes.values()] });
   }
-  if (route === "media") return Response.json({ error: "media management is unavailable on Cloudflare Pages" }, { status: 501 });
+  if (route === "media") return Response.json({ available: false, reason: "media management is unavailable on Cloudflare Pages" });
   if (route === "publish" && request.method === "POST") {
     if (!request.headers.get("content-type")?.includes("multipart/form-data")) {
       return Response.json({ error: "unsupported content type" }, { status: 415 });
