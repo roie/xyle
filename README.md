@@ -33,7 +33,7 @@ normal public pages.
 pnpm install
 pnpm build
 pnpm exec tsx src/cli.ts init example/plain-html   # prints your editor key once
-pnpm exec tsx src/cli.ts dev example/plain-html    # http://127.0.0.1:4173/edit
+pnpm exec tsx src/cli.ts dev example/plain-html   # prints the local editor URL
 ```
 
 Log in at `/edit` with the generated key, make edits, press **Publish**, then

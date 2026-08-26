@@ -1,41 +1,138 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>About — Riverbend Plumbing</title>
-  <link rel="stylesheet" href="/styles.css">
-</head>
-<body>
-  <header class="site-header">
-    <a class="brand" href="/">Riverbend Plumbing</a>
-    <nav>
-      <a href="/">Home</a>
-      <a href="/about.html">About</a>
-      <a href="/contact.html">Contact</a>
-    </nav>
-  </header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>About — Riverbend Plumbing</title>
+    <meta
+      name="description"
+      content="Meet the family and licensed tradespeople behind Riverbend Plumbing in Edmonton."
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/">Riverbend Plumbing</a>
+        <nav aria-label="Main navigation">
+          <a href="/">Home</a>
+          <a href="/about.html" aria-current="page">About</a>
+          <a href="/contact.html">Contact</a>
+        </nav>
+        <a class="header-call" href="tel:+17805550142">
+          <span>24/7 response</span>
+          (780) 555-0142
+        </a>
+      </div>
+    </header>
 
-  <main>
-    <h1>The crew behind Riverbend</h1>
-    <p>Riverbend Plumbing started in 1998 out of one van and a toolbox.</p>
-    <p>We are a <strong>family-owned</strong> company.</p>
-    <blockquote>
-      <p>Do the small jobs well and the big jobs follow.</p>
-    </blockquote>
-    <figure>
-      <img src="/misc/team.jpg" alt="The Riverbend crew in front of the shop">
-      <figcaption>The crew outside the shop on Whyte Avenue.</figcaption>
-    </figure>
-    <p>
-      We sponsor the <em>river valley cleanup</em> every spring and we answer
-      our own phones. See <a href="https://example.com/community" rel="noopener">our community page</a>
-      for this year's schedule.
-    </p>
-  </main>
+    <main id="main-content" class="interior-page">
+      <section class="page-intro" aria-labelledby="about-title">
+        <div>
+          <p class="eyebrow">About Riverbend</p>
+          <h1 id="about-title">The crew behind Riverbend</h1>
+        </div>
+        <div class="intro-copy">
+          <p class="intro-lede">
+            Riverbend Plumbing started in 1998 out of one van and a toolbox.
+          </p>
+          <p>We are a <strong>family-owned</strong> company.</p>
+          <dl class="quick-facts">
+            <div>
+              <dt>Based in</dt>
+              <dd>Edmonton, Alberta</dd>
+            </div>
+            <div>
+              <dt>On call</dt>
+              <dd>Every day, around the clock</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
 
-  <footer class="site-footer">
-    <p><a href="tel:+17805550142">(780) 555-0142</a></p>
-  </footer>
-</body>
+      <section class="story-grid" aria-labelledby="story-title">
+        <div class="story-copy">
+          <p class="section-index">01 / Our start</p>
+          <h2 id="story-title">Built one careful repair at a time.</h2>
+          <p>
+            The first Riverbend jobs came through neighbours and word of mouth.
+            That is still how much of our work finds us today.
+          </p>
+          <p>
+            We keep appointments realistic, explain what failed, and price the
+            repair before the tools come out. If a smaller fix will do, we say
+            so.
+          </p>
+        </div>
+        <blockquote>
+          <p>Do the small jobs well and the big jobs follow.</p>
+          <cite>Riverbend shop rule, since 1998</cite>
+        </blockquote>
+      </section>
+
+      <section class="crew-section" aria-labelledby="crew-title">
+        <figure class="crew-figure">
+          <!-- Photo: Nate Johnston, Unsplash (TltGIe9PK4Y) -->
+          <img
+            src="/misc/team.jpg"
+            alt="Three tradespeople reviewing plans at a worksite"
+          />
+          <figcaption>
+            The Riverbend crew reviews the plan before work begins.
+          </figcaption>
+        </figure>
+        <div class="crew-copy">
+          <p class="section-index">02 / The shop</p>
+          <h2 id="crew-title">Experienced hands. Clear explanations.</h2>
+          <p>
+            Our licensed journeymen work alongside apprentices who are learning
+            the trade the right way: safely, patiently, and without shortcuts.
+          </p>
+          <ul class="principles-list">
+            <li>
+              <strong>Show up prepared.</strong
+              ><span>Stocked vans and a plan for the job.</span>
+            </li>
+            <li>
+              <strong>Protect the home.</strong
+              ><span>Clean boots, drop cloths, tidy finishes.</span>
+            </li>
+            <li>
+              <strong>Explain the work.</strong
+              ><span>Options in plain language before repairs begin.</span>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="community-note" aria-labelledby="community-title">
+        <p class="section-index">03 / Close to home</p>
+        <h2 id="community-title">The river valley is part of our route.</h2>
+        <p>
+          We sponsor the <em>river valley cleanup</em> every spring and we
+          answer our own phones. See
+          <a href="https://example.com/community" rel="noopener"
+            >our community page</a
+          >
+          for this year's schedule.
+        </p>
+        <a class="secondary-action" href="/contact.html"
+          >Ask us about your project</a
+        >
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>
+        <strong>Riverbend Plumbing</strong>
+        <p>Residential plumbing across Edmonton and surrounding communities.</p>
+      </div>
+      <div class="footer-links">
+        <a href="tel:+17805550142">(780) 555-0142</a>
+        <a href="mailto:hello@riverbend.example">hello@riverbend.example</a>
+      </div>
+      <p class="footer-meta">Licensed &amp; insured · Alberta</p>
+    </footer>
+  </body>
 </html>

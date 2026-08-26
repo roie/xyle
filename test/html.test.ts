@@ -34,6 +34,32 @@ function firstNodeId(source: string): string {
   return first.value;
 }
 
+describe("byte-preserving HTML patches", () => {
+  it("preserves a UTF-8 BOM while patching", async () => {
+    const source = "\uFEFF<h1>Hello</h1>";
+    const bytes = enc.encode(source);
+    const nodeId = firstNodeId(source);
+    const output = await patchHtml(bytes, {
+      pagePath: "/index.html",
+      baseDigest: await digestBytes(bytes),
+      operations: [{ type: "text", nodeId: `${nodeId}#0`, value: "Updated" }],
+    });
+    expect([...output.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    expect(dec.decode(output)).toContain("Updated");
+  });
+
+  it("rejects invalid UTF-8 rather than replacing bytes", async () => {
+    const bytes = new Uint8Array([0x3c, 0x68, 0x31, 0x3e, 0xff, 0x3c, 0x2f, 0x68, 0x31, 0x3e]);
+    await expect(
+      patchHtml(bytes, {
+        pagePath: "/index.html",
+        baseDigest: await digestBytes(bytes),
+        operations: [],
+      }),
+    ).rejects.toThrow(/valid UTF-8/);
+  });
+});
+
 describe("preparePreview source locations", () => {
   it("finds usable source ranges without modifying the original string", () => {
     const source = `<h1>Hello</h1>`;
@@ -66,6 +92,16 @@ describe("preparePreview source locations", () => {
     expect(nodes.get("n3")?.kind).toBe("link");
   });
 
+  it("discovers editable inline text in proof-style metric items", () => {
+    const source =
+      '<section class="proof-strip"><div><strong>24/7</strong><span>emergency response</span></div></section>';
+    const text = [...analyzePage(source).candidates.values()].filter((c) => c.kind === "text");
+    expect(text.map((candidate) => candidate.segments[0]?.text)).toEqual([
+      "24/7",
+      "emergency response",
+    ]);
+  });
+
   it("excludes unsafe containers from discovery", () => {
     const source = [
       "<div>",
@@ -94,6 +130,26 @@ describe("preparePreview source locations", () => {
     const images = [...analyzePage(source).candidates.values()].filter((c) => c.kind === "image");
     expect(images).toHaveLength(1);
     expect(images[0]!.attrs.has("src")).toBe(true);
+  });
+
+  it("honors simple ignore selectors for preview and patches", async () => {
+    const source = `<p class="generated">ignored</p><p>editable</p>`;
+    const preview = preparePreview(source, "/index.html", "https://example.com", [".generated"]);
+    expect(preview.html).toContain('<p class="generated">ignored</p>');
+    expect(preview.html).not.toContain('<p class="generated" data-xyle-node=');
+    expect([...preview.nodes.values()]).toHaveLength(1);
+    const bytes = enc.encode(source);
+    await expect(
+      patchHtml(
+        bytes,
+        {
+          pagePath: "/index.html",
+          baseDigest: await digestBytes(bytes),
+          operations: [{ type: "text", nodeId: "n2#0", value: "tampered" }],
+        },
+        { ignoreSelectors: [".generated"] },
+      ),
+    ).rejects.toThrow(/unknown text target/);
   });
 
   it("injects a base tag only when missing and neutralizes meta refresh", () => {

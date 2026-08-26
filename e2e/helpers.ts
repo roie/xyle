@@ -16,27 +16,29 @@ export async function waitForEditorReady(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement | null)
       ?.contentDocument;
-    return !!doc && doc.querySelectorAll("[data-xyle-node]").length > 0;
+    return (
+      !!doc &&
+      doc.querySelectorAll("[data-xyle-node]").length > 0 &&
+      !!document.getElementById("xyle-overlay-root")
+    );
   });
 }
 
+interface XyleTestWindow extends Window {
+  __xyle?: {
+    count?: number;
+    ops?: Array<{ pagePath: string; op: Record<string, unknown> }>;
+  };
+}
+
 export async function opsCount(page: Page): Promise<number> {
-  return page.evaluate(
-    () => (window as never as { __xyle?: { count: number } }).__xyle?.count ?? -1,
-  );
+  return page.evaluate(() => (window as XyleTestWindow).__xyle?.count ?? -1);
 }
 
 export async function currentOps(
   page: Page,
 ): Promise<Array<{ pagePath: string; op: Record<string, unknown> }>> {
-  return page.evaluate(
-    () =>
-      (
-        window as unknown as {
-          __xyle?: { ops: Array<{ pagePath: string; op: Record<string, unknown> }> };
-        }
-      ).__xyle?.ops ?? [],
-  );
+  return page.evaluate(() => (window as XyleTestWindow).__xyle?.ops ?? []);
 }
 
 /** Find the ephemeral node id of the candidate whose text contains `needle`. */
@@ -136,32 +138,51 @@ export async function focusCaret(
   nodeId: string,
   where: "start" | "end",
 ): Promise<void> {
-  await setSelection(page, {
-    nodeId,
-    ...(where === "start" ? { startOffset: 0, endOffset: 0 } : {}),
-    ...(where === "end" ? {} : {}),
-  });
-  if (where === "end") {
-    await page.evaluate((id) => {
+  await page.evaluate(
+    ({ id, where: position }) => {
       const iframe = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const doc = iframe.contentDocument!;
       const win = iframe.contentWindow!;
-      const el = iframe.contentDocument!.querySelector(`[data-xyle-node="${id}"]`) as HTMLElement;
+      const el = doc.querySelector(`[data-xyle-node="${id}"]`) as HTMLElement;
+      const range = doc.createRange();
+      if (position === "end") {
+        range.selectNodeContents(el);
+        range.collapse(false);
+      } else {
+        const firstText = (node: Node): Text | null => {
+          if (node.nodeType === Node.TEXT_NODE) return node as Text;
+          if (
+            node.nodeType === Node.ELEMENT_NODE &&
+            (node as Element).hasAttribute("data-xyle-node")
+          ) {
+            return null;
+          }
+          for (const child of Array.from(node.childNodes)) {
+            const text = firstText(child);
+            if (text) return text;
+          }
+          return null;
+        };
+        const text = firstText(el);
+        if (!text) return;
+        const leadingWhitespace = text.data.match(/^[\\t\\n\\r ]*/)?.[0].length ?? 0;
+        range.setStart(text, leadingWhitespace);
+        range.collapse(true);
+      }
       const selection = win.getSelection()!;
-      const range = win.document.createRange();
-      range.selectNodeContents(el);
-      range.collapse(false);
       selection.removeAllRanges();
       selection.addRange(range);
       el.focus();
-    }, nodeId);
-  }
+    },
+    { id: nodeId, where },
+  );
 }
 
 export async function clickOutsideToCommit(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const shell = document.getElementById("xyle-bar-left")!;
-    shell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-  });
+  await page
+    .frameLocator("#xyle-preview")
+    .locator("html")
+    .click({ position: { x: 1, y: 1 } });
 }
 
 export async function pressInEditor(

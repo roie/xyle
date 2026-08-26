@@ -265,7 +265,7 @@ test.describe("editing fidelity gate", () => {
     for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Shift+Enter");
     await page.waitForTimeout(150);
-    expect(await nodeHtml(page, id!)).toContain("<br>");
+    expect(await nodeHtml(page, id!)).toMatch(/<br(?:\s[^>]*)?>/);
     await clickOutsideToCommit(page);
     const op = await textOpFor(page);
     expect(op?.value.includes("\n")).toBe(true);

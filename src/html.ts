@@ -7,7 +7,7 @@ import type {
   PreviewNode,
   XyleDigest,
 } from "./types.ts";
-import { digestBytes } from "./manifest.ts";
+import { digestBytes } from "./digest.ts";
 
 type P5Document = DefaultTreeAdapterTypes.Document;
 type P5Node = DefaultTreeAdapterTypes.Node;
@@ -43,6 +43,10 @@ const TEXT_CONTAINER_TAGS = new Set([
   "li",
   "dt",
   "dd",
+  "strong",
+  "em",
+  "span",
+  "small",
 ]);
 
 const MULTILINE_TAGS = new Set(["p", "blockquote", "figcaption", "li"]);
@@ -148,6 +152,7 @@ function collectSegments(root: P5Element, stopAt: (el: P5Element) => boolean): S
     if (node.nodeName === "#text") {
       const loc = node.sourceCodeLocation;
       if (loc) {
+        // SAFETY: parse5 text nodes expose `value`, omitted from the broad node union.
         const value = String((node as unknown as { value: string }).value);
         segments.push({ start: loc.startOffset, end: loc.endOffset, text: value });
       }
@@ -174,7 +179,23 @@ function collectAttrRanges(el: P5Element): Map<string, AttrRange> {
   return map;
 }
 
-export function analyzePage(source: string): PageAnalysis {
+function matchesIgnoreSelector(el: P5Element, selectors: string[]): boolean {
+  const id = attrValue(el, "id");
+  const classes = new Set((attrValue(el, "class") ?? "").split(/\s+/).filter(Boolean));
+  return selectors.some((raw) =>
+    raw
+      .split(",")
+      .map((selector) => selector.trim())
+      .some((selector) => {
+        if (!selector) return false;
+        if (selector.startsWith("#")) return id === selector.slice(1);
+        if (selector.startsWith(".")) return classes.has(selector.slice(1));
+        return /^[a-z][a-z0-9-]*$/i.test(selector) && el.tagName === selector.toLowerCase();
+      }),
+  );
+}
+
+export function analyzePage(source: string, ignoreSelectors: string[] = []): PageAnalysis {
   const doc = parse(source, { sourceCodeLocationInfo: true }) as P5Document;
   const candidates = new Map<string, Candidate>();
   const injections: PageAnalysis["injections"] = [];
@@ -185,7 +206,12 @@ export function analyzePage(source: string): PageAnalysis {
   const isNestedCandidateStop = (el: P5Element): boolean =>
     el.tagName === "a" || el.tagName === "img";
 
-  const visit = (node: P5Node, insidePicture: boolean, insideTextContainer: boolean): void => {
+  const visit = (
+    node: P5Node,
+    insidePicture: boolean,
+    insideTextContainer: boolean,
+    insideIgnored: boolean,
+  ): void => {
     if (!isElement(node)) return;
 
     const tag = node.tagName;
@@ -206,6 +232,9 @@ export function analyzePage(source: string): PageAnalysis {
       }
       return;
     }
+
+    const ignored = insideIgnored || matchesIgnoreSelector(node, ignoreSelectors);
+    if (ignored) return;
 
     let becameCandidate = false;
 
@@ -294,13 +323,18 @@ export function analyzePage(source: string): PageAnalysis {
     const suppressesChildren = becameCandidate;
 
     for (const child of node.childNodes) {
-      visit(child, insidePicture || tag === "picture", insideTextContainer || suppressesChildren);
+      visit(
+        child,
+        insidePicture || tag === "picture",
+        insideTextContainer || suppressesChildren,
+        ignored,
+      );
     }
   };
 
   const htmlEl = doc.childNodes.find((n) => isElement(n) && n.tagName === "html");
   const roots = htmlEl && isElement(htmlEl) ? htmlEl.childNodes : doc.childNodes;
-  for (const child of roots) visit(child, false, false);
+  for (const child of roots) visit(child, false, false, false);
 
   return { candidates, injections, removals, baseTagNeeded };
 }
@@ -356,8 +390,9 @@ export function preparePreview(
   source: string,
   pagePath: string,
   publicBaseUrl: string,
+  ignoreSelectors: string[] = [],
 ): PreparedPreview {
-  const analysis = analyzePage(source);
+  const analysis = analyzePage(source, ignoreSelectors);
   const nodes = new Map<string, PreviewNode>();
 
   for (const c of analysis.candidates.values()) {
@@ -447,13 +482,23 @@ function renderTextMarkup(text: string, multilineAllowed: boolean): string {
   return text.split("\n").map(escapeHtmlText).join("<br>");
 }
 
-export async function patchHtml(source: Uint8Array, change: PageChange): Promise<Uint8Array> {
+export async function patchHtml(
+  source: Uint8Array,
+  change: PageChange,
+  options: { ignoreSelectors?: string[] } = {},
+): Promise<Uint8Array> {
   await assertFreshSource(source, change.baseDigest);
 
-  const decoder = new TextDecoder();
+  // Fail closed rather than silently replacing invalid bytes. ignoreBOM keeps an
+  // existing UTF-8 BOM in the source text so encoding preserves it exactly.
+  let sourceText: string;
+  try {
+    sourceText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(source);
+  } catch {
+    throw new Error("HTML source is not valid UTF-8; byte-preserving edits are unavailable");
+  }
   const encoder = new TextEncoder();
-  const sourceText = decoder.decode(source);
-  const analysis = analyzePage(sourceText);
+  const analysis = analyzePage(sourceText, options.ignoreSelectors ?? []);
 
   /** key: `${nodeId}#${segmentIndex}` -> pending text/lineBreak intent */
   const textIntents = new Map<

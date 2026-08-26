@@ -10,12 +10,12 @@ const SVG_BYTES = Buffer.from(
 );
 
 test.describe("media editing", () => {
-  test("simple images expose Replace/Media controls inside the image box", async ({ page }) => {
+  test("hovering an image exposes compact Replace/Media controls", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const id = await page.evaluate(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       for (const el of doc.querySelectorAll("img[data-xyle-node]")) {
-        if ((el as HTMLImageElement).getAttribute("src") === "/assets/hero.webp") {
+        if ((el as HTMLImageElement).getAttribute("src") === "/assets/hero-wide.webp") {
           return el.getAttribute("data-xyle-node");
         }
       }
@@ -23,17 +23,20 @@ test.describe("media editing", () => {
     });
     expect(id).toBeTruthy();
 
-    await page.evaluate((nodeId) => {
-      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
-      const img = frame.contentDocument!.querySelector(`[data-xyle-node="${nodeId}"]`)!;
-      img.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-    }, id);
-
-    const tools = page.evaluate(() => {
-      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-      return doc.querySelectorAll(".xyle-img-tools button").length;
-    });
-    await expect.poll(async () => tools, { timeout: 3000 }).toBe(2);
+    const image = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${id}"]`);
+    await image.hover();
+    const tools = page.locator(".xyle-img-tools");
+    await expect(tools).toBeVisible();
+    await expect(tools.getByRole("button", { name: "Replace" })).toBeVisible();
+    await expect(tools.getByRole("button", { name: "Media" })).toBeVisible();
+    await expect(tools.getByRole("button", { name: "Alt" })).toBeVisible();
+    const geometry = await tools.boundingBox();
+    const viewport = page.viewportSize()!;
+    expect(geometry).toBeTruthy();
+    expect(geometry!.x).toBeGreaterThanOrEqual(0);
+    expect(geometry!.y).toBeGreaterThanOrEqual(0);
+    expect(geometry!.x + geometry!.width).toBeLessThanOrEqual(viewport.width);
+    expect(geometry!.y + geometry!.height).toBeLessThanOrEqual(viewport.height);
 
     // picture/srcset image is not a candidate at all
     const pictureCandidates = await page.evaluate(() => {
@@ -43,12 +46,26 @@ test.describe("media editing", () => {
     expect(pictureCandidates).toBe(0);
   });
 
+  test("keyboard image activation focuses actions and Escape returns focus", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    await image.focus();
+    await page.keyboard.press("Enter");
+    const replace = page.locator(".xyle-img-tools").getByRole("button", { name: "Replace" });
+    await expect(replace).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(image).toBeFocused();
+    await expect(page.locator(".xyle-img-tools")).toHaveCount(0);
+  });
+
   test("replacing an image previews via blob and records a src op", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const id = await page.evaluate(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       for (const el of doc.querySelectorAll("img[data-xyle-node]")) {
-        if ((el as HTMLImageElement).getAttribute("src") === "/assets/hero.webp") {
+        if ((el as HTMLImageElement).getAttribute("src") === "/assets/hero-wide.webp") {
           return el.getAttribute("data-xyle-node");
         }
       }
@@ -56,27 +73,16 @@ test.describe("media editing", () => {
     });
     expect(id).toBeTruthy();
 
-    // hover to reveal in-image tools, then click Replace
-    await page.evaluate((nodeId) => {
-      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
-      const img = frame.contentDocument!.querySelector(`[data-xyle-node="${nodeId}"]`)!;
-      img.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-    }, id);
+    // select the image, then click Replace
+    await page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${id}"]`).click();
     await expect
       .poll(async () =>
-        page.evaluate(() => {
-          const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
-            .contentDocument!;
-          return doc.querySelectorAll(".xyle-img-tools button").length;
-        }),
+        page.evaluate(() => document.querySelectorAll(".xyle-img-tools button").length),
       )
-      .toBe(2);
+      .toBe(3);
 
     const chooserPromise = page.waitForEvent("filechooser");
-    await page
-      .frameLocator("#xyle-preview")
-      .locator(".xyle-img-tools button:has-text('Replace')")
-      .click();
+    await page.locator(".xyle-img-tools button:has-text('Replace')").click();
     const chooser = await chooserPromise;
     await chooser.setFiles({
       name: "replacement.png",
@@ -98,7 +104,101 @@ test.describe("media editing", () => {
 
     const ops = await currentOps(page);
     const srcOp = ops.find((entry) => entry.op.type === "src");
-    expect(srcOp?.op.value).toMatch(/^\/__media\/[0-9a-f]{12}\.png$/);
+    expect(srcOp?.op.value).toMatch(/^\/__media\/[0-9a-f]{64}\.png$/);
+  });
+
+  test("upload path uses detected bytes instead of the supplied MIME type", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    await image.click();
+    const chooserPromise = page.waitForEvent("filechooser");
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Replace" }).click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles({
+      name: "mislabelled.jpg",
+      mimeType: "image/jpeg",
+      buffer: PNG_BYTES,
+    });
+
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    const srcOp = (await currentOps(page)).find((entry) => entry.op.type === "src");
+    expect(srcOp?.op.value).toMatch(/^\/__media\/[0-9a-f]{64}\.png$/);
+  });
+
+  test("pointer-opened media drawer restores focus to the selected image", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Media" }).click();
+    const drawer = page.getByRole("dialog", { name: "Media" });
+    await expect(drawer).toBeVisible();
+    await page.evaluate(() => {
+      document.querySelector(".xyle-img-tools")?.remove();
+    });
+    await drawer.getByRole("button", { name: "Close media drawer" }).click();
+    await expect(drawer).toHaveCount(0);
+    await expect(image).toBeFocused();
+  });
+
+  test("repeated local replacements remain reachable through undo and redo", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page.frameLocator("#xyle-preview").locator("img[data-xyle-node]");
+    await image.click();
+    const replaceWith = async (name: string, buffer: Buffer): Promise<void> => {
+      const chooserPromise = page.waitForEvent("filechooser");
+      await page.locator(".xyle-img-tools").getByRole("button", { name: "Replace" }).click();
+      const chooser = await chooserPromise;
+      await chooser.setFiles({ name, mimeType: "image/png", buffer });
+      await expect
+        .poll(async () => (await image.getAttribute("src"))?.startsWith("blob:"))
+        .toBe(true);
+    };
+
+    await replaceWith("first.png", PNG_BYTES);
+    const firstPreview = await image.getAttribute("src");
+    await replaceWith("second.png", Buffer.concat([PNG_BYTES, Buffer.from([0])]));
+    const secondPreview = await image.getAttribute("src");
+    expect(secondPreview).not.toBe(firstPreview);
+
+    await page.keyboard.press("Control+z");
+    await expect(image).toHaveAttribute("src", firstPreview!);
+    await page.keyboard.press("Control+Shift+z");
+    await expect(image).toHaveAttribute("src", secondPreview!);
+  });
+
+  test("Discard closes media UI and clears stale image selection", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page.frameLocator("#xyle-preview").locator("img[data-xyle-node]");
+    await expect(image).toHaveAttribute("src", "/assets/hero-wide.webp");
+    await image.click();
+    const chooserPromise = page.waitForEvent("filechooser");
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Replace" }).click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles({
+      name: "discarded.png",
+      mimeType: "image/png",
+      buffer: PNG_BYTES,
+    });
+    await expect.poll(async () => opsCount(page)).toBe(1);
+
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Media" }).click();
+    await expect(page.getByRole("dialog", { name: "Media" })).toBeVisible();
+    await page.click("#xyle-changes");
+    await expect(page.getByRole("dialog", { name: "Changes" })).toBeVisible();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.click("#xyle-discard");
+
+    await expect(page.locator("#xyle-media-drawer,#xyle-changes-drawer")).toHaveCount(0);
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await page.waitForFunction(() => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
+      const restored = doc?.querySelector('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+      return Boolean(restored && document.getElementById("xyle-overlay-root"));
+    });
   });
 
   test("media drawer lists site images anywhere in the tree", async ({ page }) => {
@@ -118,23 +218,14 @@ test.describe("media editing", () => {
     });
     expect(imgId).toBeTruthy();
 
-    await page.evaluate((nodeId) => {
-      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
-      const img = frame.contentDocument!.querySelector(`[data-xyle-node="${nodeId}"]`)!;
-      img.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-      img.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    }, imgId);
+    const image = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${imgId}"]`);
+    await image.click();
+    const mediaButton = page.locator(".xyle-img-tools").getByRole("button", { name: "Media" });
+    await expect(mediaButton).toBeVisible();
+    await mediaButton.click();
+    await expect(page.locator("#xyle-media-drawer")).toBeVisible();
+    await expect(page.locator("dialog input[name=alt]")).toHaveCount(0);
 
-    // alt dialog opened — cancel, then open the drawer via the tools
-    await page.waitForTimeout(150);
-    await page.keyboard.press("Escape");
-
-    await page.evaluate(() => {
-      const w = window as unknown as { __xyleOpenDrawer?: () => void };
-      void w;
-    });
-
-    // fallback: trigger the drawer directly through the shell keyboard path
     await page.evaluate(async () => {
       const res = await fetch("/__xyle/api/media");
       (window as unknown as { __mediaItems?: unknown }).__mediaItems = await res.json();
@@ -145,13 +236,13 @@ test.describe("media editing", () => {
     const paths = items.map((i) => i.path);
     expect(paths).toContain("/misc/team.jpg");
     expect(paths).toContain("/misc/unused-badge.png"); // unused asset still discovered
-    expect(paths).toContain("/assets/hero.webp"); // non-uniform folders included
+    expect(paths).toContain("/assets/hero-wide.webp"); // non-uniform folders included
 
     const usedFlag = await page.evaluate(() => {
       const items2 = (
         window as unknown as { __mediaItems?: Array<{ path: string; usedBySimpleImg: boolean }> }
       ).__mediaItems!;
-      return items2.find((i) => i.path === "/assets/hero.webp")!.usedBySimpleImg;
+      return items2.find((i) => i.path === "/assets/hero-wide.webp")!.usedBySimpleImg;
     });
     expect(usedFlag).toBe(true);
   });
@@ -172,8 +263,9 @@ test.describe("media editing", () => {
       "/__media/aaaaaaaaaaaa.svg",
       new File([SVG_BYTES], "evil.svg", { type: "image/svg+xml" }),
     );
+    const origin = new URL(page.url()).origin;
     const res1 = await page.request.post("/__xyle/api/publish", {
-      headers: { "x-xyle-request": "1", origin: "http://127.0.0.1:4173" },
+      headers: { "x-xyle-request": "1", origin },
       multipart: svgForm,
     });
     expect(res1.status()).toBe(400);
@@ -192,14 +284,14 @@ test.describe("media editing", () => {
       new File([bigBytes], "big.png", { type: "image/png" }),
     );
     const res2 = await page.request.post("/__xyle/api/publish", {
-      headers: { "x-xyle-request": "1", origin: "http://127.0.0.1:4173" },
+      headers: { "x-xyle-request": "1", origin },
       multipart: bigForm,
     });
-    expect(res2.status()).toBe(400);
-    expect(await res2.text()).toMatch(/exceeds/i);
+    expect(res2.status()).toBe(413);
+    expect(await res2.text()).toMatch(/large/i);
   });
 
-  test("alt text can be edited and publishes to source", async ({ page }) => {
+  test("alt text can be edited and publishes to source", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/about.html");
     const imgId = await page.evaluate(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
@@ -211,18 +303,54 @@ test.describe("media editing", () => {
       return null;
     });
 
+    const image = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${imgId}"]`);
+    const originalAlt = (await image.getAttribute("alt")) ?? "";
     await clickNode(page, imgId!);
+    const altButton = page.locator(".xyle-img-tools").getByRole("button", { name: "Alt" });
+    await expect(altButton).toBeVisible();
+    await altButton.click();
     await expect(page.locator("dialog input[name=alt]")).toBeVisible();
-    await page.fill("dialog input[name=alt]", "Crew photo, spring cleanup");
+    const altText = `Crew photo, spring cleanup ${info.project.name}`;
+    await page.fill("dialog input[name=alt]", altText);
     await page.click("dialog button[value='save']");
     await expect.poll(async () => opsCount(page)).toBe(1);
     const ops = await currentOps(page);
     expect(ops[0]?.op.type).toBe("alt");
 
+    await page.click("#xyle-changes");
+    const change = page
+      .getByRole("dialog", { name: "Changes" })
+      .locator(".xyle-change-row")
+      .filter({ hasText: "Alt text" });
+    await expect(change.locator(".xyle-change-before")).toContainText(originalAlt);
+    await expect(change.locator(".xyle-change-after")).toContainText(altText);
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
     await page.click("#xyle-publish");
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     const html = await (await page.request.get("/about.html")).text();
-    expect(html).toContain('alt="Crew photo, spring cleanup"');
+    expect(html).toContain(`alt="${altText}"`);
     expect(html).not.toContain("unused-placeholder");
+  });
+
+  test("published uploads remain in the next filesystem snapshot", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    await image.click();
+    const chooserPromise = page.waitForEvent("filechooser");
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Replace" }).click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles({ name: "published.png", mimeType: "image/png", buffer: PNG_BYTES });
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    const srcOp = (await currentOps(page)).find((entry) => entry.op.type === "src");
+    const uploadedPath = String(srcOp?.op.value);
+    expect(uploadedPath).toMatch(/^\/__media\/[0-9a-f]{64}\.png$/);
+
+    await page.click("#xyle-publish");
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    expect((await page.request.get(uploadedPath)).ok()).toBe(true);
+    expect((await page.request.get("/__xyle/api/manifest")).ok()).toBe(true);
   });
 });

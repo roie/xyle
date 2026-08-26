@@ -1,6 +1,836 @@
 // Xyle editor shell — browser-side control layer.
 // Drafts live only in memory; publish patches original static source server-side.
 
+const editorStyles = `
+@layer xyle.tokens {
+  :root {
+    color-scheme: dark;
+    --xyle-ink: #f2f3ef;
+    --xyle-muted: #a5a8a0;
+    --xyle-surface: #1c1d1b;
+    --xyle-raised: #252724;
+    --xyle-line: #3a3c38;
+    --xyle-accent: #667a61;
+    --xyle-accent-hover: #7f9378;
+    --xyle-accent-soft: #667a6126;
+    --xyle-success: #6da77a;
+    --xyle-danger: #d26d6d;
+    --xyle-focus: #d9ded7;
+    --xyle-font-ui:
+      ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --xyle-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --xyle-radius-sm: 6px;
+    --xyle-radius-md: 8px;
+    --xyle-space-1: 4px;
+    --xyle-space-2: 8px;
+    --xyle-space-3: 12px;
+    --xyle-space-4: 16px;
+    --xyle-space-6: 24px;
+    --xyle-space-8: 32px;
+  }
+}
+
+@layer xyle.reset, xyle.components;
+
+@layer xyle.reset {
+  #xyle-shell,
+  #xyle-overlay-root,
+  #xyle-flash,
+  #xyle-conflict,
+  #xyle-control-dock,
+  .xyle-drawer,
+  dialog.xyle-dialog {
+    --xyle-font-ui:
+      ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --xyle-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--xyle-font-ui) !important;
+  }
+
+  #xyle-shell,
+  #xyle-shell *,
+  #xyle-shell *::before,
+  #xyle-shell *::after,
+  #xyle-flash,
+  #xyle-flash *,
+  #xyle-conflict,
+  #xyle-conflict *,
+  #xyle-control-dock,
+  #xyle-control-dock *,
+  .xyle-drawer,
+  .xyle-drawer *,
+  dialog.xyle-dialog,
+  dialog.xyle-dialog * {
+    box-sizing: border-box;
+  }
+}
+
+@layer xyle.components {
+  #xyle-shell {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: transparent;
+    color: var(--xyle-ink);
+    font-family: var(--xyle-font-ui);
+  }
+
+  #xyle-preview-host {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    padding: 0;
+  }
+  #xyle-preview {
+    position: relative;
+    z-index: 1;
+    border: 0 !important;
+    border-radius: 0;
+    background: #fff !important;
+    box-shadow: none;
+  }
+  #xyle-flash,
+  #xyle-conflict,
+  #xyle-control-dock {
+    font-family: var(--xyle-font-ui);
+  }
+  #xyle-flash {
+    position: fixed;
+    top: 5.2rem;
+    left: 50%;
+    z-index: 2147483647;
+    max-width: calc(100vw - 2rem);
+    padding: 0.65rem 0.9rem;
+    transform: translateX(-50%);
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-md);
+    background: #1c1d1bf5;
+    color: var(--xyle-ink);
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: 0 8px 20px #00000055;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+  }
+  #xyle-flash.visible {
+    opacity: 1;
+  }
+
+  #xyle-control-dock {
+    all: initial;
+    position: fixed;
+    bottom: max(0.5rem, env(safe-area-inset-bottom));
+    left: 50%;
+    z-index: 2147483647;
+    display: flex;
+    width: max-content;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--xyle-space-1);
+    transform: translateX(-50%);
+    isolation: isolate;
+    pointer-events: none;
+    transition: transform 0.35s cubic-bezier(0.485, -0.05, 0.285, 1.505);
+  }
+  #xyle-control-dock[data-hidden] {
+    transform: translate(-50%, calc(100% - 28px));
+  }
+  #xyle-control-dock[data-hidden] #xyle-control-bar .xyle-icon-button {
+    opacity: 0.35;
+  }
+  #xyle-control-hitbox {
+    position: absolute;
+    inset: -42px 0 auto;
+    height: 42px;
+    pointer-events: auto;
+  }
+  #xyle-dock-handle {
+    display: flex;
+    min-width: 4.5rem;
+    height: 22px;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
+    padding: 0 0.55rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: 999px;
+    background: #1c1d1bf5;
+    color: var(--xyle-ink);
+    font: 600 11px / 1 var(--xyle-font-ui);
+    box-shadow: 0 3px 9px #00000055;
+    cursor: pointer;
+    pointer-events: auto;
+    touch-action: manipulation;
+  }
+  #xyle-dock-handle:hover,
+  #xyle-dock-handle:focus-visible {
+    background: #30322f;
+    outline: 2px solid var(--xyle-accent);
+    outline-offset: 2px;
+  }
+  #xyle-control-dock:not([data-hidden]) #xyle-dock-handle {
+    opacity: 0.72;
+  }
+  #xyle-control-bar {
+    display: flex;
+    height: 38px;
+    align-items: center;
+    overflow: visible;
+    padding: 0 2px;
+    border: 1px solid var(--xyle-line);
+    border-radius: 999px;
+    background: #1c1d1bf5;
+    box-shadow: 0 5px 14px #00000055;
+    pointer-events: auto;
+    touch-action: manipulation;
+  }
+  #xyle-bar-left,
+  #xyle-dirty {
+    position: static;
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .xyle-icon-button {
+    position: relative;
+    display: grid;
+    width: 40px;
+    height: 36px;
+    place-items: center;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: var(--xyle-radius-sm);
+    background: transparent;
+    color: #fff;
+    font: 400 1rem / 1.2 var(--xyle-font-ui);
+    cursor: pointer;
+    transition:
+      background 0.1s ease,
+      opacity 0.15s ease;
+  }
+  .xyle-icon-button:hover,
+  .xyle-icon-button:focus-visible {
+    background: #ffffff1a;
+  }
+  .xyle-icon-button:disabled {
+    cursor: wait;
+    opacity: 0.38;
+  }
+  .xyle-icon-button svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.8;
+  }
+  .xyle-icon-button[data-tooltip]::after {
+    position: absolute;
+    bottom: calc(100% + 7px);
+    left: 50%;
+    padding: 4px 7px;
+    transform: translateX(-50%);
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: var(--xyle-raised);
+    color: var(--xyle-ink);
+    content: attr(data-tooltip);
+    font: 500 12px / 1.2 var(--xyle-font-ui);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease 0.12s;
+    white-space: nowrap;
+    box-shadow: 0 3px 10px #00000055;
+  }
+  .xyle-icon-button[data-tooltip]:hover::after,
+  .xyle-icon-button[data-tooltip]:focus-visible::after {
+    opacity: 1;
+  }
+  .xyle-icon-button--publish {
+    color: #fff;
+  }
+  #xyle-editables[aria-pressed="true"] {
+    background: var(--xyle-accent-soft);
+    color: #dce5d9;
+  }
+  .xyle-count-badge {
+    position: absolute;
+    top: 2px;
+    right: 1px;
+    display: grid;
+    min-width: 15px;
+    height: 15px;
+    place-items: center;
+    padding: 0 3px;
+    border: 2px solid #1c1d1b;
+    border-radius: 999px;
+    background: #d9ded7;
+    color: #1c1d1b;
+    font: 700 9px / 1 var(--xyle-font-ui);
+    font-variant-numeric: tabular-nums;
+  }
+  .xyle-control:focus-visible,
+  .xyle-icon-button:focus-visible,
+  .xyle-menu-item:focus-visible,
+  #xyle-media-drawer button:focus-visible,
+  #xyle-media-drawer input:focus-visible,
+  dialog button:focus-visible,
+  dialog input:focus-visible {
+    outline: 2px solid var(--xyle-focus);
+    outline-offset: 2px;
+  }
+
+  dialog.xyle-dialog {
+    width: min(31rem, calc(100vw - 2rem));
+    padding: 0;
+    border: 1px solid var(--xyle-line);
+    border-radius: 10px;
+    background: var(--xyle-surface);
+    color: var(--xyle-ink);
+    box-shadow: 0 18px 48px #00000066;
+  }
+  dialog.xyle-dialog::backdrop {
+    background: #00000099;
+    backdrop-filter: blur(2px);
+  }
+  .xyle-dialog-form {
+    display: grid;
+    gap: 0.75rem;
+    padding: 1.25rem;
+    font: 500 13px / 1.4 var(--xyle-font-ui);
+  }
+  .xyle-dialog-heading {
+    display: grid;
+    gap: 0.22rem;
+    margin-bottom: 0.15rem;
+  }
+  .xyle-dialog-kicker {
+    color: #a1b69a;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .xyle-dialog-heading strong {
+    font-size: 16px;
+    letter-spacing: -0.015em;
+  }
+  .xyle-dialog-label {
+    display: grid;
+    gap: 0.4rem;
+    color: var(--xyle-muted);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .xyle-dialog-input {
+    width: 100%;
+    min-width: 0;
+    padding: 0.65rem 0.7rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: #141513;
+    color: var(--xyle-ink);
+    font: 500 13px / 1.3 var(--xyle-font-ui);
+  }
+  .xyle-dialog-input:focus {
+    border-color: #a1b69a;
+    outline: 2px solid var(--xyle-accent-soft);
+    outline-offset: 1px;
+  }
+  .xyle-dialog-error {
+    min-height: 1.1rem;
+    margin: 0;
+    color: var(--xyle-danger);
+    font-size: 12px;
+  }
+  .xyle-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.2rem;
+  }
+  .xyle-dialog-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    min-height: 2.25rem;
+    padding: 0 0.8rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: transparent;
+    color: var(--xyle-ink);
+    font: 600 12px / 1 var(--xyle-font-ui);
+    cursor: pointer;
+  }
+  .xyle-dialog-button:hover {
+    background: var(--xyle-accent-soft);
+    border-color: #5b6058;
+  }
+  .xyle-dialog-button--primary {
+    border-color: var(--xyle-accent);
+    background: var(--xyle-accent);
+    color: #fff;
+  }
+  .xyle-dialog-button--primary:hover {
+    background: var(--xyle-accent-hover);
+    border-color: var(--xyle-accent-hover);
+  }
+  .xyle-dialog-button--accent {
+    border-color: #d26d6d66;
+    background: #d26d6d14;
+    color: #e38a8a;
+  }
+  .xyle-dialog-button--accent:hover {
+    background: #d26d6d24;
+    border-color: var(--xyle-danger);
+  }
+
+  #xyle-menu {
+    position: fixed;
+    bottom: 50px;
+    left: 50%;
+    z-index: 2147483648;
+    display: none;
+    min-width: 13rem;
+    transform: translateX(-50%);
+    overflow: hidden;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-md);
+    background: var(--xyle-raised);
+    box-shadow: 0 8px 24px #00000026;
+  }
+  #xyle-conflict {
+    position: fixed;
+    top: 5.25rem;
+    left: 50%;
+    z-index: 2147483647;
+    display: none;
+    width: min(34rem, calc(100vw - 2rem));
+    transform: translateX(-50%);
+    padding: 1rem 1.1rem;
+    border: 1px solid #b8954a66;
+    border-radius: 10px;
+    background: #29271ff5;
+    color: var(--xyle-ink);
+    box-shadow: 0 12px 30px #00000066;
+  }
+  #xyle-conflict strong {
+    font-size: 15px;
+  }
+  #xyle-conflict p {
+    margin: 0.4rem 0 0.9rem;
+    color: #c7c0a9;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .xyle-conflict-action {
+    min-height: 2.25rem;
+    padding: 0 0.75rem;
+    border: 1px solid #b8954a;
+    border-radius: var(--xyle-radius-sm);
+    background: #b8954a;
+    color: #201d14;
+    font: 600 12px var(--xyle-font-ui);
+    cursor: pointer;
+  }
+  .xyle-conflict-action--quiet {
+    margin-left: 0.4rem;
+    border-color: var(--xyle-line);
+    background: transparent;
+    color: var(--xyle-ink);
+  }
+
+  .xyle-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2147483647;
+    display: flex;
+    width: min(25rem, 100vw);
+    max-width: 100vw;
+    flex-direction: column;
+    padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+      max(1rem, env(safe-area-inset-bottom)) 1rem;
+    overflow: hidden;
+    border-left: 1px solid var(--xyle-line);
+    background: #1c1d1b;
+    color: var(--xyle-ink);
+    overscroll-behavior: contain;
+  }
+  .xyle-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+  .xyle-drawer-header strong {
+    display: block;
+    font-size: 16px;
+    letter-spacing: -0.02em;
+  }
+  #xyle-media-drawer .xyle-icon-button,
+  #xyle-changes-drawer .xyle-icon-button {
+    width: 2.25rem;
+    height: 2.25rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: transparent;
+    color: var(--xyle-ink);
+    font-size: 1.25rem;
+  }
+  #xyle-media-drawer .xyle-icon-button:hover,
+  #xyle-changes-drawer .xyle-icon-button:hover {
+    background: var(--xyle-accent-soft);
+    color: #dce5d9;
+  }
+  .xyle-changes-list {
+    display: grid;
+    flex: 1;
+    align-content: start;
+    gap: 1rem;
+    overflow: auto;
+  }
+  .xyle-change-page-group {
+    display: grid;
+    gap: 0.5rem;
+  }
+  .xyle-change-page {
+    margin: 0;
+    color: var(--xyle-muted);
+    font: 600 11px / 1.4 var(--xyle-font-mono);
+    overflow-wrap: anywhere;
+  }
+  .xyle-change-row {
+    display: grid;
+    gap: 0.65rem;
+    padding: 0.75rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-md);
+    background: var(--xyle-raised);
+  }
+  .xyle-change-row-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .xyle-change-label {
+    color: var(--xyle-ink);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .xyle-change-comparison {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .xyle-change-value {
+    min-width: 0;
+    padding: 0.6rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    color: var(--xyle-muted);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+  .xyle-change-before {
+    border-color: #d26d6d66;
+    background: #d26d6d0d;
+  }
+  .xyle-change-after {
+    border-color: #6da77a66;
+    background: #6da77a0d;
+    color: var(--xyle-ink);
+  }
+  .xyle-change-value span {
+    display: block;
+    margin-bottom: 0.2rem;
+    color: #777b73;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .xyle-change-arrow {
+    align-self: center;
+    color: #878c83;
+    font-size: 13px;
+  }
+  .xyle-undo-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex: none;
+    min-height: 2rem;
+    padding: 0 0.6rem;
+    border: 1px solid transparent;
+    border-radius: var(--xyle-radius-sm);
+    background: transparent;
+    color: var(--xyle-muted);
+    font: 600 12px var(--xyle-font-ui);
+    cursor: pointer;
+  }
+  .xyle-undo-button:hover {
+    border-color: var(--xyle-accent);
+    color: #a1b69a;
+  }
+  .xyle-action-icon {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.8;
+  }
+  .xyle-empty-state {
+    margin: 1rem 0;
+    padding: 1rem;
+    border: 1px dashed var(--xyle-line);
+    border-radius: var(--xyle-radius-md);
+    color: var(--xyle-muted);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .xyle-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .xyle-media-search {
+    width: 100%;
+    margin-bottom: 0.75rem;
+    padding: 0.65rem 0.7rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: #141513;
+    color: var(--xyle-ink);
+    font: 500 13px var(--xyle-font-ui);
+  }
+  .xyle-media-search::placeholder {
+    color: #777b73;
+  }
+  .xyle-media-tabs {
+    display: flex;
+    gap: 0.35rem;
+    margin-bottom: 0.8rem;
+  }
+  .xyle-media-tab {
+    flex: 1;
+    min-height: 2rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: transparent;
+    color: var(--xyle-muted);
+    font: 600 12px var(--xyle-font-ui);
+    cursor: pointer;
+  }
+  .xyle-media-tab:hover,
+  .xyle-media-tab[aria-pressed="true"] {
+    border-color: var(--xyle-accent);
+    background: var(--xyle-accent-soft);
+    color: #a1b69a;
+  }
+  .xyle-media-grid {
+    display: grid;
+    flex: 1;
+    grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+    align-content: start;
+    gap: 0.55rem;
+    overflow: auto;
+  }
+  .xyle-media-cell {
+    min-width: 0;
+    padding: 0.28rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: var(--xyle-raised);
+    cursor: pointer;
+  }
+  .xyle-media-cell:hover {
+    border-color: var(--xyle-accent);
+    background: var(--xyle-accent-soft);
+  }
+  .xyle-media-thumb {
+    display: block;
+    width: 100%;
+    height: 4.7rem;
+    border-radius: 4px;
+    object-fit: cover;
+  }
+  .xyle-media-upload {
+    min-height: 2.45rem;
+    margin-top: 0.8rem;
+    border: 1px solid var(--xyle-accent);
+    border-radius: var(--xyle-radius-sm);
+    background: var(--xyle-accent);
+    color: #fff;
+    font: 600 12px var(--xyle-font-ui);
+    cursor: pointer;
+  }
+  .xyle-media-upload:hover {
+    background: var(--xyle-accent-hover);
+  }
+  .xyle-menu-item {
+    display: block;
+    width: 100%;
+    padding: 0.65rem 0.8rem;
+    border: 0;
+    background: transparent;
+    color: var(--xyle-ink);
+    text-align: left;
+    font: 500 12px / 1.2 var(--xyle-font-ui);
+    cursor: pointer;
+  }
+  .xyle-menu-item:hover {
+    background: var(--xyle-accent-soft);
+    color: #a1b69a;
+  }
+  .xyle-menu-separator {
+    height: 1px;
+    margin: 0.2rem 0;
+    background: var(--xyle-line);
+  }
+
+  @media (hover: none), (pointer: coarse) {
+    #xyle-control-dock[data-hidden] {
+      transform: translateX(-50%);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #xyle-flash,
+    #xyle-control-dock,
+    .xyle-icon-button {
+      transition: none;
+    }
+  }
+}
+
+@layer xyle.overlay {
+  #xyle-overlay-root {
+    all: initial !important;
+    color: var(--xyle-ink) !important;
+    font-family: var(--xyle-font-ui) !important;
+    font-size: 14px !important;
+    line-height: 1.3 !important;
+    position: fixed !important;
+    inset: 0 !important;
+    display: block !important;
+    pointer-events: none !important;
+    z-index: 2147483646 !important;
+    isolation: isolate !important;
+  }
+
+  [data-xyle-node] {
+    outline: 0 !important;
+    box-shadow: none !important;
+    cursor: text;
+  }
+  img[data-xyle-node] {
+    cursor: pointer;
+  }
+
+  #xyle-overlay-root .xyle-editable-outline {
+    all: initial;
+    position: absolute !important;
+    display: block !important;
+    box-sizing: border-box !important;
+    pointer-events: none !important;
+    border: 2px dashed #a1b69a !important;
+    border-radius: 8px !important;
+    background: transparent !important;
+    opacity: 1 !important;
+  }
+
+  #xyle-overlay-root .xyle-editable-outline.is-active,
+  #xyle-overlay-root .xyle-editable-outline.is-editing {
+    border: 2px solid #667a61 !important;
+  }
+
+  #xyle-overlay-root .xyle-img-tools,
+  #xyle-overlay-root .xyle-link-tools {
+    all: initial;
+    position: fixed !important;
+    display: flex !important;
+    gap: 2px !important;
+    padding: 3px !important;
+    border: 1px solid #ffffff2e !important;
+    border-radius: 9px !important;
+    background: #17201bf2 !important;
+    pointer-events: auto !important;
+    isolation: isolate !important;
+    box-shadow: 0 5px 16px #00000055 !important;
+  }
+
+  #xyle-overlay-root .xyle-img-tools button,
+  #xyle-overlay-root .xyle-link-tools button {
+    all: initial !important;
+    min-height: 28px !important;
+    padding: 0 9px !important;
+    border: 0 !important;
+    border-radius: 6px !important;
+    background: transparent !important;
+    color: #eef3ec !important;
+    font:
+      600 11px / 1.2 var(--xyle-font-ui) !important;
+    cursor: pointer !important;
+    touch-action: manipulation !important;
+  }
+
+  #xyle-overlay-root .xyle-img-tools button:hover,
+  #xyle-overlay-root .xyle-link-tools button:hover,
+  #xyle-overlay-root .xyle-img-tools button:focus-visible,
+  #xyle-overlay-root .xyle-link-tools button:focus-visible {
+    background: #ffffff1f !important;
+  }
+
+  #xyle-overlay-root .xyle-img-tools button:focus-visible,
+  #xyle-overlay-root .xyle-link-tools button:focus-visible {
+    outline: 2px solid #a8bea5 !important;
+    outline-offset: -1px !important;
+  }
+
+  #xyle-overlay-root .xyle-marker {
+    position: absolute !important;
+    display: block !important;
+    width: 7px !important;
+    height: 7px !important;
+    border: 1px solid #fff !important;
+    border-radius: 999px !important;
+    background: #667a61 !important;
+    box-shadow:
+      0 0 0 1px #1b1c1a,
+      0 1px 4px #00000055 !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #xyle-overlay-root .xyle-editable-outline {
+      transition: none !important;
+    }
+  }
+}
+`;
+
 interface NodeMeta {
   id: string;
   pagePath: string;
@@ -34,6 +864,7 @@ interface HistoryEntry {
   label: string;
   undo: () => void;
   redo: () => void;
+  assetPaths: string[];
 }
 
 const MAX_HISTORY = 100;
@@ -45,7 +876,6 @@ const state = {
   historyIndex: 0,
   assets: new Map<string, { file: File; objectUrl: string }>(),
   publishedSnapshotDigest: "",
-  showEditables: localStorage.getItem("xyle.showEditables") === "1",
 };
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document): T =>
@@ -53,12 +883,16 @@ const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = 
 
 /** Test observability hook (read-only). */
 function exposeTestHook(): void {
+  // SAFETY: the test-only hook is intentionally attached to the browser global.
   (window as unknown as { __xyle: unknown }).__xyle = {
     get ops(): unknown[] {
       return state.ops.map((entry) => ({ pagePath: entry.pagePath, op: entry.op }));
     },
     get count(): number {
       return state.ops.length;
+    },
+    get mode(): string {
+      return interactionMode;
     },
   };
 }
@@ -84,6 +918,7 @@ async function boot(): Promise<void> {
   }
 
   buildChrome();
+  void detectMediaSupport();
   exposeTestHook();
   const params = new URLSearchParams(location.search);
   await loadPage(params.get("page") ?? "/index.html", { pushHistory: false });
@@ -104,15 +939,34 @@ async function loadPage(pagePath: string, opts: { pushHistory: boolean }): Promi
     return;
   }
   const data = (await res.json()) as PageData & { baseDigest: string };
+  closeMediaDrawer(false);
+  closeChangesDrawer(false);
+  closeContextTools(false);
+  hoveredCandidate = null;
+  window.clearTimeout(hoverClearTimer);
+  setInteractionMode("idle");
+  selectedImage = null;
+  mediaMutationGeneration += 1;
   state.current = data;
   cachedBaseDigest.set(data.pagePath, data.baseDigest);
+  const pagePathLabel = $("#xyle-page-path");
+  const pageNameLabel = $("#xyle-page-name");
+  if (pagePathLabel) pagePathLabel.textContent = data.pagePath;
+  if (pageNameLabel) {
+    const fileName = data.pagePath.split("/").filter(Boolean).at(-1) ?? "home";
+    pageNameLabel.textContent = fileName === "index.html" ? "Home page" : fileName;
+  }
   state.publishedSnapshotDigest = state.publishedSnapshotDigest || (await snapshotDigest());
 
   renderPreview();
   if (opts.pushHistory) {
-    const url = new URL(location.href);
-    url.searchParams.set("page", data.pagePath);
-    history.replaceState(null, "", url);
+    try {
+      const url = new URL(location.href);
+      url.searchParams.set("page", data.pagePath);
+      history.replaceState(null, "", url);
+    } catch {
+      // The browser location is normally valid; keep the current URL if it is not.
+    }
   }
 }
 
@@ -123,6 +977,7 @@ function renderPreview(): void {
   host.innerHTML = "";
   iframe = document.createElement("iframe");
   iframe.setAttribute("sandbox", "allow-same-origin");
+  iframe.title = "Editable website preview";
   iframe.id = "xyle-preview";
   iframe.style.cssText = "display:block;width:100%;height:100%;border:0;background:#fff";
   iframe.addEventListener("load", () => wirePreview(), { once: true });
@@ -131,7 +986,7 @@ function renderPreview(): void {
   let attempts = 0;
   const retryWire = (): void => {
     if (iframe.contentDocument?.querySelector("[data-xyle-node]")) wirePreview();
-    if (!iframe.contentDocument?.getElementById("xyle-overlay-root") && attempts++ < 40)
+    if (!iframe.contentDocument?.body?.dataset.xyleWired && attempts++ < 40)
       window.setTimeout(retryWire, 50);
   };
   window.setTimeout(retryWire, 0);
@@ -141,54 +996,77 @@ function previewDoc(): Document | null {
   return iframe?.contentDocument ?? null;
 }
 
+function shellOverlay(): HTMLElement | null {
+  return document.getElementById("xyle-overlay-root");
+}
+
+interface ViewportRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
+function previewElementRect(el: HTMLElement): ViewportRect {
+  const frameRect = iframe.getBoundingClientRect();
+  const rect = el.getBoundingClientRect();
+  return {
+    left: frameRect.left + rect.left,
+    top: frameRect.top + rect.top,
+    right: frameRect.left + rect.right,
+    bottom: frameRect.top + rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
 function wirePreview(): void {
   const doc = previewDoc();
-  if (
-    !doc ||
-    !state.current ||
-    !doc.querySelector("[data-xyle-node]") ||
-    doc.getElementById("xyle-overlay-root")
-  )
-    return;
+  if (!doc || !state.current || !doc.querySelector("[data-xyle-node]")) return;
+  if (doc.body.dataset.xyleWired === "true") return;
+  doc.body.dataset.xyleWired = "true";
+  doc.defaultView?.addEventListener("scroll", scheduleOverlayRefresh, { passive: true });
+  doc.addEventListener(
+    "pointerdown",
+    () => {
+      const menu = document.getElementById("xyle-menu");
+      if (!menu || menu.style.display === "none") return;
+      menu.style.display = "none";
+      document.getElementById("xyle-menu-btn")?.setAttribute("aria-expanded", "false");
+    },
+    true,
+  );
+  const focusStyle = doc.createElement("style");
+  focusStyle.id = "xyle-preview-focus-style";
+  focusStyle.textContent =
+    "[data-xyle-node]:focus, [data-xyle-node]:focus-visible { outline: 0 !important; box-shadow: none !important; }";
+  doc.head.append(focusStyle);
 
   metaById.clear();
   for (const meta of state.current.nodes) metaById.set(meta.id, meta);
-
-  // overlay layer for outlines/markers — never part of a candidate subtree
-  const overlay = doc.createElement("div");
-  overlay.id = "xyle-overlay-root";
-  doc.body.append(overlay);
-
-  const style = doc.createElement("style");
-  style.textContent = `
-    #xyle-overlay-root{position:absolute;inset:0;pointer-events:none;z-index:2147483646}
-    .xyle-hover{outline:2px solid rgba(15,110,168,.55);outline-offset:2px;border-radius:4px}
-    .xyle-editable-candidate{outline:1.5px dashed rgba(15,110,168,.35);outline-offset:2px;border-radius:4px}
-    [data-xyle-node]{cursor:text}
-    img[data-xyle-node]{cursor:pointer}
-    #xyle-overlay-root .xyle-img-tools{position:absolute;display:flex;gap:.4rem;pointer-events:auto}
-    #xyle-overlay-root .xyle-img-tools button{font:600 .78rem system-ui;padding:.3em .7em;border:0;border-radius:5px;background:#0f6ea8;color:#fff;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25)}
-    #xyle-overlay-root .xyle-marker{position:absolute;width:9px;height:9px;border-radius:50%;background:#e8a13a;box-shadow:0 0 0 2px rgba(255,255,255,.85)}
-    #xyle-overlay-root *{transition:outline-color .12s ease}
-  `;
-  doc.head.append(style);
 
   for (const el of doc.querySelectorAll<HTMLElement>("[data-xyle-node]")) {
     const id = el.getAttribute("data-xyle-node")!;
     wireCandidate(el, metaById.get(id));
   }
-  doc.body.addEventListener(
-    "click",
+  doc.addEventListener(
+    "pointerdown",
     (event) => {
-      const target = event.target instanceof Element ? event.target : event.target.parentElement;
-      const candidate = target?.closest<HTMLElement>("[data-xyle-node]");
-      const meta = candidate
-        ? metaById.get(candidate.getAttribute("data-xyle-node") ?? "")
-        : undefined;
-      if (candidate && meta?.textEditable && !session) {
-        event.preventDefault();
-        event.stopPropagation();
-        startEdit(candidate, meta);
+      const target = event.target as Node | null;
+      if (session && target && !session.el.contains(target)) commitEdit();
+      const targetElement =
+        target?.nodeType === Node.ELEMENT_NODE
+          ? (target as Element)
+          : ((target as ChildNode | null)?.parentElement ?? null);
+      const targetNode = targetElement?.closest?.("[data-xyle-node]") as HTMLElement | null;
+      const targetNodeId = targetNode?.getAttribute("data-xyle-node");
+      const activeNodeId = activeToolsTarget?.getAttribute("data-xyle-node");
+      if (activeTools && targetNodeId !== activeNodeId) closeContextTools(false);
+      if (selectedImage && targetElement !== selectedImage.el && targetNodeId !== activeNodeId) {
+        hideImageTools(selectedImage.el);
+        selectedImage = null;
       }
     },
     true,
@@ -225,11 +1103,100 @@ function wirePreview(): void {
     }
   });
 
-  applyShowEditables();
   restoreOpsIntoDom();
+  applyShowEditables();
+  refreshEditabilityOverlay();
 }
 
 const metaById = new Map<string, NodeMeta>();
+const controlledBreaks = new WeakSet<HTMLBRElement>();
+let showEditables = false;
+
+type InteractionMode = "idle" | "hover" | "editing" | "popover" | "drawer";
+
+let interactionMode: InteractionMode = "idle";
+let hoveredCandidate: HTMLElement | null = null;
+let hoverClearTimer = 0;
+let activeTools: HTMLElement | null = null;
+let activeToolsTarget: HTMLElement | null = null;
+let activeToolsReturnFocus: HTMLElement | null = null;
+type ContextToolPlacement = "above" | "below" | "inside-bottom";
+let activeToolsPlacement: ContextToolPlacement = "below";
+
+function setInteractionMode(mode: InteractionMode): void {
+  interactionMode = mode;
+}
+
+function beginCandidateHover(el: HTMLElement): void {
+  window.clearTimeout(hoverClearTimer);
+  if (hoveredCandidate && hoveredCandidate !== el) {
+    hoveredCandidate.classList.remove("xyle-hover");
+  }
+  hoveredCandidate = el;
+  el.classList.add("xyle-hover");
+  if (!session && !activeTools) setInteractionMode("hover");
+  refreshEditabilityOverlay();
+}
+
+function endCandidateHover(el: HTMLElement): void {
+  window.clearTimeout(hoverClearTimer);
+  hoverClearTimer = window.setTimeout(() => {
+    if (hoveredCandidate !== el || activeToolsTarget === el || session?.el === el) return;
+    el.classList.remove("xyle-hover");
+    hoveredCandidate = null;
+    if (!session && !activeTools) setInteractionMode("idle");
+    refreshEditabilityOverlay();
+  }, 140);
+}
+
+function closeContextTools(restoreFocus = true): void {
+  if (activeTools) activeTools.remove();
+  activeTools = null;
+  const target = activeToolsReturnFocus ?? activeToolsTarget;
+  activeToolsTarget = null;
+  activeToolsReturnFocus = null;
+  activeToolsPlacement = "below";
+  if (!session) setInteractionMode("idle");
+  refreshEditabilityOverlay();
+  if (restoreFocus && target?.isConnected) target.focus();
+}
+
+function registerContextTools(
+  tools: HTMLElement,
+  target: HTMLElement,
+  placement: ContextToolPlacement,
+): void {
+  closeContextTools(false);
+  activeTools = tools;
+  activeToolsTarget = target;
+  activeToolsReturnFocus = target;
+  activeToolsPlacement = placement;
+  setInteractionMode("popover");
+  tools.addEventListener("mouseenter", () => window.clearTimeout(hoverClearTimer));
+  tools.addEventListener("mouseleave", () => scheduleContextToolsClose(target));
+  tools.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      if (
+        activeTools === tools &&
+        !tools.matches(":focus-within") &&
+        !tools.matches(":hover") &&
+        !session
+      ) {
+        closeContextTools(false);
+      }
+    }, 0);
+  });
+  refreshEditabilityOverlay();
+}
+
+function scheduleContextToolsClose(target: HTMLElement): void {
+  window.clearTimeout(hoverClearTimer);
+  hoverClearTimer = window.setTimeout(() => {
+    if (activeToolsTarget === target && !activeTools?.matches(":hover") && !session) {
+      closeContextTools(false);
+    }
+  }, 180);
+}
 
 function handlePreviewNavigation(anchor: HTMLAnchorElement): void {
   const href = anchor.getAttribute("href") ?? "";
@@ -252,24 +1219,95 @@ function handlePreviewNavigation(anchor: HTMLAnchorElement): void {
 
 function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
   if (!meta) return;
-  el.addEventListener("mouseenter", () => el.classList.add("xyle-hover"));
-  el.addEventListener("mouseleave", () => el.classList.remove("xyle-hover"));
+  if (el.tabIndex < 0) el.tabIndex = 0;
+  el.addEventListener("mouseenter", () => beginCandidateHover(el));
+  el.addEventListener("mouseleave", () => endCandidateHover(el));
+  el.addEventListener("focus", () => {
+    if (!session && !activeTools) setInteractionMode("hover");
+    refreshEditabilityOverlay();
+  });
+  el.addEventListener("blur", () => {
+    if (!session && !activeTools) setInteractionMode("idle");
+    refreshEditabilityOverlay();
+  });
 
   if (meta.kind === "text" && meta.textEditable) wireText(el, meta);
-  if (meta.kind === "link") {
-    wireLink(el, meta);
-    if (meta.textEditable) wireText(el, meta);
-  }
+  if (meta.kind === "link") wireLink(el, meta);
   if (meta.kind === "image") wireImage(el, meta);
+}
+
+let overlayRefreshFrame = 0;
+
+function scheduleOverlayRefresh(): void {
+  if (overlayRefreshFrame) return;
+  overlayRefreshFrame = window.requestAnimationFrame(() => {
+    overlayRefreshFrame = 0;
+    refreshEditabilityOverlay();
+    refreshMarkers();
+    if (activeToolsTarget && activeTools?.isConnected) {
+      positionContextTools(
+        activeTools,
+        previewElementRect(activeToolsTarget),
+        activeToolsPlacement,
+      );
+    }
+  });
+}
+
+function refreshEditabilityOverlay(): void {
+  const doc = previewDoc();
+  const overlay = shellOverlay();
+  if (!doc || !overlay) return;
+
+  overlay.querySelectorAll(".xyle-editable-outline").forEach((overlayItem) => {
+    overlayItem.remove();
+  });
+  for (const el of doc.querySelectorAll<HTMLElement>("[data-xyle-node]")) {
+    const isEditing = el.classList.contains("xyle-editing");
+    const isHovered = el.classList.contains("xyle-hover");
+    const isSelected = isEditing || activeToolsTarget === el || el.matches(":focus-visible");
+    if (!showEditables && !isHovered && !isSelected) continue;
+
+    const rect = previewElementRect(el);
+    const viewportWidth = document.documentElement.clientWidth;
+    const viewportHeight = document.documentElement.clientHeight;
+    const left = Math.max(0, rect.left - 4);
+    const top = Math.max(0, rect.top - 4);
+    const right = Math.min(viewportWidth, rect.right + 4);
+    const bottom = Math.min(viewportHeight, rect.bottom + 4);
+    if (right <= left || bottom <= top) continue;
+    const outline = document.createElement("span");
+    outline.className = `xyle-editable-outline${isEditing ? " is-editing" : isSelected ? " is-active" : ""}`;
+    outline.style.left = `${left}px`;
+    outline.style.top = `${top}px`;
+    outline.style.width = `${right - left}px`;
+    outline.style.height = `${bottom - top}px`;
+    overlay.append(outline);
+  }
+}
+
+function applyShowEditables(): void {
+  const doc = previewDoc();
+  doc?.documentElement.classList.toggle("xyle-show-editables", showEditables);
+  const button = $("#xyle-editables");
+  const label = showEditables ? "Hide editables" : "Show editables";
+  button?.setAttribute("aria-pressed", String(showEditables));
+  button?.setAttribute("aria-label", label);
+  button?.setAttribute("title", label);
+  button?.setAttribute("data-tooltip", label);
+  refreshEditabilityOverlay();
 }
 
 /* ---------- text editing ---------- */
 
 function wireText(el: HTMLElement, meta: NodeMeta): void {
-  el.addEventListener("click", (event) => {
+  el.addEventListener("pointerdown", () => {
     if (session?.el === el) return;
-    // let link dialogs win; otherwise click-to-edit
-    event.stopPropagation();
+    startEdit(el, meta);
+  });
+  el.addEventListener("keydown", (event) => {
+    if (session || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
     startEdit(el, meta);
   });
 }
@@ -283,6 +1321,7 @@ interface EditSession {
   /** Slot keys aligned with baselineValues. */
   baselineKeys: string[];
   baselineSkeleton: string;
+  baselineAuthoredBreakCount: number;
 }
 
 let session: EditSession | null = null;
@@ -303,33 +1342,63 @@ const SKIP_TAGS = new Set([
   "button",
 ]);
 
+function authoredBreakCount(el: HTMLElement): number {
+  return [...el.querySelectorAll("br")].filter((br) => !isControlledBreak(br)).length;
+}
+
 function isNestedCandidate(el: HTMLElement, root: HTMLElement): boolean {
   return el !== root && el.hasAttribute("data-xyle-node");
 }
 
 /**
- * Structural identity of a text node: indexes of non-BR elements along its
- * ancestor chain up to (not including) the editable root. Two text nodes
- * share a slot iff the user inserted only <br> elements between them, so a
- * slot maps to exactly one server-side patchable segment.
+ * Structural identity for one server-backed text segment. The element path
+ * separates inline descendants; the local run separates direct text nodes on
+ * either side of inline elements. Controlled <br> splits stay in the same run.
  */
-function slotKeyOf(textNode: Node, root: Node): string {
+function isControlledBreak(node: Node): node is HTMLBRElement {
+  return (
+    node.nodeType === Node.ELEMENT_NODE &&
+    (node as HTMLElement).tagName === "BR" &&
+    (controlledBreaks.has(node as HTMLBRElement) ||
+      (node as HTMLElement).hasAttribute("data-xyle-controlled-break"))
+  );
+}
+
+function markControlledBreak(br: HTMLBRElement): void {
+  controlledBreaks.add(br);
+  br.setAttribute("data-xyle-controlled-break", "");
+}
+
+function slotKeyOf(target: Node, root: Node): string {
+  const parent = target.parentNode;
+  if (!parent) return "";
+
   const chain: number[] = [];
-  let node: Node | null = textNode;
-  while (node && node.parentNode && node.parentNode !== root) {
-    const parent: Node = node.parentNode;
+  let element: Node | null = parent;
+  while (element && element !== root && element.parentNode) {
     let index = 0;
-    const children = Array.from(parent.childNodes) as Node[];
-    for (const sibling of children) {
-      if (sibling === node) break;
+    for (const sibling of element.parentNode.childNodes) {
+      if (sibling === element) break;
       if (sibling.nodeType === Node.ELEMENT_NODE && (sibling as HTMLElement).tagName !== "BR") {
         index += 1;
       }
     }
     chain.unshift(index);
-    node = parent;
+    element = element.parentNode;
   }
-  return chain.join("/");
+
+  let run = -1;
+  let insideTextRun = false;
+  for (const sibling of parent.childNodes) {
+    if (sibling.nodeType === Node.TEXT_NODE) {
+      if (!insideTextRun) run += 1;
+      insideTextRun = true;
+    } else if (!isControlledBreak(sibling)) {
+      insideTextRun = false;
+    }
+    if (sibling === target) break;
+  }
+  return `${chain.join("/")}|${Math.max(run, 0)}`;
 }
 
 interface SegmentPair {
@@ -338,43 +1407,14 @@ interface SegmentPair {
   value: string;
 }
 
-/** Mirrors the server's segment enumeration over live or cloned DOM. */
+/** Mirrors the server's one-segment-per-source-text-node document order. */
 function collectSegments(rootEl: HTMLElement): SegmentPair[] {
   const pairs: SegmentPair[] = [];
   const seen = new Map<string, string[]>();
 
-  const walk = (element: HTMLElement, isRoot: boolean): void => {
-    for (const child of Array.from(element.childNodes)) {
-      if (child.nodeType === Node.TEXT_NODE) {
-        const key = slotKeyOf(child, rootEl);
-        let parts = seen.get(key);
-        if (!parts) {
-          parts = [""];
-          seen.set(key, parts);
-          pairs.push({ key, value: "" });
-        }
-        parts[parts.length - 1] += child.textContent ?? "";
-        continue;
-      }
-      if (child.nodeType !== Node.ELEMENT_NODE) continue;
-      const childEl = child as HTMLElement;
-      if (SKIP_TAGS.has(childEl.tagName.toLowerCase())) continue;
-      if (isNestedCandidate(childEl, rootEl)) continue;
-      if (childEl.tagName === "BR" && !isRoot) {
-        // br inside an inline formatting child continues the enclosing slot
-        const key = slotKeyOf(childEl, rootEl);
-        const parts = seen.get(key);
-        if (parts) parts.push("");
-        continue;
-      }
-      walk(childEl, false);
-    }
-  };
-
-  // top-level brs terminate the leading slot directly
-  const topWalk = (): void => {
+  const walk = (element: HTMLElement): void => {
     let openKey: string | null = null;
-    for (const child of Array.from(rootEl.childNodes)) {
+    for (const child of element.childNodes) {
       if (child.nodeType === Node.TEXT_NODE) {
         openKey = slotKeyOf(child, rootEl);
         let parts = seen.get(openKey);
@@ -386,18 +1426,23 @@ function collectSegments(rootEl: HTMLElement): SegmentPair[] {
         parts[parts.length - 1] += child.textContent ?? "";
         continue;
       }
-      if (child.nodeType !== Node.ELEMENT_NODE) continue;
-      const childEl = child as HTMLElement;
-      if (SKIP_TAGS.has(childEl.tagName.toLowerCase())) continue;
-      if (isNestedCandidate(childEl, rootEl)) continue;
-      if (childEl.tagName === "BR") {
-        if (openKey !== null) seen.get(openKey)?.push("");
+      if (child.nodeType !== Node.ELEMENT_NODE) {
+        openKey = null;
         continue;
       }
-      walk(childEl, false);
+      const childEl = child as HTMLElement;
+      if (childEl.tagName === "BR") {
+        if (openKey !== null && isControlledBreak(childEl)) seen.get(openKey)?.push("");
+        else openKey = null;
+        continue;
+      }
+      openKey = null;
+      if (SKIP_TAGS.has(childEl.tagName.toLowerCase())) continue;
+      if (isNestedCandidate(childEl, rootEl)) continue;
+      walk(childEl);
     }
   };
-  topWalk();
+  walk(rootEl);
 
   for (const pair of pairs) pair.value = (seen.get(pair.key) ?? []).join("\n");
   return pairs;
@@ -424,6 +1469,10 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
   for (const child of Array.from(el.childNodes)) baselineClone.append(child.cloneNode(true));
 
   const baselinePairs = collectSegments(el);
+  if (meta.segmentCount !== undefined && baselinePairs.length !== meta.segmentCount) {
+    flash("This text cannot be edited safely because its source mapping is ambiguous.");
+    return;
+  }
   session = {
     el,
     meta,
@@ -431,19 +1480,23 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
     baselineValues: baselinePairs.map((p) => p.value),
     baselineKeys: baselinePairs.map((p) => p.key),
     baselineSkeleton: skeleton(el),
+    baselineAuthoredBreakCount: authoredBreakCount(el),
   };
 
   for (const [i, value] of session.baselineValues.entries()) {
-    rememberOriginalSegment(`${meta.id}#${i}`, value);
+    rememberOriginalSegment(meta.pagePath, `${meta.id}#${i}`, value);
   }
 
   const hasNoElementChildren = !Array.from(el.children).some((c) => c.tagName !== "BR");
   const plainOnly = meta.segmentCount === 1 && !meta.multiline && hasNoElementChildren;
 
+  // SAFETY: contentEditable accepts the browser's plaintext-only extension.
   (el as unknown as { contentEditable: string }).contentEditable =
     plainOnly && supportsPlaintextOnly() ? "plaintext-only" : "true";
   el.classList.add("xyle-editing");
-  el.focus();
+  setInteractionMode("editing");
+  refreshEditabilityOverlay();
+  el.focus({ preventScroll: true });
 
   el.addEventListener("beforeinput", onBeforeInput);
   el.addEventListener("input", onInput);
@@ -551,6 +1604,7 @@ function insertManualBr(): void {
   const doc = previewDoc()!;
   range.deleteContents();
   const br = doc.createElement("br");
+  markControlledBreak(br);
   range.insertNode(br);
   range.setStartAfter(br);
   range.collapse(true);
@@ -611,59 +1665,165 @@ function endEdit(recordChanges: boolean): void {
   s.el.removeEventListener("keydown", onKeyDown);
   s.el.removeEventListener("paste", onPaste, true);
   s.el.classList.remove("xyle-editing");
+  refreshEditabilityOverlay();
+  // SAFETY: contentEditable is set explicitly when ending an edit session.
   (s.el as unknown as { contentEditable: string }).contentEditable = "false";
 
   if (recordChanges) {
     const currentPairs = collectSegments(s.el);
-    for (const [i, pair] of currentPairs.entries()) {
-      if (pair.value !== s.baselineValues[i]) {
-        applyOp(
-          s.meta.pagePath,
-          {
-            type: "text",
-            nodeId: `${s.meta.id}#${i}`,
-            value: pair.value,
-          },
-          "Edit text",
-        );
+    const mappingChanged =
+      currentPairs.length !== s.baselineValues.length ||
+      authoredBreakCount(s.el) !== s.baselineAuthoredBreakCount;
+    if (mappingChanged) {
+      flash("That change was reverted because the browser changed the text structure.");
+      restoreBaseline();
+    } else {
+      for (const [i, pair] of currentPairs.entries()) {
+        if (pair.value !== s.baselineValues[i]) {
+          applyOp(
+            s.meta.pagePath,
+            {
+              type: "text",
+              nodeId: `${s.meta.id}#${i}`,
+              value: pair.value,
+            },
+            "Edit text",
+          );
+        }
       }
     }
   }
   session = null;
+  setInteractionMode(activeTools ? "popover" : hoveredCandidate ? "hover" : "idle");
   updateDirtyUi();
 }
 
 /* ---------- link editing ---------- */
 
 function wireLink(el: HTMLElement, meta: NodeMeta): void {
-  el.addEventListener("click", (event) => {
-    if ((event.target as HTMLElement).closest("[data-xyle-editing-url]")) return;
+  const show = (event: Event): void => {
+    if (session?.el === el) return;
     event.preventDefault();
     event.stopPropagation();
-    openHrefDialog(el, meta);
+    showLinkTools(el as HTMLAnchorElement, meta, event.type === "keydown");
+  };
+  el.addEventListener("mouseenter", () => {
+    if (!session) showLinkTools(el as HTMLAnchorElement, meta);
   });
+  el.addEventListener("mouseleave", () => scheduleContextToolsClose(el));
+  el.addEventListener("click", show);
+  el.addEventListener("keydown", (event) => {
+    if (!session && (event.key === "Enter" || event.key === " ")) show(event);
+  });
+}
+
+function positionContextTools(
+  tools: HTMLElement,
+  targetRect: ViewportRect,
+  placement: ContextToolPlacement,
+): void {
+  const viewportWidth = document.documentElement.clientWidth;
+  const viewportHeight = document.documentElement.clientHeight;
+  const toolRect = tools.getBoundingClientRect();
+  const maxLeft = Math.max(8, viewportWidth - toolRect.width - 8);
+  const left = Math.min(Math.max(targetRect.left, 8), maxLeft);
+  const fitsComfortablyInside = targetRect.height >= toolRect.height * 2;
+  let top = targetRect.bottom + 6;
+  if (placement === "inside-bottom" && fitsComfortablyInside) {
+    top = targetRect.bottom - toolRect.height - 6;
+  } else if (placement === "above") {
+    top = targetRect.top - toolRect.height - 6;
+  }
+  if (top < 8 && placement === "above") top = targetRect.bottom + 6;
+  if (top + toolRect.height > viewportHeight - 8) top = targetRect.top - toolRect.height - 6;
+  top = Math.min(Math.max(top, 8), Math.max(8, viewportHeight - toolRect.height - 8));
+  // Context controls use viewport coordinates because they are fixed overlays.
+  // Adding document scroll offsets would double-count scrolling inside srcdoc.
+  tools.style.left = `${left}px`;
+  tools.style.top = `${top}px`;
+}
+
+function showLinkTools(link: HTMLAnchorElement, meta: NodeMeta, focusFirst = false): void {
+  const overlay = shellOverlay();
+  if (!overlay) return;
+  const tools = document.createElement("div");
+  tools.className = "xyle-link-tools";
+  tools.setAttribute("role", "group");
+  tools.setAttribute("aria-label", "Link actions");
+
+  if (meta.textEditable) {
+    const editText = document.createElement("button");
+    editText.type = "button";
+    editText.textContent = "Edit text";
+    editText.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeContextTools(false);
+      startEdit(link, meta);
+    });
+    tools.append(editText);
+  }
+  const editUrl = document.createElement("button");
+  editUrl.type = "button";
+  editUrl.textContent = "Edit URL";
+  editUrl.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeContextTools(false);
+    openHrefDialog(link, meta);
+  });
+  tools.append(editUrl);
+
+  const target = resolveInternalPath(link.getAttribute("href") ?? "");
+  if (target) {
+    const follow = document.createElement("button");
+    follow.type = "button";
+    follow.textContent = "Follow";
+    follow.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeContextTools(false);
+      void loadPage(target, { pushHistory: true });
+    });
+    tools.append(follow);
+  }
+  tools.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeContextTools();
+    }
+  });
+  registerContextTools(tools, link, "above");
+  overlay.append(tools);
+  positionContextTools(tools, previewElementRect(link), "above");
+  if (focusFirst) tools.querySelector("button")?.focus();
 }
 
 function openHrefDialog(el: HTMLElement, meta: NodeMeta): void {
   const dialog = document.createElement("dialog");
+  dialog.className = "xyle-dialog";
   dialog.setAttribute("data-xyle-editing-url", "1");
+  dialog.setAttribute("aria-labelledby", "xyle-link-dialog-title");
   const currentHref = el.getAttribute("href") ?? "";
+  rememberOriginalAttr(meta.pagePath, meta.id, "href", currentHref);
   const internalTarget = resolveInternalPath(currentHref);
-  dialog.innerHTML = `
-    <form method="dialog" style="display:grid;gap:.6rem;font:system-ui,sans-serif">
-      <label style="font-weight:600">Link destination</label>
-      <input name="href" style="padding:.45em .6em;font:inherit;border:1px solid #bbb;border-radius:6px;min-width:22rem"
-        value="${currentHref.replaceAll('"', "&quot;")}">
-      <p class="err" style="color:#b3261e;font-size:.8rem;margin:0"></p>
-      <div style="display:flex;gap:.5rem;justify-content:flex-end">
-        ${internalTarget ? `<button value="follow" style="font:inherit;padding:.4em .9em;border-radius:6px;border:1px solid #ccc;background:#fff">Follow link</button>` : ""}
-        <button value="cancel" style="font:inherit;padding:.4em .9em;border-radius:6px;border:1px solid #ccc;background:#fff">Cancel</button>
-        <button value="save" style="font:inherit;padding:.4em .9em;border-radius:6px;border:0;background:#0f6ea8;color:#fff">Save</button>
+  dialog.replaceChildren(
+    document.createRange().createContextualFragment(`
+    <form method="dialog" class="xyle-dialog-form">
+      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Edit link</span><strong id="xyle-link-dialog-title">Link destination</strong></div>
+      <label class="xyle-dialog-label">URL or path
+        <input class="xyle-dialog-input" name="href" value="" autocomplete="off" aria-describedby="xyle-link-dialog-error">
+      </label>
+      <p id="xyle-link-dialog-error" class="xyle-dialog-error err" role="status" aria-live="polite"></p>
+      <div class="xyle-dialog-actions">
+        ${internalTarget ? `<button class="xyle-dialog-button" value="follow">Follow link</button>` : ""}
+        <button class="xyle-dialog-button" value="cancel">Cancel</button>
+        <button class="xyle-dialog-button xyle-dialog-button--primary" value="save">Save link</button>
       </div>
-    </form>`;
+    </form>`),
+  );
+  const hrefInput = dialog.querySelector("input") as HTMLInputElement;
+  hrefInput.value = currentHref;
   document.body.append(dialog);
   dialog.addEventListener("close", () => {
-    const value = (dialog.querySelector("input") as HTMLInputElement).value;
+    const value = hrefInput.value;
     if (dialog.returnValue === "save") {
       if (isSafeUrl(value)) {
         applyOp(meta.pagePath, { type: "href", nodeId: meta.id, value }, "Edit link");
@@ -680,17 +1840,21 @@ function openHrefDialog(el: HTMLElement, meta: NodeMeta): void {
       }
     }
     dialog.remove();
+    el.focus();
   });
   dialog.querySelector("form")!.addEventListener("submit", (event) => {
     const input = dialog.querySelector("input") as HTMLInputElement;
-    if (dialog.returnValue !== "cancel" && !isSafeUrl(input.value)) {
+    const action = ((event as SubmitEvent).submitter as HTMLButtonElement | null)?.value;
+    if (action !== "cancel" && !isSafeUrl(input.value)) {
       event.preventDefault();
       (dialog.querySelector(".err") as HTMLElement).textContent =
         "Use a relative path, https:, http:, mailto: or tel:";
+      input.setAttribute("aria-invalid", "true");
+      input.focus();
     }
   });
-  (dialog.querySelector("input") as HTMLInputElement).select();
   dialog.showModal();
+  hrefInput.select();
 }
 
 /** Site-internal page path for a link, or null for external/asset targets. */
@@ -721,80 +1885,91 @@ function isSafeUrl(url: string): boolean {
 /* ---------- images & media ---------- */
 
 let selectedImage: { el: HTMLImageElement; meta: NodeMeta } | null = null;
+let mediaMutationGeneration = 0;
 
 function wireImage(el: HTMLElement, meta: NodeMeta): void {
   const img = el as HTMLImageElement;
-  img.addEventListener("click", () => selectImage(img, meta));
-
-  img.addEventListener("mouseenter", () => showImageTools(img, meta));
-  img.addEventListener("mouseleave", () => scheduleHide(img));
+  const select = (event: Event): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    selectImage(img, meta);
+    showImageTools(img, meta, event.type === "keydown");
+  };
+  img.addEventListener("mouseenter", () => {
+    if (!session) showImageTools(img, meta);
+  });
+  img.addEventListener("mouseleave", () => scheduleContextToolsClose(img));
+  img.addEventListener("click", select);
+  img.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") select(event);
+  });
 }
 
-/** Grace period before hover tools disappear, so moving onto them survives. */
-const toolsHideTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-function cancelHide(nodeId: string): void {
-  const timer = toolsHideTimers.get(nodeId);
-  if (timer !== undefined) {
-    clearTimeout(timer as never);
-    toolsHideTimers.delete(nodeId);
-  }
-}
-
-function scheduleHide(img: HTMLImageElement): void {
-  const nodeId = img.getAttribute("data-xyle-node") ?? "";
-  cancelHide(nodeId);
-  toolsHideTimers.set(
-    nodeId,
-    setTimeout(() => {
-      toolsHideTimers.delete(nodeId);
-      hideImageTools(img);
-    }, 150),
-  );
-}
-
-function showImageTools(img: HTMLImageElement, meta: NodeMeta): void {
-  const doc = previewDoc()!;
-  const overlay = doc.getElementById("xyle-overlay-root")!;
-  hideImageTools(img);
-  cancelHide(meta.id);
-  const rect = img.getBoundingClientRect();
-  const tools = doc.createElement("div");
+function showImageTools(img: HTMLImageElement, meta: NodeMeta, focusFirst = false): void {
+  const overlay = shellOverlay();
+  if (!overlay) return;
+  const tools = document.createElement("div");
   tools.className = "xyle-img-tools";
+  tools.setAttribute("role", "group");
+  tools.setAttribute("aria-label", "Image actions");
   tools.dataset.forNode = meta.id;
-  tools.style.left = `${rect.left + windowScrollX(doc)}px`;
-  tools.style.top = `${rect.bottom - 34 + windowScrollY(doc)}px`;
-  tools.addEventListener("mouseenter", () => cancelHide(meta.id));
-  tools.addEventListener("mouseleave", () => scheduleHide(img));
-  const replace = doc.createElement("button");
+  const replace = document.createElement("button");
+  replace.type = "button";
   replace.textContent = "Replace";
+  if (mediaManagementUnavailable) {
+    replace.disabled = true;
+    replace.title = "Media management is unavailable for this deployment";
+  }
   replace.addEventListener("click", (event) => {
     event.stopPropagation();
     pickLocalFile(img, meta);
   });
-  const media = doc.createElement("button");
+  const media = document.createElement("button");
+  media.type = "button";
   media.textContent = "Media";
+  media.disabled = mediaManagementUnavailable;
+  media.title = mediaManagementUnavailable
+    ? "Media management is unavailable for this deployment"
+    : "Choose from the media library";
   media.addEventListener("click", (event) => {
     event.stopPropagation();
+    closeContextTools(false);
     selectImage(img, meta);
-    openMediaDrawer();
+    void openMediaDrawer(img);
   });
-  tools.append(replace, media);
+  const alt = document.createElement("button");
+  alt.type = "button";
+  alt.textContent = "Alt";
+  alt.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeContextTools(false);
+    selectImage(img, meta);
+    openAltEditor(img, meta);
+  });
+  tools.append(replace, media, alt);
+  tools.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeContextTools();
+      selectedImage = null;
+    }
+  });
+  registerContextTools(tools, img, "above");
   overlay.append(tools);
-}
-
-function windowScrollX(doc: Document): number {
-  return doc.defaultView?.scrollX ?? 0;
-}
-function windowScrollY(doc: Document): number {
-  return doc.defaultView?.scrollY ?? 0;
+  positionContextTools(tools, previewElementRect(img), "above");
+  if (focusFirst) {
+    window.setTimeout(() => {
+      if (tools.isConnected) replace.focus();
+    }, 0);
+  }
 }
 
 function hideImageTools(img: HTMLImageElement): void {
-  previewDoc()
+  if (activeToolsTarget === img) closeContextTools(false);
+  shellOverlay()
     ?.querySelectorAll(`.xyle-img-tools[data-for-node="${img.getAttribute("data-xyle-node")}"]`)
-    ?.forEach((t) => {
-      t.remove();
+    .forEach((tools) => {
+      tools.remove();
     });
 }
 
@@ -811,31 +1986,35 @@ function pickLocalFile(img: HTMLImageElement, meta: NodeMeta): void {
 }
 
 async function useFileForImage(img: HTMLImageElement, meta: NodeMeta, file: File): Promise<void> {
+  if (mediaManagementUnavailable) {
+    flash("Media management is unavailable for this deployment.");
+    return;
+  }
   if (file.size > 20 * 1024 * 1024) {
     flash("Images must be 20 MB or smaller.");
     return;
   }
+  const mutationGeneration = mediaMutationGeneration;
   const buffer = await file.arrayBuffer();
-  if (!isRasterSignature(new Uint8Array(buffer))) {
+  if (mutationGeneration !== mediaMutationGeneration) return;
+  const bytes = new Uint8Array(buffer);
+  const detectedContentType = detectRasterContentType(bytes);
+  if (!detectedContentType) {
     flash("Only JPEG, PNG, WebP and AVIF uploads are supported.");
     return;
   }
-  const objectUrl = URL.createObjectURL(file);
-  // revoke the previous pending preview for this image, if any
-  const previousUrl = img.src;
-  for (const [path, asset] of [...state.assets]) {
-    if (asset.objectUrl === previousUrl) {
-      state.assets.delete(path);
-      URL.revokeObjectURL(asset.objectUrl);
-    }
-  }
+  rememberOriginalAttr(meta.pagePath, meta.id, "src", img.getAttribute("src") ?? "");
+  const digestHex = await sha256Hex(bytes);
+  if (mutationGeneration !== mediaMutationGeneration) return;
+  const ext = extFor(detectedContentType);
+  const assetPath = `/__media/${digestHex}.${ext}`;
+  const existingAsset = state.assets.get(assetPath);
+  const objectUrl = existingAsset?.objectUrl ?? URL.createObjectURL(file);
+  if (!existingAsset) state.assets.set(assetPath, { file, objectUrl });
+  img.addEventListener("load", scheduleOverlayRefresh, { once: true });
   img.src = objectUrl;
+  scheduleOverlayRefresh();
 
-  const digestHex = await sha256Hex(new Uint8Array(buffer));
-  const ext = extFor(file.type);
-  const assetPath = `/__media/${digestHex.slice(0, 12)}.${ext}`;
-
-  state.assets.set(assetPath, { file, objectUrl });
   applyOp(
     meta.pagePath,
     { type: "src", nodeId: meta.id, value: assetPath, assetName: file.name },
@@ -844,17 +2023,19 @@ async function useFileForImage(img: HTMLImageElement, meta: NodeMeta, file: File
   updateDirtyUi();
 }
 
-function isRasterSignature(bytes: Uint8Array): boolean {
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true;
+function detectRasterContentType(bytes: Uint8Array): string | null {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
-    return true;
+    return "image/png";
   }
   const riff = String.fromCharCode(...bytes.slice(0, 4));
   const webp = String.fromCharCode(...bytes.slice(8, 12));
-  if (riff === "RIFF" && webp === "WEBP") return true;
+  if (riff === "RIFF" && webp === "WEBP") return "image/webp";
   const brand = String.fromCharCode(...bytes.slice(8, 12));
-  if (String.fromCharCode(...bytes.slice(4, 8)) === "ftyp" && brand.startsWith("avif")) return true;
-  return false;
+  if (String.fromCharCode(...bytes.slice(4, 8)) === "ftyp" && brand.startsWith("avif")) {
+    return "image/avif";
+  }
+  return null;
 }
 
 function extFor(contentType: string): string {
@@ -879,30 +2060,38 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 
 function selectImage(img: HTMLImageElement, meta: NodeMeta): void {
   selectedImage = { el: img, meta };
-  openAltEditor(img, meta);
 }
 
 function openAltEditor(img: HTMLImageElement, meta: NodeMeta): void {
   const existing = img.getAttribute("alt") ?? "";
+  rememberOriginalAttr(meta.pagePath, meta.id, "alt", existing);
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `
-    <form method="dialog" style="display:grid;gap:.6rem;font:system-ui,sans-serif">
-      <label style="font-weight:600">Alt text</label>
-      <input name="alt" value="${existing.replaceAll('"', "&quot;")}"
-        style="padding:.45em .6em;font:inherit;border:1px solid #bbb;border-radius:6px;min-width:20rem">
-      <div style="display:flex;gap:.5rem;justify-content:flex-end">
-        <button value="cancel" style="font:inherit;padding:.4em .9em;border-radius:6px;border:1px solid #ccc;background:#fff">Cancel</button>
-        <button value="save" style="font:inherit;padding:.4em .9em;border-radius:6px;border:0;background:#0f6ea8;color:#fff">Save</button>
+  dialog.className = "xyle-dialog";
+  dialog.setAttribute("aria-labelledby", "xyle-alt-dialog-title");
+  dialog.replaceChildren(
+    document.createRange().createContextualFragment(`
+    <form method="dialog" class="xyle-dialog-form">
+      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Accessibility</span><strong id="xyle-alt-dialog-title">Image description</strong></div>
+      <label class="xyle-dialog-label">Alt text
+        <input class="xyle-dialog-input" name="alt" value="" autocomplete="off">
+      </label>
+      <div class="xyle-dialog-actions">
+        <button class="xyle-dialog-button" value="cancel">Cancel</button>
+        <button class="xyle-dialog-button xyle-dialog-button--primary" value="save">Save alt text</button>
       </div>
-    </form>`;
+    </form>`),
+  );
+  const altInput = dialog.querySelector("input") as HTMLInputElement;
+  altInput.value = existing;
   document.body.append(dialog);
   dialog.addEventListener("close", () => {
     if (dialog.returnValue === "save") {
-      const value = (dialog.querySelector("input") as HTMLInputElement).value;
+      const value = altInput.value;
       applyOp(meta.pagePath, { type: "alt", nodeId: meta.id, value }, "Edit alt text");
       img.setAttribute("alt", value);
     }
     dialog.remove();
+    img.focus();
   });
   dialog.showModal();
 }
@@ -917,47 +2106,103 @@ interface MediaItem {
 }
 
 let drawerOpen = false;
+let mediaManagementUnavailable = false;
+let mediaRequestGeneration = 0;
+let mediaDrawerTrigger: HTMLElement | null = null;
 
-async function openMediaDrawer(): Promise<void> {
+async function detectMediaSupport(): Promise<void> {
+  try {
+    const res = await api("/__xyle/api/media");
+    if (res.status === 501) mediaManagementUnavailable = true;
+  } catch {
+    // The regular page load reports connection failures to the user.
+  }
+}
+
+async function openMediaDrawer(trigger?: HTMLElement): Promise<void> {
+  if (mediaManagementUnavailable) {
+    flash("Media management is unavailable for this deployment.");
+    return;
+  }
   if (drawerOpen) return;
   drawerOpen = true;
+  setInteractionMode("drawer");
+  mediaDrawerTrigger = trigger ?? (previewDoc()?.activeElement as HTMLElement | null);
+  const requestGeneration = ++mediaRequestGeneration;
   const res = await api("/__xyle/api/media");
+  if (requestGeneration !== mediaRequestGeneration) return;
+  if (!res.ok) {
+    drawerOpen = false;
+    flash(
+      res.status === 501
+        ? "Media management is unavailable for this deployment."
+        : "Could not load media.",
+    );
+    return;
+  }
   const items = (await res.json()) as MediaItem[];
   renderMediaDrawer(items);
 }
 
-function closeMediaDrawer(): void {
+function focusPreviewElement(element: HTMLElement | null): void {
+  if (!element?.isConnected) return;
+  element.ownerDocument.defaultView?.focus();
+  element.focus({ preventScroll: true });
+}
+
+function closeMediaDrawer(restoreFocus = true): void {
+  const trigger = mediaDrawerTrigger;
+  const selectedImageElement = selectedImage?.el;
   $("#xyle-media-drawer")?.remove();
   drawerOpen = false;
+  mediaRequestGeneration += 1;
+  if (!session && !activeTools) setInteractionMode(hoveredCandidate ? "hover" : "idle");
+  mediaDrawerTrigger = null;
+  if (restoreFocus) {
+    window.setTimeout(() => {
+      if (trigger?.isConnected) focusPreviewElement(trigger);
+      else if (selectedImageElement?.isConnected) focusPreviewElement(selectedImageElement);
+    }, 0);
+  }
 }
 
 function renderMediaDrawer(items: MediaItem[]): void {
-  closeMediaDrawer();
+  const trigger = mediaDrawerTrigger;
+  closeMediaDrawer(false);
+  mediaDrawerTrigger = trigger;
   drawerOpen = true;
+  setInteractionMode("drawer");
   const drawer = document.createElement("aside");
   drawer.id = "xyle-media-drawer";
-  drawer.style.cssText =
-    "position:fixed;top:0;right:0;bottom:0;width:min(24rem,90vw);background:#fff;box-shadow:-12px 0 30px rgba(0,0,0,.15);z-index:2147483647;display:flex;flex-direction:column;padding:1rem;font-family:system-ui,sans-serif";
+  drawer.className = "xyle-drawer xyle-media-drawer";
+  drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("aria-labelledby", "xyle-media-title");
   drawer.innerHTML = `
-    <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
-      <strong>Media</strong>
-      <button id="xyle-media-close" style="border:0;background:none;font-size:1.2rem;cursor:pointer">×</button>
+    <header class="xyle-drawer-header">
+      <strong id="xyle-media-title">Media</strong>
+      <button id="xyle-media-close" class="xyle-icon-button" aria-label="Close media drawer">×</button>
     </header>
-    <input id="xyle-media-search" placeholder="Search images..."
-      style="padding:.45em .6em;border:1px solid #ccc;border-radius:6px;margin-bottom:.6rem">
-    <nav id="xyle-media-tabs" style="display:flex;gap:.35rem;margin-bottom:.6rem">
-      <button data-tab="all" style="flex:1">All</button>
-      <button data-tab="used" style="flex:1">Used</button>
-      <button data-tab="uploads" style="flex:1">Uploads</button>
+    <label class="xyle-sr-only" for="xyle-media-search">Search images</label>
+    <input id="xyle-media-search" class="xyle-media-search" name="media-search" autocomplete="off" placeholder="Search images…">
+    <nav id="xyle-media-tabs" class="xyle-media-tabs" aria-label="Filter media">
+      <button data-tab="all" class="xyle-media-tab" aria-pressed="true">All</button>
+      <button data-tab="used" class="xyle-media-tab" aria-pressed="false">Used</button>
+      <button data-tab="uploads" class="xyle-media-tab" aria-pressed="false">Uploads</button>
     </nav>
-    <div id="xyle-media-grid" style="flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(6.5rem,1fr));gap:.5rem"></div>
-    <button id="xyle-media-upload" style="margin-top:.6rem;padding:.55em;font:600 .9rem system-ui;color:#fff;background:#0f6ea8;border:0;border-radius:6px">Upload image</button>
+    <div id="xyle-media-grid" class="xyle-media-grid"></div>
+    <button id="xyle-media-upload" class="xyle-media-upload">Upload image</button>
   `;
   document.body.append(drawer);
 
   const grid = $<HTMLElement>("#xyle-media-grid", drawer);
   const search = $<HTMLInputElement>("#xyle-media-search", drawer);
   let tab = "all";
+  drawer.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMediaDrawer();
+    }
+  });
 
   const drawGrid = (): void => {
     const query = search.value.trim().toLowerCase();
@@ -967,13 +2212,13 @@ function renderMediaDrawer(items: MediaItem[]): void {
       if (tab === "uploads" && item.source !== "xyle-upload") continue;
       if (query && !item.path.toLowerCase().includes(query)) continue;
       const cell = document.createElement("button");
-      cell.style.cssText =
-        "border:1px solid #ddd;border-radius:6px;padding:.25rem;background:#fafafa;cursor:pointer";
+      cell.className = "xyle-media-cell";
+      cell.setAttribute("aria-label", `Choose ${item.path}`);
       const thumb = document.createElement("img");
       thumb.src = item.path;
       thumb.alt = item.path.split("/").pop() ?? "";
       thumb.loading = "lazy";
-      thumb.style.cssText = "width:100%;height:4.5rem;object-fit:cover;display:block";
+      thumb.className = "xyle-media-thumb";
       cell.append(thumb);
       cell.title = item.path;
       cell.addEventListener("click", () => chooseExistingMedia(item.path));
@@ -983,11 +2228,14 @@ function renderMediaDrawer(items: MediaItem[]): void {
   search.addEventListener("input", drawGrid);
   for (const button of drawer.querySelectorAll<HTMLButtonElement>("#xyle-media-tabs button")) {
     button.addEventListener("click", () => {
-      tab = button.dataset.tab!;
+      tab = button.dataset.tab ?? "all";
+      for (const peer of drawer.querySelectorAll<HTMLButtonElement>(".xyle-media-tab")) {
+        peer.setAttribute("aria-pressed", String(peer === button));
+      }
       drawGrid();
     });
   }
-  $("#xyle-media-close", drawer).addEventListener("click", closeMediaDrawer);
+  $("#xyle-media-close", drawer).addEventListener("click", () => closeMediaDrawer());
   $("#xyle-media-upload", drawer).addEventListener("click", () => {
     const input = document.createElement("input");
     input.type = "file";
@@ -1004,15 +2252,15 @@ function renderMediaDrawer(items: MediaItem[]): void {
     input.click();
   });
   drawGrid();
+  search.focus();
 }
 
 function chooseExistingMedia(path: string): void {
   if (!selectedImage) return;
   const { el, meta } = selectedImage;
-  state.assets.delete(el.getAttribute("src") ?? "");
+  rememberOriginalAttr(meta.pagePath, meta.id, "src", el.getAttribute("src") ?? "");
   el.setAttribute("src", path);
   el.src = path;
-  removeOpsFor(`${meta.id}:src`);
   applyOp(meta.pagePath, { type: "src", nodeId: meta.id, value: path }, "Replace image");
   closeMediaDrawer();
   flash("Image updated.");
@@ -1020,22 +2268,50 @@ function chooseExistingMedia(path: string): void {
 
 /* ---------- ChangeSet / history / chrome ---------- */
 
+function assetPathsFor(...ops: Array<Op | undefined>): string[] {
+  return [
+    ...new Set(
+      ops
+        .filter((op): op is Extract<Op, { type: "src" }> => op?.type === "src")
+        .map((op) => op.value)
+        .filter((path) => state.assets.has(path)),
+    ),
+  ];
+}
+
+function cleanupUnreachableAssets(includeHistory = true): void {
+  const reachable = new Set(state.ops.flatMap(({ op }) => (op.type === "src" ? [op.value] : [])));
+  if (includeHistory) {
+    for (const entry of state.history) {
+      for (const path of entry.assetPaths) reachable.add(path);
+    }
+  }
+  for (const [path, asset] of state.assets) {
+    if (reachable.has(path)) continue;
+    URL.revokeObjectURL(asset.objectUrl);
+    state.assets.delete(path);
+  }
+}
+
 function applyOp(pagePath: string, op: Op, label: string): void {
   const key = opKey(op);
-  removeOpsFor(key);
-  state.ops.push({ pagePath, op });
+  const previous = state.ops.find(
+    (entry) => entry.pagePath === pagePath && opKey(entry.op) === key,
+  );
+  replacePendingOp(pagePath, key, op);
 
   const undo = (): void => {
-    removeOpsFor(key);
-    revertOpInDom(pagePath, op);
+    replacePendingOp(pagePath, key, previous?.op ?? null);
+    if (previous) applyOpToDom(pagePath, previous.op);
+    else revertOpInDom(pagePath, op);
     updateDirtyUi();
   };
   const redo = (): void => {
-    if (state.ops.some((entry) => entryKey(entry) === key)) return;
-    state.ops.push({ pagePath, op });
+    replacePendingOp(pagePath, key, op);
+    applyOpToDom(pagePath, op);
     updateDirtyUi();
   };
-  pushHistory({ label, undo, redo });
+  pushHistory({ label, undo, redo, assetPaths: assetPathsFor(previous?.op, op) });
   updateDirtyUi();
 }
 
@@ -1043,11 +2319,14 @@ function opKey(op: Op): string {
   const target = op.nodeId.includes("#") ? op.nodeId : `${op.nodeId}:${op.type}`;
   return `${op.type}@${target}`;
 }
-function entryKey(entry: { op: Op }): string {
-  return opKey(entry.op);
+function removeOpsFor(pagePath: string, key: string): void {
+  state.ops = state.ops.filter(
+    (entry) => !(entry.pagePath === pagePath && opKey(entry.op) === key),
+  );
 }
-function removeOpsFor(key: string): void {
-  state.ops = state.ops.filter((entry) => entryKey(entry) !== key);
+function replacePendingOp(pagePath: string, key: string, op: Op | null): void {
+  removeOpsFor(pagePath, key);
+  if (op) state.ops.push({ pagePath, op });
 }
 
 function pushHistory(entry: HistoryEntry): void {
@@ -1055,6 +2334,7 @@ function pushHistory(entry: HistoryEntry): void {
   state.history.push(entry);
   if (state.history.length > MAX_HISTORY) state.history.shift();
   state.historyIndex = state.history.length;
+  cleanupUnreachableAssets();
 }
 
 function dirtyCount(): number {
@@ -1064,7 +2344,18 @@ function dirtyCount(): number {
 function updateDirtyUi(): void {
   const count = dirtyCount();
   $("#xyle-dirty").style.display = count > 0 ? "" : "none";
-  $("#xyle-count").textContent = `${count} change${count === 1 ? "" : "s"}`;
+  $("#xyle-count").textContent = String(count);
+  $("#xyle-changes").setAttribute("aria-label", `Open ${count} change${count === 1 ? "" : "s"}`);
+  const dock = $("#xyle-control-dock");
+  const handle = $<HTMLButtonElement>("#xyle-dock-handle");
+  dock.toggleAttribute("data-hidden", count === 0);
+  handle?.setAttribute("aria-expanded", String(count > 0));
+  handle?.setAttribute(
+    "aria-label",
+    count > 0 ? "Xyle controls pinned while changes are pending" : "Show Xyle controls",
+  );
+  const chevron = $("#xyle-dock-chevron", dock);
+  if (chevron) chevron.textContent = count > 0 ? "⌄" : "⌃";
   refreshMarkers();
 }
 
@@ -1075,57 +2366,138 @@ function snapshotDigest(): Promise<string> {
 }
 
 function buildChrome(): void {
-  document.body.innerHTML = `
-  <main style="position:fixed;inset:0;display:flex;flex-direction:column">
-    <div id="xyle-preview-host" style="flex:1;position:relative"></div>
+  const shell = new DOMParser().parseFromString(
+    `
+  <main id="xyle-shell">
+    <div id="xyle-preview-host"></div>
   </main>
-  <div id="xyle-flash" style="position:fixed;top:1rem;left:50%;transform:translateX(-50%);background:#1d2733;color:#fff;padding:.5em 1em;border-radius:8px;font:500 .85rem system-ui;opacity:0;transition:opacity .2s;pointer-events:none;z-index:2147483647"></div>
+  <div id="xyle-overlay-root"></div>
+  <div id="xyle-flash" role="status" aria-live="polite"></div>
 
-  <div id="xyle-bar-left" style="position:fixed;left:1rem;bottom:1rem;display:flex;gap:.5rem;z-index:2147483647;font-family:system-ui,sans-serif">
-    <div style="position:relative">
-      <button id="xyle-menu-btn" style="font:600 .85rem system-ui;padding:.5em .9em;border:0;border-radius:8px;background:#1d2733;color:#fff;cursor:pointer">Xyle</button>
-      <div id="xyle-menu" style="display:none;position:absolute;bottom:2.4rem;left:0;background:#fff;border:1px solid #ddd;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.18);min-width:11rem;overflow:hidden">
-        <button data-action="exit" style="all:unset;display:block;width:100%;box-sizing:border-box;padding:.6em 1em;font:500 .88rem system-ui;cursor:pointer">Exit editor</button>
-        <button data-action="live" style="all:unset;display:block;width:100%;box-sizing:border-box;padding:.6em 1em;font:500 .88rem system-ui;cursor:pointer">View live site</button>
-        <hr style="border:0;border-top:1px solid #eee;margin:.15rem 0">
-        <button data-action="logout" style="all:unset;display:block;width:100%;box-sizing:border-box;padding:.6em 1em;font:500 .88rem system-ui;cursor:pointer">Log out</button>
+  <div id="xyle-control-dock" data-hidden aria-label="Xyle editor controls">
+    <button id="xyle-dock-handle" type="button" aria-label="Show Xyle controls" aria-expanded="false">Xyle <span id="xyle-dock-chevron" aria-hidden="true">⌃</span></button>
+    <div id="xyle-control-hitbox" aria-hidden="true"></div>
+    <div id="xyle-control-bar">
+      <div id="xyle-bar-left">
+        <div style="position:relative">
+          <button id="xyle-menu-btn" class="xyle-icon-button" data-tooltip="Xyle menu" aria-haspopup="menu" aria-expanded="false" aria-label="Open Xyle menu" title="Xyle menu">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <div id="xyle-menu" role="menu" aria-label="Xyle menu">
+            <button data-action="exit" class="xyle-menu-item" role="menuitem">Exit editor</button>
+            <button data-action="live" class="xyle-menu-item" role="menuitem">View live site</button>
+            <div class="xyle-menu-separator" role="separator"></div>
+            <button data-action="logout" class="xyle-menu-item" role="menuitem">Log out</button>
+          </div>
+        </div>
+        <button id="xyle-editables" class="xyle-icon-button" data-tooltip="Show editables" aria-label="Show editables" aria-pressed="false" title="Show editables">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 12h8"/></svg>
+        </button>
+      </div>
+      <div id="xyle-dirty">
+        <button id="xyle-changes" class="xyle-icon-button" data-tooltip="Changes" aria-label="Open changes" title="Open changes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 12h8M8 15h5"/></svg><span id="xyle-count" class="xyle-count-badge">0</span></button>
+        <button id="xyle-publish" class="xyle-icon-button xyle-icon-button--publish" data-tooltip="Publish" aria-label="Publish changes" title="Publish changes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M5 14v5h14v-5"/></svg><span id="xyle-publish-label" class="xyle-sr-only">Publish changes</span></button>
       </div>
     </div>
-    <button id="xyle-show-editables" style="font:500 .85rem system-ui;padding:.5em .9em;border:1px solid #d5d2cb;border-radius:8px;background:#fff;cursor:pointer">Show editables</button>
   </div>
-
-  <div id="xyle-dirty" style="position:fixed;right:1rem;bottom:1rem;display:none;gap:.5rem;z-index:2147483647;font-family:system-ui,sans-serif">
-    <button id="xyle-changes" style="font:500 .85rem system-ui;padding:.5em .9em;border:1px solid #d5d2cb;border-radius:8px;background:#fff;cursor:pointer"><span id="xyle-count">0 changes</span></button>
-    <button id="xyle-publish" style="font:600 .85rem system-ui;padding:.5em 1.1em;border:0;border-radius:8px;background:#0f6ea8;color:#fff;cursor:pointer">Publish</button>
-  </div>
-  <div id="xyle-conflict" style="display:none;position:fixed;top:1rem;left:50%;transform:translateX(-50%);background:#7a1f1f;color:#fff;padding:1rem;border-radius:10px;z-index:2147483647;font-family:system-ui,sans-serif;max-width:32rem">
+  <div id="xyle-conflict" role="alert">
     <strong>The published site changed.</strong>
-    <p style="margin:.4rem 0 .8rem;font-size:.88rem">Your edits are still here, but publishing would overwrite newer content.</p>
-    <button id="xyle-conflict-reload" style="font:inherit;padding:.4em .9em;margin-right:.5rem;border:0;border-radius:6px;background:#fff;color:#1d2733;cursor:pointer">Reload published site</button>
-    <button id="xyle-conflict-dismiss" style="font:inherit;padding:.4em .9em;border:1px solid #ffffff66;border-radius:6px;background:none;color:#fff;cursor:pointer">Keep editing</button>
+    <p>Your edits are still here, but publishing would overwrite newer content.</p>
+    <button id="xyle-conflict-reload" class="xyle-conflict-action">Reload published site</button>
+    <button id="xyle-conflict-dismiss" class="xyle-conflict-action xyle-conflict-action--quiet">Keep editing</button>
   </div>
-  `;
+`,
+    "text/html",
+  ).body;
+  document.body.replaceChildren(...shell.childNodes);
+  const shellStyles = document.createElement("style");
+  shellStyles.id = "xyle-shell-styles";
+  shellStyles.textContent = editorStyles;
+  document.head.append(shellStyles);
 
-  const menuBtn = $("#xyle-menu-btn");
+  const dock = $("#xyle-control-dock");
+  const dockHandle = $<HTMLButtonElement>("#xyle-dock-handle");
+  let dockHideTimer = 0;
+  const setDockHidden = (hidden: boolean): void => {
+    dock.toggleAttribute("data-hidden", hidden);
+    dockHandle.setAttribute("aria-expanded", String(!hidden));
+    dockHandle.setAttribute("aria-label", hidden ? "Show Xyle controls" : "Hide Xyle controls");
+    $("#xyle-dock-chevron", dock).textContent = hidden ? "⌃" : "⌄";
+  };
+  const showDock = (): void => {
+    window.clearTimeout(dockHideTimer);
+    setDockHidden(false);
+  };
+  const scheduleDockHide = (): void => {
+    window.clearTimeout(dockHideTimer);
+    if (dirtyCount() > 0) return;
+    dockHideTimer = window.setTimeout(() => setDockHidden(true), 2000);
+  };
+  dockHandle.addEventListener("click", () => {
+    if (dock.hasAttribute("data-hidden")) showDock();
+    else if (dirtyCount() === 0) setDockHidden(true);
+  });
+  dock.addEventListener("mouseenter", showDock);
+  dock.addEventListener("focusin", showDock);
+  dock.addEventListener("mouseleave", scheduleDockHide);
+  dock.addEventListener("focusout", scheduleDockHide);
+  document.addEventListener("keyup", (event) => {
+    if (event.key === "Escape" && dirtyCount() === 0 && !dock.contains(document.activeElement)) {
+      window.clearTimeout(dockHideTimer);
+      setDockHidden(true);
+    }
+  });
+
+  const menuBtn = $<HTMLButtonElement>("#xyle-menu-btn");
   const menu = $("#xyle-menu");
+  const menuItems = [...menu.querySelectorAll<HTMLButtonElement>("button[data-action]")];
+  const closeMenu = (restoreFocus = false): void => {
+    menu.style.display = "none";
+    menuBtn.setAttribute("aria-expanded", "false");
+    if (restoreFocus) menuBtn.focus();
+  };
+  const openMenu = (): void => {
+    menu.style.display = "block";
+    menuBtn.setAttribute("aria-expanded", "true");
+    menuItems[0]?.focus();
+  };
   menuBtn.addEventListener("click", (event) => {
     event.stopPropagation();
-    menu.style.display = menu.style.display === "none" ? "block" : "none";
+    if (menuBtn.getAttribute("aria-expanded") === "true") closeMenu(true);
+    else openMenu();
   });
-  document.addEventListener("click", () => (menu.style.display = "none"));
-  for (const button of menu.querySelectorAll<HTMLButtonElement>("button[data-action]")) {
-    button.addEventListener("click", () => menuAction(button.dataset.action!));
+  menu.addEventListener("keydown", (event) => {
+    const current = menuItems.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+      return;
+    }
+    if (event.key === "Tab") {
+      closeMenu();
+      return;
+    }
+    let next = current;
+    if (event.key === "ArrowDown") next = (current + 1) % menuItems.length;
+    else if (event.key === "ArrowUp") next = (current - 1 + menuItems.length) % menuItems.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = menuItems.length - 1;
+    else return;
+    event.preventDefault();
+    menuItems[next]?.focus();
+  });
+  document.addEventListener("click", () => closeMenu());
+  for (const button of menuItems) {
+    button.addEventListener("click", () => {
+      closeMenu(true);
+      menuAction(button.dataset.action!);
+    });
   }
 
-  const toggle = $("#xyle-show-editables");
-  toggle.textContent = state.showEditables ? "Hide editables" : "Show editables";
-  toggle.addEventListener("click", () => {
-    state.showEditables = !state.showEditables;
-    localStorage.setItem("xyle.showEditables", state.showEditables ? "1" : "0");
-    toggle.textContent = state.showEditables ? "Hide editables" : "Show editables";
+  $("#xyle-editables").addEventListener("click", () => {
+    showEditables = !showEditables;
     applyShowEditables();
   });
-
   $("#xyle-publish").addEventListener("click", publish);
   $("#xyle-changes").addEventListener("click", openChangesDrawer);
   $("#xyle-conflict-reload").addEventListener("click", () => location.reload());
@@ -1165,28 +2537,66 @@ function buildChrome(): void {
       if (editableHost !== session.el) commitEdit();
     }
   });
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (!activeTools) return;
+      const target = event.target as Node;
+      if (activeTools.contains(target)) return;
+      if (target === iframe) return;
+      closeContextTools(false);
+    },
+    true,
+  );
+  window.addEventListener("resize", scheduleOverlayRefresh);
+  window.addEventListener("scroll", scheduleOverlayRefresh, true);
 }
 
 function menuAction(action: string): void {
   if (action === "exit") exitEditor();
   if (action === "live") {
-    window.open(state.current ? `${location.origin}${state.current.pagePath}` : "/", "_blank");
+    try {
+      const target = new URL(state.current?.pagePath ?? "/", location.origin);
+      if (target.origin !== location.origin || target.protocol !== location.protocol) {
+        flash("The live page could not be opened safely.");
+        return;
+      }
+      const link = document.createElement("a");
+      link.href = target.href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.click();
+    } catch {
+      flash("The live page could not be opened safely.");
+    }
   }
   if (action === "logout") logout();
 }
 
 function confirmDiscard(action: string): boolean {
-  if (dirtyCount() === 0) return true;
-  const message = `Discard ${dirtyCount()} unpublished change(s) and ${action}?`;
-  return confirm(message);
+  const count = dirtyCount();
+  if (count === 0) return true;
+  const noun = count === 1 ? "change" : "changes";
+  return confirm(`Discard ${count} unpublished ${noun} and ${action}?`);
 }
 
 function discardAll(): void {
+  mediaMutationGeneration += 1;
+  closeMediaDrawer(false);
+  closeChangesDrawer(false);
+  selectedImage = null;
+  previewDoc()
+    ?.querySelectorAll(".xyle-img-tools,.xyle-link-tools")
+    .forEach((tools) => {
+      tools.remove();
+    });
   for (const { objectUrl } of state.assets.values()) URL.revokeObjectURL(objectUrl);
   state.assets.clear();
   state.ops = [];
   state.history = [];
   state.historyIndex = 0;
+  originalSegments.clear();
+  originalAttrs.clear();
 }
 
 async function exitEditor(): Promise<void> {
@@ -1197,114 +2607,238 @@ async function exitEditor(): Promise<void> {
 
 async function logout(): Promise<void> {
   if (!confirmDiscard("log out")) return;
-  discardAll();
-  await api("/__xyle/api/logout", { method: "POST" });
-  location.assign("/");
+  try {
+    const response = await api("/__xyle/api/logout", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-xyle-request": "1",
+      },
+      body: "{}",
+    });
+    if (!response.ok) {
+      flash("Could not log out. Your draft is still open.");
+      return;
+    }
+    discardAll();
+    location.assign("/edit");
+  } catch {
+    flash("Could not log out. Check your connection and try again.");
+  }
 }
 
 /* ---------- editables toggle & markers ---------- */
 
-function applyShowEditables(): void {
-  const doc = previewDoc();
-  if (!doc) return;
-  for (const el of doc.querySelectorAll("[data-xyle-node]")) {
-    const meta = metaById.get(el.getAttribute("data-xyle-node")!);
-    const supported =
-      meta &&
-      ((meta.kind === "text" && meta.textEditable) ||
-        meta.kind === "link" ||
-        meta.kind === "image");
-    el.classList.toggle("xyle-editable-candidate", state.showEditables && !!supported);
-  }
-}
-
 function refreshMarkers(): void {
   const doc = previewDoc();
-  if (!doc || !state.current) return;
-  doc
-    .getElementById("xyle-overlay-root")
-    ?.querySelectorAll(".xyle-marker")
-    .forEach((m) => {
-      m.remove();
-    });
+  const overlay = shellOverlay();
+  if (!doc || !state.current || !overlay) return;
+  overlay.querySelectorAll(".xyle-marker").forEach((marker) => {
+    marker.remove();
+  });
   const byPageOp = state.ops.filter((o) => o.pagePath === state.current!.pagePath);
   for (const { op } of byPageOp) {
     const baseId = op.nodeId.split("#")[0]!;
     const el = doc.querySelector(`[data-xyle-node="${baseId}"]`) as HTMLElement | null;
     if (!el) continue;
-    const marker = doc.createElement("span");
+    const marker = document.createElement("span");
     marker.className = "xyle-marker";
-    const rect = el.getBoundingClientRect();
-    const overlay = doc.getElementById("xyle-overlay-root")!;
-    marker.style.left = `${rect.right + 4 + windowScrollX(doc)}px`;
-    marker.style.top = `${rect.top + windowScrollY(doc)}px`;
+    const rect = previewElementRect(el);
+    const markerSize = 12;
+    const gap = 4;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const preferredLeft = rect.right + gap;
+    const viewportLeft =
+      preferredLeft + markerSize <= viewportWidth
+        ? preferredLeft
+        : Math.max(0, rect.left - markerSize - gap);
+    const viewportTop =
+      rect.top >= 0 && rect.top <= viewportHeight
+        ? Math.min(rect.top, Math.max(0, viewportHeight - markerSize))
+        : rect.top;
+    marker.style.left = `${viewportLeft}px`;
+    marker.style.top = `${viewportTop}px`;
     overlay.append(marker);
   }
 }
 
 /* ---------- changes drawer & undo ---------- */
 
-function describeOp(op: Op): string {
+let changesDrawerTrigger: HTMLElement | null = null;
+
+function closeChangesDrawer(restoreFocus = true): void {
+  $("#xyle-changes-drawer")?.remove();
+  if (restoreFocus) changesDrawerTrigger?.focus();
+  changesDrawerTrigger = null;
+  if (!session && !drawerOpen && !activeTools)
+    setInteractionMode(hoveredCandidate ? "hover" : "idle");
+}
+
+function opLabel(op: Op): string {
   switch (op.type) {
     case "text":
-      return `Text “${op.value.split("\n")[0]!.slice(0, 40)}”`;
+      return "Text";
     case "href":
-      return `Link → ${op.value}`;
+      return "Link destination";
     case "src":
-      return `Image → ${op.value}`;
+      return "Image";
     case "alt":
-      return `Alt → ${op.value}`;
+      return "Alt text";
   }
 }
 
+function originalValue(pagePath: string, op: Op): string {
+  if (op.type === "text") {
+    return originalSegments.get(segmentIdentity(pagePath, op.nodeId)) ?? "";
+  }
+  return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
+}
+
+function appendChangeValue(parent: HTMLElement, kind: "Before" | "After", value: string): void {
+  const wrapper = document.createElement("div");
+  wrapper.className = `xyle-change-value xyle-change-${kind.toLowerCase()}`;
+  const label = document.createElement("span");
+  label.textContent = kind;
+  wrapper.append(label, document.createTextNode(value || "Empty"));
+  parent.append(wrapper);
+}
+
 function openChangesDrawer(): void {
-  $("#xyle-changes-drawer")?.remove();
+  closeChangesDrawer(false);
+  setInteractionMode("drawer");
+  changesDrawerTrigger = document.activeElement as HTMLElement | null;
   const drawer = document.createElement("aside");
   drawer.id = "xyle-changes-drawer";
-  drawer.style.cssText =
-    "position:fixed;top:0;right:0;bottom:0;width:min(26rem,92vw);background:#fff;box-shadow:-12px 0 30px rgba(0,0,0,.15);z-index:2147483647;padding:1rem;font-family:system-ui,sans-serif;display:flex;flex-direction:column";
-  drawer.innerHTML = `<header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
-    <strong>Changes</strong>
-    <button id="xyle-changes-close" style="border:0;background:none;font-size:1.2rem;cursor:pointer">×</button>
-  </header><div id="xyle-changes-list" style="flex:1;overflow:auto;display:grid;gap:.5rem;align-content:start"></div>`;
+  drawer.className = "xyle-drawer xyle-changes-drawer";
+  drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("aria-modal", "true");
+  drawer.setAttribute("aria-labelledby", "xyle-changes-title");
+  drawer.innerHTML = `<header class="xyle-drawer-header">
+    <strong id="xyle-changes-title">Changes</strong>
+    <button id="xyle-changes-close" class="xyle-icon-button" aria-label="Close changes drawer">×</button>
+  </header><div id="xyle-changes-list" class="xyle-changes-list"></div>
+  <button id="xyle-discard" class="xyle-dialog-button xyle-dialog-button--accent"><svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg><span>Discard all changes</span></button>`;
   document.body.append(drawer);
-  $("#xyle-changes-close", drawer).addEventListener("click", () => drawer.remove());
+  const closeButton = $("#xyle-changes-close", drawer);
+  closeButton.addEventListener("click", () => closeChangesDrawer());
+  drawer.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeChangesDrawer();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [
+      ...drawer.querySelectorAll<HTMLElement>(
+        'button:not([disabled]),input:not([disabled]),[tabindex]:not([tabindex="-1"])',
+      ),
+    ];
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  $("#xyle-discard", drawer).addEventListener("click", () => {
+    if (!confirmDiscard("reload the published page")) return;
+    if (session) revertEdit();
+    discardAll();
+    drawer.remove();
+    updateDirtyUi();
+    void loadPage(state.current?.pagePath ?? "/index.html", { pushHistory: false });
+  });
 
   const list = $("#xyle-changes-list", drawer);
   if (state.ops.length === 0) {
-    list.innerHTML = `<p style="color:#5c6672;font-size:.9rem">No pending changes.</p>`;
+    list.innerHTML = `<p class="xyle-empty-state">No pending changes. Your draft is clean.</p>`;
+    closeButton.focus();
     return;
   }
+  const operationsByPage = new Map<
+    string,
+    Array<{ index: number; entry: (typeof state.ops)[number] }>
+  >();
   for (const [index, entry] of state.ops.entries()) {
-    const row = document.createElement("div");
-    row.style.cssText =
-      "border:1px solid #eee;border-radius:8px;padding:.6rem .75rem;font-size:.86rem";
-    // textContent (not innerHTML): op values are user-edited content and must
-    // never be interpreted as markup in the privileged shell document
-    const pageLabel = document.createElement("div");
-    pageLabel.style.color = "#5c6672";
-    pageLabel.textContent = entry.pagePath;
-    const descLabel = document.createElement("div");
-    descLabel.textContent = describeOp(entry.op);
-    row.append(pageLabel, descLabel);
-    const undoButton = document.createElement("button");
-    undoButton.textContent = "Undo";
-    undoButton.style.cssText =
-      "margin-top:.4rem;font:500 .8rem system-ui;padding:.3em .8em;border:1px solid #ccc;border-radius:6px;background:#fff;cursor:pointer";
-    undoButton.addEventListener("click", () => undoOp(index));
-    row.append(undoButton);
-    list.append(row);
+    const pageEntries = operationsByPage.get(entry.pagePath) ?? [];
+    pageEntries.push({ index, entry });
+    operationsByPage.set(entry.pagePath, pageEntries);
   }
+  let pageIndex = 0;
+  for (const [pagePath, entries] of operationsByPage) {
+    const group = document.createElement("section");
+    group.className = "xyle-change-page-group";
+    const pageLabel = document.createElement("h3");
+    pageLabel.id = `xyle-change-page-${pageIndex++}`;
+    pageLabel.className = "xyle-change-page";
+    pageLabel.textContent = pagePath;
+    group.setAttribute("aria-labelledby", pageLabel.id);
+    group.append(pageLabel);
+    for (const { index, entry } of entries) {
+      const row = document.createElement("div");
+      row.className = "xyle-change-row";
+      const header = document.createElement("div");
+      header.className = "xyle-change-row-header";
+      const label = document.createElement("strong");
+      label.className = "xyle-change-label";
+      label.textContent = opLabel(entry.op);
+      const undoButton = document.createElement("button");
+      undoButton.innerHTML =
+        '<svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a7 7 0 0 1 7 7"/></svg><span>Undo</span>';
+      undoButton.className = "xyle-undo-button";
+      undoButton.setAttribute("aria-label", `Undo ${opLabel(entry.op)} change on ${pagePath}`);
+      undoButton.addEventListener("click", () => undoOp(index));
+      header.append(label, undoButton);
+      const comparison = document.createElement("div");
+      comparison.className = "xyle-change-comparison";
+      // User-authored values are appended as text nodes so the privileged shell
+      // never interprets edited content as markup.
+      appendChangeValue(comparison, "Before", originalValue(pagePath, entry.op));
+      const arrow = document.createElement("span");
+      arrow.className = "xyle-change-arrow";
+      arrow.setAttribute("aria-hidden", "true");
+      arrow.textContent = "→";
+      comparison.append(arrow);
+      appendChangeValue(comparison, "After", entry.op.value);
+      row.append(header, comparison);
+      group.append(row);
+    }
+    list.append(group);
+  }
+  closeButton.focus();
 }
 
 /** Undo one specific op by index. */
 function undoOp(index: number): void {
   const entry = state.ops[index];
   if (!entry) return;
-  removeOpsFor(opKey(entry.op));
+  removeOpsFor(entry.pagePath, opKey(entry.op));
   revertOpInDom(entry.pagePath, entry.op);
-  $("#xyle-changes-drawer")?.remove();
+  closeChangesDrawer();
   updateDirtyUi();
+}
+
+function applyOpToDom(pagePath: string, op: Op): void {
+  if (pagePath !== state.current?.pagePath) return;
+  const doc = previewDoc();
+  if (!doc) return;
+  if (op.type === "text") {
+    const [baseId, segRaw] = op.nodeId.split("#");
+    const el = doc.querySelector(`[data-xyle-node="${baseId}"]`) as HTMLElement | null;
+    if (el) setSegmentValue(el, Number(segRaw), op.value);
+    return;
+  }
+  const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
+  if (!el) return;
+  const asset = state.assets.get(op.value);
+  const value = asset ? asset.objectUrl : op.value;
+  el.setAttribute(op.type, value);
+  if (op.type === "src" && el.tagName === "IMG") (el as HTMLImageElement).src = value;
 }
 
 function revertOpInDom(pagePath: string, op: Op): void {
@@ -1313,7 +2847,7 @@ function revertOpInDom(pagePath: string, op: Op): void {
   if (!doc) return;
   if (op.type === "text") {
     const [baseId, segRaw] = op.nodeId.split("#");
-    const original = originalSegments.get(op.nodeId);
+    const original = originalSegments.get(segmentIdentity(pagePath, op.nodeId));
     const el = doc.querySelector(`[data-xyle-node="${baseId}"]`);
     if (el && original !== undefined) {
       const runs = setSegmentValue(el as HTMLElement, Number(segRaw), original);
@@ -1323,7 +2857,7 @@ function revertOpInDom(pagePath: string, op: Op): void {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     const attr = op.type;
     if (el) {
-      const original = originalAttrs.get(`${op.nodeId}:${attr}`);
+      const original = originalAttrs.get(attrIdentity(pagePath, op.nodeId, attr));
       if (original !== undefined) el.setAttribute(attr, original);
     }
   }
@@ -1333,47 +2867,53 @@ function revertOpInDom(pagePath: string, op: Op): void {
 const originalSegments = new Map<string, string>();
 const originalAttrs = new Map<string, string>();
 
-function rememberOriginalSegment(id: string, value: string): void {
-  if (!originalSegments.has(id)) originalSegments.set(id, value);
+function segmentIdentity(pagePath: string, id: string): string {
+  return `${pagePath}@${id}`;
 }
-function rememberOriginalAttr(id: string, attr: string, value: string): void {
-  const key = `${id}:${attr}`;
+function attrIdentity(pagePath: string, id: string, attr: string): string {
+  return `${pagePath}@${id}:${attr}`;
+}
+function rememberOriginalSegment(pagePath: string, id: string, value: string): void {
+  const key = segmentIdentity(pagePath, id);
+  if (!originalSegments.has(key)) originalSegments.set(key, value);
+}
+function rememberOriginalAttr(pagePath: string, id: string, attr: string, value: string): void {
+  const key = attrIdentity(pagePath, id, attr);
   if (!originalAttrs.has(key)) originalAttrs.set(key, value);
 }
 
 /** Overwrite one segment's text inside a container (used by undo/restore). */
 function setSegmentValue(el: HTMLElement, segIndex: number, value: string): void {
-  const pairs = collectSegments(el);
-  const pair = pairs[segIndex];
+  const pair = collectSegments(el)[segIndex];
   if (!pair) return;
-  // Re-locate the live text nodes that belong to this slot key.
   const nodes = textNodesForSlot(el, pair.key);
-  const pieces = value.split("\n");
-  if (nodes.length === 0) return;
+  const first = nodes[0];
+  const parent = first?.parentNode;
+  if (!first || !parent) return;
 
-  if (pieces.length === 1) {
-    // remove brs inside this slot and collapse to a single text value
-    for (const node of nodes.slice(1)) {
-      const prev = node.previousSibling;
-      if (prev && prev.nodeType === Node.ELEMENT_NODE && (prev as HTMLElement).tagName === "BR") {
-        prev.remove();
-      }
-    }
-    nodes[0]!.textContent = pieces[0]!;
-    for (const node of nodes.slice(1)) node.textContent = "";
-    return;
+  for (const node of nodes.slice(1)) {
+    const previous = node.previousSibling;
+    if (previous && isControlledBreak(previous)) previous.remove();
+    node.remove();
+  }
+  let next = first.nextSibling;
+  while (next && isControlledBreak(next)) {
+    const controlled = next;
+    next = next.nextSibling;
+    controlled.remove();
   }
 
-  for (const [i, node] of nodes.entries()) {
-    node.textContent = pieces[i] ?? "";
-    if (i > 0) {
-      const prev = node.previousSibling;
-      if (
-        !(prev && prev.nodeType === Node.ELEMENT_NODE && (prev as HTMLElement).tagName === "BR")
-      ) {
-        node.parentNode?.insertBefore(document.createElement("br"), node);
-      }
-    }
+  const pieces = value.split("\n");
+  first.textContent = pieces[0] ?? "";
+  let cursor: Node = first;
+  const doc = el.ownerDocument;
+  for (const piece of pieces.slice(1)) {
+    const br = doc.createElement("br");
+    markControlledBreak(br);
+    const text = doc.createTextNode(piece);
+    parent.insertBefore(br, cursor.nextSibling);
+    parent.insertBefore(text, br.nextSibling);
+    cursor = text;
   }
 }
 
@@ -1406,7 +2946,7 @@ function restoreOpsIntoDom(): void {
     } else {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) {
-        rememberOriginalAttr(op.nodeId, op.type, el.getAttribute(op.type) ?? "");
+        rememberOriginalAttr(pagePath, op.nodeId, op.type, el.getAttribute(op.type) ?? "");
         const asset = state.assets.get(op.value);
         el.setAttribute(op.type, asset ? asset.objectUrl : op.value);
         if (el.tagName === "IMG") (el as HTMLImageElement).src = asset ? asset.objectUrl : op.value;
@@ -1433,9 +2973,11 @@ function redo(): void {
 
 async function publish(): Promise<void> {
   if (commitActiveEditsAndCollect()) return;
+  mediaMutationGeneration += 1;
   const button = $<HTMLButtonElement>("#xyle-publish");
+  const label = $("#xyle-publish-label");
   button.disabled = true;
-  button.textContent = "Publishing…";
+  label.textContent = "Publishing…";
 
   const form = new FormData();
   form.set(
@@ -1445,8 +2987,12 @@ async function publish(): Promise<void> {
       pages: collectPageOps(),
     }),
   );
-  for (const [path, asset] of state.assets) {
-    form.set(path, asset.file, `asset-${asset.file.name}`);
+  const referencedAssets = new Set(
+    state.ops.flatMap(({ op }) => (op.type === "src" ? [op.value] : [])),
+  );
+  for (const path of referencedAssets) {
+    const asset = state.assets.get(path);
+    if (asset) form.set(path, asset.file, `asset-${asset.file.name}`);
   }
 
   try {
@@ -1458,7 +3004,7 @@ async function publish(): Promise<void> {
     if (res.status === 409) {
       $("#xyle-conflict").style.display = "block";
       button.disabled = false;
-      button.textContent = "Publish";
+      label.textContent = "Publish changes";
       return;
     }
     if (!res.ok) {
@@ -1467,7 +3013,7 @@ async function publish(): Promise<void> {
       };
       flash(`Couldn't publish: ${body.error ?? res.statusText}`);
       button.disabled = false;
-      button.textContent = "Publish";
+      label.textContent = "Publish changes";
       return;
     }
     const body = (await res.json()) as { snapshotDigest: string };
@@ -1477,10 +3023,13 @@ async function publish(): Promise<void> {
     state.ops = [];
     state.history = [];
     state.historyIndex = 0;
-    button.textContent = "Published ✓";
+    originalSegments.clear();
+    originalAttrs.clear();
+    selectedImage = null;
+    label.textContent = "Published ✓";
     flash("Published.");
     setTimeout(() => {
-      button.textContent = "Publish";
+      label.textContent = "Publish changes";
       button.disabled = false;
     }, 1500);
     updateDirtyUi();
@@ -1488,7 +3037,7 @@ async function publish(): Promise<void> {
   } catch {
     flash("Couldn't publish — check your connection and retry.");
     button.disabled = false;
-    button.textContent = "Publish";
+    label.textContent = "Publish changes";
   }
 }
 
