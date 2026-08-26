@@ -1,6 +1,7 @@
 import { authenticated, login, logoutCookie, sessionCookie, type Env } from "../../_auth";
 import { deployCompleteSnapshot } from "../../_publish";
 import { preparePreview, patchHtml } from "../../../src/html.ts";
+import { discoverMedia, uploadPathFor, validateUpload } from "../../../src/media.ts";
 import { computeSnapshotDigest, digestBytes } from "../../../src/digest.ts";
 import type { ManifestFile, XyleDigest } from "../../../src/types.ts";
 
@@ -45,7 +46,20 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     const prepared = preparePreview(await response.text(), path, url.origin);
     return Response.json({ pagePath: path, baseDigest: entry.digest, html: prepared.html, nodes: [...prepared.nodes.values()] });
   }
-  if (route === "media") return Response.json({ available: false, reason: "media management is unavailable on Cloudflare Pages" });
+  if (route === "media") {
+    const manifestUrl = new URL(request.url);
+    manifestUrl.pathname = "/_xyle/manifest.json";
+    const manifest = await (await env.ASSETS.fetch(new Request(manifestUrl, { method: "GET" }))).json() as { files: Record<string, ManifestFile> };
+    const sources = new Map<string, string>();
+    for (const [path, entry] of Object.entries(manifest.files)) {
+      if (entry.contentType !== "text/html") continue;
+      const pageUrl = new URL(request.url);
+      pageUrl.pathname = path;
+      const page = await env.ASSETS.fetch(new Request(pageUrl, { method: "GET" }));
+      if (page.ok) sources.set(path, await page.text());
+    }
+    return Response.json(discoverMedia(manifest as Parameters<typeof discoverMedia>[0], sources));
+  }
   if (route === "publish" && request.method === "POST") {
     if (!request.headers.get("content-type")?.includes("multipart/form-data")) {
       return Response.json({ error: "unsupported content type" }, { status: 415 });
@@ -54,7 +68,6 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     if (!Number.isSafeInteger(length) || length > MAX_UPLOAD_BYTES + 1024 * 1024) return Response.json({ error: "request too large" }, { status: 413 });
     const form = await request.formData().catch(() => null);
     if (!form) return Response.json({ error: "invalid multipart body" }, { status: 400 });
-    if ([...form.values()].some((value) => value instanceof File)) return Response.json({ error: "media uploads are unavailable on Cloudflare Pages" }, { status: 501 });
     const raw = form.get("metadata");
     if (typeof raw !== "string") return Response.json({ error: "missing metadata" }, { status: 400 });
     let metadata: {
@@ -80,6 +93,25 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     if (metadata.baseSnapshotDigest !== current.snapshotDigest) {
       return Response.json({ error: "stale-site", currentSnapshotDigest: current.snapshotDigest }, { status: 409 });
     }
+    const uploads: Array<{ path: string; bytes: Uint8Array; contentType: string }> = [];
+    let uploadBytes = 0;
+    for (const [path, value] of form.entries()) {
+      if (!(value instanceof File)) continue;
+      if (!path.startsWith("/__media/")) return Response.json({ error: "invalid upload path" }, { status: 400 });
+      const bytes = new Uint8Array(await value.arrayBuffer());
+      uploadBytes += bytes.byteLength;
+      if (uploadBytes > MAX_UPLOAD_BYTES) return Response.json({ error: "uploads too large" }, { status: 413 });
+      const validation = validateUpload(value.name, bytes);
+      if (!validation.ok) return Response.json({ error: `upload rejected: ${validation.reason}` }, { status: 400 });
+      const expectedPath = await uploadPathFor(bytes, validation.contentType);
+      if (expectedPath !== path) return Response.json({ error: "upload path mismatch" }, { status: 400 });
+      const existing = current.files[path];
+      const digest = await digestBytes(bytes);
+      if (existing && (existing.digest !== digest || existing.contentType !== validation.contentType)) {
+        return Response.json({ error: "upload path collision" }, { status: 409 });
+      }
+      if (!existing) uploads.push({ path, bytes, contentType: validation.contentType });
+    }
     const files: Array<{ path: string; bytes: Uint8Array; contentType: string }> = [];
     for (const [path, entry] of Object.entries(current.files)) {
       const assetUrl = new URL(request.url);
@@ -89,13 +121,14 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
       files.push({ path, bytes: new Uint8Array(await response.arrayBuffer()), contentType: entry.contentType });
     }
     const byPath = new Map(files.map((file) => [file.path, file]));
+    for (const upload of uploads) byPath.set(upload.path, upload);
     for (const page of metadata.pages ?? []) {
       const file = byPath.get(page.pagePath);
       const entry = current.files[page.pagePath];
       if (!file || !entry || entry.digest !== page.baseDigest) return Response.json({ error: "stale-site" }, { status: 409 });
       file.bytes = await patchHtml(file.bytes, { pagePath: page.pagePath, baseDigest: page.baseDigest, operations: page.operations });
     }
-    const nextFiles = Object.entries(current.files).map(([path, entry]) => ({ path, bytes: byPath.get(path)!.bytes, contentType: entry.contentType }));
+    const nextFiles = [...byPath.values()];
     const nextEntries: typeof current.files = {};
     for (const file of nextFiles) nextEntries[file.path] = { digest: await digestBytes(file.bytes), size: file.bytes.byteLength, contentType: file.contentType };
     const nextManifest = { version: 1 as const, snapshotDigest: await computeSnapshotDigest(nextEntries), files: nextEntries };
