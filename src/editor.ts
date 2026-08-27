@@ -835,7 +835,8 @@ const editorStyles = `
   }
 
   #xyle-overlay-root .xyle-img-tools,
-  #xyle-overlay-root .xyle-link-tools {
+  #xyle-overlay-root .xyle-link-tools,
+  #xyle-overlay-root .xyle-format-tools {
     all: initial;
     position: fixed !important;
     display: flex !important;
@@ -847,9 +848,38 @@ const editorStyles = `
     pointer-events: auto !important;
     isolation: isolate !important;
   }
+  #xyle-overlay-root .xyle-format-tools {
+    align-items: center !important;
+  }
+  #xyle-overlay-root .xyle-format-tools [role="separator"] {
+    width: 1px !important;
+    height: 20px !important;
+    margin: 0 2px !important;
+    background: #ffffff2e !important;
+  }
+  #xyle-overlay-root .xyle-format-tools select {
+    all: initial !important;
+    min-height: 28px !important;
+    padding: 0 22px 0 8px !important;
+    border: 0 !important;
+    border-radius: 6px !important;
+    background: transparent !important;
+    color: #eef3ec !important;
+    font: 600 11px / 1.2 var(--xyle-font-ui) !important;
+    cursor: pointer !important;
+  }
+  #xyle-overlay-root .xyle-format-tools select:hover,
+  #xyle-overlay-root .xyle-format-tools select:focus-visible {
+    background: #ffffff1f !important;
+  }
+  #xyle-overlay-root .xyle-format-tools option {
+    background: #17201b !important;
+    color: #eef3ec !important;
+  }
 
   #xyle-overlay-root .xyle-img-tools button,
-  #xyle-overlay-root .xyle-link-tools button {
+  #xyle-overlay-root .xyle-link-tools button,
+  #xyle-overlay-root .xyle-format-tools button {
     all: initial !important;
     min-height: 28px !important;
     padding: 0 9px !important;
@@ -865,13 +895,17 @@ const editorStyles = `
 
   #xyle-overlay-root .xyle-img-tools button:hover,
   #xyle-overlay-root .xyle-link-tools button:hover,
+  #xyle-overlay-root .xyle-format-tools button:hover,
   #xyle-overlay-root .xyle-img-tools button:focus-visible,
-  #xyle-overlay-root .xyle-link-tools button:focus-visible {
+  #xyle-overlay-root .xyle-link-tools button:focus-visible,
+  #xyle-overlay-root .xyle-format-tools button:focus-visible {
     background: #ffffff1f !important;
   }
 
   #xyle-overlay-root .xyle-img-tools button:focus-visible,
-  #xyle-overlay-root .xyle-link-tools button:focus-visible {
+  #xyle-overlay-root .xyle-link-tools button:focus-visible,
+  #xyle-overlay-root .xyle-format-tools button:focus-visible,
+  #xyle-overlay-root .xyle-format-tools select:focus-visible {
     outline: 2px solid #a8bea5 !important;
     outline-offset: -1px !important;
   }
@@ -1093,10 +1127,18 @@ const editorStyles = `
 }
 `;
 
+interface NodeSegmentMeta {
+  sourceStart: number;
+  sourceEnd: number;
+  textLength: number;
+}
+
 interface NodeMeta {
   id: string;
   pagePath: string;
   kind: "text" | "link" | "image";
+  segments?: NodeSegmentMeta[];
+  contentStart?: number;
   tag?: string;
   multiline?: boolean;
   textEditable?: boolean;
@@ -1112,7 +1154,15 @@ interface PageData {
 
 type Op =
   | { type: "text"; nodeId: string; value: string }
-  | { type: "format"; nodeId: string; value: "bold" | "italic" | "underline" }
+  | {
+      type: "format";
+      nodeId: string;
+      value: "bold" | "italic" | "underline";
+      start?: number;
+      end?: number;
+      sourceStart?: number;
+      sourceEnd?: number;
+    }
   | { type: "formatBlock"; nodeId: string; value: BlockTag }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string; assetName?: string }
@@ -1326,6 +1376,7 @@ function wirePreview(): void {
   if (doc.body.dataset.xyleWired === "true") return;
   doc.body.dataset.xyleWired = "true";
   doc.defaultView?.addEventListener("scroll", scheduleOverlayRefresh, { passive: true });
+  doc.addEventListener("selectionchange", scheduleFormatTools);
   doc.addEventListener(
     "pointerdown",
     () => {
@@ -1420,6 +1471,8 @@ let activeToolsTarget: HTMLElement | null = null;
 let activeToolsReturnFocus: HTMLElement | null = null;
 type ContextToolPlacement = "above" | "below" | "inside-bottom";
 let activeToolsPlacement: ContextToolPlacement = "below";
+let formatToolsFrame = 0;
+let savedFormatSelection: FormatSelection | null = null;
 
 function setInteractionMode(mode: InteractionMode): void {
   interactionMode = mode;
@@ -1448,6 +1501,8 @@ function endCandidateHover(el: HTMLElement): void {
 }
 
 function closeContextTools(restoreFocus = true): void {
+  window.cancelAnimationFrame(formatToolsFrame);
+  formatToolsFrame = 0;
   if (activeTools) activeTools.remove();
   activeTools = null;
   const target = activeToolsReturnFocus ?? activeToolsTarget;
@@ -1601,7 +1656,14 @@ function applyShowEditables(): void {
 
 function wireText(el: HTMLElement, meta: NodeMeta): void {
   el.addEventListener("pointerdown", () => {
-    if (session?.el === el) return;
+    if (session?.el === el) {
+      if (!el.isContentEditable) {
+        startEdit(el, meta);
+      } else if (previewDoc()?.activeElement !== el) {
+        el.focus({ preventScroll: true });
+      }
+      return;
+    }
     startEdit(el, meta);
   });
   el.addEventListener("keydown", (event) => {
@@ -1650,9 +1712,9 @@ function isNestedCandidate(el: HTMLElement, root: HTMLElement): boolean {
 }
 
 /**
- * Structural identity for one server-backed text segment. The element path
- * separates inline descendants; the local run separates direct text nodes on
- * either side of inline elements. Controlled <br> splits stay in the same run.
+ * Structural identity for one server-backed text segment. Editor-owned format
+ * wrappers are transparent; authored breaks and source inline elements remain
+ * boundaries between source text nodes.
  */
 function isControlledBreak(node: Node): node is HTMLBRElement {
   return (
@@ -1668,36 +1730,52 @@ function markControlledBreak(br: HTMLBRElement): void {
   br.setAttribute("data-xyle-controlled-break", "");
 }
 
-function slotKeyOf(target: Node, root: Node): string {
-  const parent = target.parentNode;
-  if (!parent) return "";
+function isFormatWrapper(node: Node): node is HTMLElement {
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  const marker = (node as HTMLElement).getAttribute("data-xyle-format");
+  return marker === "bold" || marker === "italic" || marker === "underline";
+}
 
-  const chain: number[] = [];
-  let element: Node | null = parent;
-  while (element && element !== root && element.parentNode) {
-    let index = 0;
-    for (const sibling of element.parentNode.childNodes) {
-      if (sibling === element) break;
-      if (sibling.nodeType === Node.ELEMENT_NODE && (sibling as HTMLElement).tagName !== "BR") {
-        index += 1;
+function slotKeyOf(target: Node, root: HTMLElement): string {
+  let nextKey = 0;
+  let currentKey: string | null = null;
+  let foundKey = "";
+
+  const visit = (node: Node, isRoot = false): boolean => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if ((node.textContent ?? "") && currentKey === null) currentKey = `s${nextKey++}`;
+      if (node === target) {
+        foundKey = currentKey ?? "";
+        return true;
       }
+      return false;
     }
-    chain.unshift(index);
-    element = element.parentNode;
-  }
+    if (node.nodeType !== Node.ELEMENT_NODE) return false;
+    const element = node as HTMLElement;
+    if (!isRoot && isNestedCandidate(element, root)) {
+      currentKey = null;
+      return false;
+    }
+    if (!isRoot && SKIP_TAGS.has(element.tagName.toLowerCase())) {
+      currentKey = null;
+      return false;
+    }
+    if (element.tagName === "BR") {
+      if (!isControlledBreak(element)) currentKey = null;
+      return false;
+    }
 
-  let run = -1;
-  let insideTextRun = false;
-  for (const sibling of parent.childNodes) {
-    if (sibling.nodeType === Node.TEXT_NODE) {
-      if (!insideTextRun) run += 1;
-      insideTextRun = true;
-    } else if (!isControlledBreak(sibling)) {
-      insideTextRun = false;
+    const transparent = !isRoot && isFormatWrapper(element);
+    if (!transparent) currentKey = null;
+    for (const child of element.childNodes) {
+      if (visit(child)) return true;
     }
-    if (sibling === target) break;
-  }
-  return `${chain.join("/")}|${Math.max(run, 0)}`;
+    if (!transparent) currentKey = null;
+    return false;
+  };
+
+  visit(root, true);
+  return foundKey;
 }
 
 interface SegmentPair {
@@ -1710,38 +1788,46 @@ interface SegmentPair {
 function collectSegments(rootEl: HTMLElement): SegmentPair[] {
   const pairs: SegmentPair[] = [];
   const seen = new Map<string, string[]>();
+  let openKey: string | null = null;
 
-  const walk = (element: HTMLElement): void => {
-    let openKey: string | null = null;
-    for (const child of element.childNodes) {
-      if (child.nodeType === Node.TEXT_NODE) {
-        openKey = slotKeyOf(child, rootEl);
-        let parts = seen.get(openKey);
-        if (!parts) {
-          parts = [""];
-          seen.set(openKey, parts);
-          pairs.push({ key: openKey, value: "" });
-        }
-        parts[parts.length - 1] += child.textContent ?? "";
-        continue;
+  const walk = (node: Node, isRoot = false): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const value = node.textContent ?? "";
+      if (!value) return;
+      openKey = slotKeyOf(node, rootEl);
+      let parts = seen.get(openKey);
+      if (!parts) {
+        parts = [""];
+        seen.set(openKey, parts);
+        pairs.push({ key: openKey, value: "" });
       }
-      if (child.nodeType !== Node.ELEMENT_NODE) {
-        openKey = null;
-        continue;
-      }
-      const childEl = child as HTMLElement;
-      if (childEl.tagName === "BR") {
-        if (openKey !== null && isControlledBreak(childEl)) seen.get(openKey)?.push("");
-        else openKey = null;
-        continue;
-      }
-      openKey = null;
-      if (SKIP_TAGS.has(childEl.tagName.toLowerCase())) continue;
-      if (isNestedCandidate(childEl, rootEl)) continue;
-      walk(childEl);
+      parts[parts.length - 1] += value;
+      return;
     }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      openKey = null;
+      return;
+    }
+    const element = node as HTMLElement;
+    if (!isRoot && isNestedCandidate(element, rootEl)) {
+      openKey = null;
+      return;
+    }
+    if (element.tagName === "BR") {
+      if (openKey !== null && isControlledBreak(element)) seen.get(openKey)?.push("");
+      else openKey = null;
+      return;
+    }
+    if (!isRoot && SKIP_TAGS.has(element.tagName.toLowerCase())) {
+      openKey = null;
+      return;
+    }
+    const transparent = !isRoot && isFormatWrapper(element);
+    if (!transparent) openKey = null;
+    for (const child of element.childNodes) walk(child);
+    if (!transparent) openKey = null;
   };
-  walk(rootEl);
+  walk(rootEl, true);
 
   for (const pair of pairs) pair.value = (seen.get(pair.key) ?? []).join("\n");
   return pairs;
@@ -1772,6 +1858,7 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
     flash("This text cannot be edited safely because its source mapping is ambiguous.");
     return;
   }
+  savedFormatSelection = null;
   session = {
     el,
     meta,
@@ -1800,7 +1887,10 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
   el.addEventListener("beforeinput", onBeforeInput);
   el.addEventListener("input", onInput);
   el.addEventListener("keydown", onKeyDown);
+  el.addEventListener("keyup", scheduleFormatTools);
+  el.addEventListener("mouseup", scheduleFormatTools);
   el.addEventListener("paste", onPaste, true);
+  scheduleFormatTools();
 }
 
 /** Plain-text-only paste; rich payloads are flattened or refused. */
@@ -1849,7 +1939,13 @@ function onKeyDown(event: KeyboardEvent): void {
           : event.key.toLowerCase() === "i"
             ? "italic"
             : "underline";
-      updateFormatting(session.meta.id, format);
+      const selected = getFormatSelection();
+      if (!selected) {
+        flash("Select text to format it.");
+        return;
+      }
+      updateFormatting(session.meta.id, format, selected);
+      scheduleFormatTools();
       return;
     }
     if (event.altKey && /^[1-6]$/.test(event.key)) {
@@ -1868,10 +1964,182 @@ function previewSelection(): Selection | null {
   return iframe?.contentWindow?.getSelection() ?? null;
 }
 
+interface FormatSelection {
+  /** Visible text offsets used to replay the operation in the preview. */
+  start: number;
+  end: number;
+  /** Exact source offsets used by the byte-preserving HTML patcher when unchanged. */
+  sourceStart?: number;
+  sourceEnd?: number;
+  range: Range;
+  rect: ViewportRect;
+}
+
 function selectionInsideEditable(): boolean {
   const selection = previewSelection();
   if (!selection || selection.rangeCount === 0 || !session) return false;
   return session.el.contains(selection.anchorNode) && session.el.contains(selection.focusNode);
+}
+
+function formattingTextNodes(root: HTMLElement): Text[] {
+  const nodes: Text[] = [];
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node as Text);
+    node = walker.nextNode();
+  }
+  return nodes;
+}
+
+function visibleOffsetForBoundary(
+  root: HTMLElement,
+  container: Node,
+  offset: number,
+): number | null {
+  if (!root.contains(container) || offset < 0) return null;
+  const before = root.ownerDocument.createRange();
+  try {
+    before.setStart(root, 0);
+    before.setEnd(container, offset);
+  } catch {
+    return null;
+  }
+  return before.toString().length;
+}
+
+function getFormatSelection(): FormatSelection | null {
+  const selection = previewSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed || !session) return null;
+  const range = selection.getRangeAt(0);
+  const hasUnsupportedChildren = [...session.el.children].some((child) => child.tagName !== "BR");
+  if (
+    !session.el.contains(range.startContainer) ||
+    !session.el.contains(range.endContainer) ||
+    hasUnsupportedChildren
+  ) {
+    return null;
+  }
+  const start = visibleOffsetForBoundary(session.el, range.startContainer, range.startOffset);
+  const end = visibleOffsetForBoundary(session.el, range.endContainer, range.endOffset);
+  if (start === null || end === null || start >= end) return null;
+
+  const textNodes = formattingTextNodes(session.el);
+  const startNode = textNodes.indexOf(range.startContainer as Text);
+  const endNode = textNodes.indexOf(range.endContainer as Text);
+  const startSegment = session.meta.segments?.[startNode];
+  const endSegment = session.meta.segments?.[endNode];
+  const sourceIsUnchanged =
+    range.startContainer.nodeType === Node.TEXT_NODE &&
+    range.endContainer.nodeType === Node.TEXT_NODE &&
+    startSegment &&
+    endSegment &&
+    startSegment.sourceEnd - startSegment.sourceStart === startSegment.textLength &&
+    endSegment.sourceEnd - endSegment.sourceStart === endSegment.textLength;
+  const frameRect = iframe.getBoundingClientRect();
+  const selectionRect = range.getBoundingClientRect();
+  return {
+    start,
+    end,
+    ...(sourceIsUnchanged
+      ? {
+          sourceStart: startSegment.sourceStart + range.startOffset,
+          sourceEnd: endSegment.sourceStart + range.endOffset,
+        }
+      : {}),
+    range: range.cloneRange(),
+    rect: {
+      left: frameRect.left + selectionRect.left,
+      top: frameRect.top + selectionRect.top,
+      right: frameRect.left + selectionRect.right,
+      bottom: frameRect.top + selectionRect.bottom,
+      width: selectionRect.width,
+      height: selectionRect.height,
+    },
+  };
+}
+
+function showFormatTools(): void {
+  if (!session) return;
+  const currentSelection = getFormatSelection();
+  if (currentSelection) savedFormatSelection = currentSelection;
+  const selected = currentSelection ?? savedFormatSelection;
+  if (!selected || savedFormatSelection?.start === savedFormatSelection?.end) {
+    if (activeTools?.classList.contains("xyle-format-tools")) closeContextTools(false);
+    return;
+  }
+  if (activeTools?.classList.contains("xyle-format-tools")) {
+    positionContextTools(activeTools, selected.rect, "above");
+    return;
+  }
+  const overlay = shellOverlay();
+  if (!overlay) return;
+  const target = session.el;
+  const tools = document.createElement("div");
+  tools.className = "xyle-format-tools";
+  tools.setAttribute("role", "toolbar");
+  tools.setAttribute("aria-label", "Text formatting");
+
+  const addInlineButton = (format: "bold" | "italic" | "underline", label: string): void => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+    button.addEventListener("pointerdown", (event) => event.preventDefault());
+    button.addEventListener("click", () => {
+      if (!session) return;
+      const currentSelection = getFormatSelection() ?? selected;
+      updateFormatting(session.meta.id, format, currentSelection);
+      scheduleFormatTools();
+    });
+    tools.append(button);
+  };
+  addInlineButton("bold", "Bold");
+  addInlineButton("italic", "Italic");
+  addInlineButton("underline", "Underline");
+
+  const separator = document.createElement("span");
+  separator.setAttribute("role", "separator");
+  tools.append(separator);
+
+  const block = document.createElement("select");
+  block.setAttribute("aria-label", "Block style");
+  block.setAttribute("title", "Block style");
+  for (const [value, label] of [
+    ["paragraph", "Paragraph"],
+    ["heading-1", "Heading 1"],
+    ["heading-2", "Heading 2"],
+    ["heading-3", "Heading 3"],
+    ["heading-4", "Heading 4"],
+    ["heading-5", "Heading 5"],
+    ["heading-6", "Heading 6"],
+  ] as const) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    block.append(option);
+  }
+  block.value = isBlockTag(session.meta.tag) ? blockFormattingFor(session.meta.tag) : "paragraph";
+  block.addEventListener("pointerdown", (event) => event.preventDefault());
+  block.addEventListener("change", () => {
+    if (!session) return;
+    updateFormatting(session.meta.id, block.value as Formatting);
+    closeContextTools(false);
+  });
+  tools.append(block);
+
+  registerContextTools(tools, target, "above");
+  overlay.append(tools);
+  positionContextTools(tools, selected.rect, "above");
+}
+
+function scheduleFormatTools(): void {
+  window.cancelAnimationFrame(formatToolsFrame);
+  formatToolsFrame = window.requestAnimationFrame(() => {
+    formatToolsFrame = 0;
+    showFormatTools();
+  });
 }
 
 function onBeforeInput(event: InputEvent): void {
@@ -1892,8 +2160,8 @@ function onBeforeInput(event: InputEvent): void {
     case "formatItalic":
     case "formatUnderline": {
       event.preventDefault();
-      if (!session || session.meta.segmentCount !== 1) {
-        flash("Formatting is not supported for this text structure.");
+      if (!session) {
+        flash("Formatting is not supported outside an edit session.");
         return;
       }
       const format =
@@ -1902,7 +2170,13 @@ function onBeforeInput(event: InputEvent): void {
           : event.inputType === "formatItalic"
             ? "italic"
             : "underline";
-      updateFormatting(session.meta.id, format);
+      const selected = getFormatSelection();
+      if (!selected) {
+        flash("Select text to format it.");
+        return;
+      }
+      updateFormatting(session.meta.id, format, selected);
+      scheduleFormatTools();
       return;
     }
     case "formatBlock": {
@@ -2010,12 +2284,20 @@ function endEdit(recordChanges: boolean): void {
   s.el.removeEventListener("beforeinput", onBeforeInput);
   s.el.removeEventListener("input", onInput);
   s.el.removeEventListener("keydown", onKeyDown);
+  s.el.removeEventListener("keyup", scheduleFormatTools);
+  s.el.removeEventListener("mouseup", scheduleFormatTools);
   s.el.removeEventListener("paste", onPaste, true);
+  if (activeTools?.classList.contains("xyle-format-tools")) closeContextTools(false);
   s.el.classList.remove("xyle-editing");
   refreshEditabilityOverlay();
   // SAFETY: contentEditable is set explicitly when ending an edit session.
   (s.el as unknown as { contentEditable: string }).contentEditable = "false";
 
+  if (recordChanges && !structureAllowed(skeleton(s.el), s.baselineSkeleton)) {
+    flash("That change was reverted to protect your page structure.");
+    restoreBaseline();
+    recordChanges = false;
+  }
   if (recordChanges) {
     const currentPairs = collectSegments(s.el);
     const mappingChanged =
@@ -2041,6 +2323,7 @@ function endEdit(recordChanges: boolean): void {
     }
   }
   session = null;
+  savedFormatSelection = null;
   setInteractionMode(activeTools ? "popover" : hoveredCandidate ? "hover" : "idle");
   updateDirtyUi();
 }
@@ -2694,6 +2977,9 @@ function applyOp(pagePath: string, op: Op, label: string): HistoryEntry {
 
 function opKey(op: Op): string {
   const target = op.type === "text" ? op.nodeId : `${op.nodeId}:${op.type}`;
+  if (op.type === "format" && op.start !== undefined && op.end !== undefined) {
+    return `${op.type}@${target}:${op.start}-${op.end}`;
+  }
   return `${op.type}@${target}`;
 }
 function removeOpsFor(pagePath: string, key: string): void {
@@ -2989,34 +3275,84 @@ function isBlockTag(tag: string | undefined): tag is BlockTag {
   return tag === "p" || /^h[1-6]$/.test(tag ?? "");
 }
 
-function updateFormatting(nodeId: string, format: Formatting): FormattingUpdateResult {
+function updateFormatting(
+  nodeId: string,
+  format: Formatting,
+  selection?: FormatSelection,
+): FormattingUpdateResult {
   if (isBlockFormatting(format)) return updateBlockFormatting(nodeId, format);
-  if (session) commitEdit();
+  if (selection && (!session || session.meta.id !== nodeId)) {
+    throw new Error("Formatting selection is no longer active");
+  }
+  if (!selection && session) commitEdit();
   const current = state.current;
   if (!current) throw new Error("No page is loaded");
   const meta = current.nodes.find((candidate) => candidate.id === nodeId);
   if (!meta || (meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
     throw new Error(`Unknown or non-text-editable Xyle node ${nodeId}`);
   }
-  if (meta.segmentCount !== 1) {
+  if (meta.segmentCount !== 1 && !selection) {
     throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
   }
   const element = currentNodeElement(nodeId);
   if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
+  if (selection && [...element.children].some((child) => child.tagName !== "BR")) {
+    throw new Error("Select plain text inside one simple text region");
+  }
+  const hasWholeRegionFormat = state.ops.some(
+    (entry) =>
+      entry.pagePath === current.pagePath &&
+      entry.op.type === "format" &&
+      entry.op.nodeId === nodeId &&
+      entry.op.start === undefined,
+  );
+  const hasSelectionFormat = state.ops.some(
+    (entry) =>
+      entry.pagePath === current.pagePath &&
+      entry.op.type === "format" &&
+      entry.op.nodeId === nodeId &&
+      entry.op.start !== undefined,
+  );
+  if (selection ? hasWholeRegionFormat : hasSelectionFormat) {
+    throw new Error("Whole-region and selection formatting cannot be combined safely");
+  }
 
   const identity = segmentIdentity(current.pagePath, nodeId);
   if (!originalMarkups.has(identity)) originalMarkups.set(identity, element.innerHTML);
   if (!originalFormats.has(identity)) originalFormats.set(identity, formatOf(element));
-  const previous = state.ops.find(
-    (entry) =>
-      entry.pagePath === current.pagePath &&
-      entry.op.type === "format" &&
-      entry.op.nodeId === nodeId,
-  );
+  const previous = selection
+    ? undefined
+    : state.ops.find(
+        (entry) =>
+          entry.pagePath === current.pagePath &&
+          entry.op.type === "format" &&
+          entry.op.nodeId === nodeId,
+      );
   if (previous) restoreOriginalMarkup(current.pagePath, nodeId);
-  const operation: Op = { type: "format", nodeId, value: format };
-  applyFormatToDom(current.pagePath, operation);
+  const operation: Op = {
+    type: "format",
+    nodeId,
+    value: format,
+    ...(selection
+      ? {
+          start: selection.start,
+          end: selection.end,
+          sourceStart: selection.sourceStart,
+          sourceEnd: selection.sourceEnd,
+        }
+      : {}),
+  };
+  const applied = selection
+    ? applyFormatRangeToElement(element, selection.range, format)
+    : applyFormatToDom(current.pagePath, operation);
+  if (!applied) throw new Error("That selection cannot be formatted safely");
   applyOp(current.pagePath, operation, "Format text");
+  if (selection && session) {
+    const baselineClone = previewDoc()!.createDocumentFragment();
+    for (const child of Array.from(element.childNodes)) baselineClone.append(child.cloneNode(true));
+    session.baselineClone = baselineClone;
+    session.baselineSkeleton = skeleton(element);
+  }
   return { id: nodeId, pagePath: current.pagePath, format };
 }
 
@@ -3794,7 +4130,7 @@ function applyOpToDom(pagePath: string, op: Op): void {
   }
   if (op.type === "format") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
-    if (el) applyFormatToElement(el, op.value);
+    if (el) applyFormatOperationToElement(el, op);
     return;
   }
   if (op.type === "formatBlock") {
@@ -3824,7 +4160,18 @@ function revertOpInDom(pagePath: string, op: Op): void {
     }
   } else if (op.type === "format") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
-    if (el) restoreOriginalMarkup(pagePath, op.nodeId);
+    if (el) {
+      restoreOriginalMarkup(pagePath, op.nodeId);
+      for (const entry of state.ops) {
+        if (
+          entry.pagePath === pagePath &&
+          entry.op.type === "format" &&
+          entry.op.nodeId === op.nodeId
+        ) {
+          applyFormatOperationToElement(el, entry.op);
+        }
+      }
+    }
   } else if (op.type === "formatBlock") {
     restoreOriginalBlockFormat(pagePath, op.nodeId);
   } else if (op.type === "href" || op.type === "src" || op.type === "alt") {
@@ -3871,10 +4218,87 @@ function applyFormatToElement(el: HTMLElement, format: "bold" | "italic" | "unde
   while (el.firstChild) wrapper.append(el.firstChild);
   el.append(wrapper);
 }
-function applyFormatToDom(pagePath: string, op: Extract<Op, { type: "format" }>): void {
-  if (pagePath !== state.current?.pagePath) return;
+function rangeForFormatOffsets(el: HTMLElement, start: number, end: number): Range | null {
+  if (start < 0 || end <= start) return null;
+  const textNodes = formattingTextNodes(el);
+  let total = 0;
+  let startPoint: { node: Text; offset: number } | null = null;
+  let endPoint: { node: Text; offset: number } | null = null;
+  for (const node of textNodes) {
+    const length = node.length;
+    if (!startPoint && start <= total + length) {
+      startPoint = { node, offset: start - total };
+    }
+    if (!endPoint && end <= total + length) {
+      endPoint = { node, offset: end - total };
+      break;
+    }
+    total += length;
+  }
+  if (!startPoint || !endPoint) return null;
+  const range = el.ownerDocument.createRange();
+  range.setStart(startPoint.node, startPoint.offset);
+  range.setEnd(endPoint.node, endPoint.offset);
+  return range;
+}
+
+function applyFormatRangeToElement(
+  el: HTMLElement,
+  range: Range,
+  format: "bold" | "italic" | "underline",
+): boolean {
+  if (
+    !el.contains(range.startContainer) ||
+    !el.contains(range.endContainer) ||
+    [...el.children].some((child) => child.tagName !== "BR")
+  ) {
+    return false;
+  }
+  const wrapper = el.ownerDocument.createElement(formatTag(format));
+  wrapper.setAttribute("data-xyle-format", format);
+  try {
+    const fragment = range.extractContents();
+    wrapper.append(fragment);
+    range.insertNode(wrapper);
+    range.selectNodeContents(wrapper);
+    const selection = previewSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    el.focus({ preventScroll: true });
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+function applyFormatSelectionToElement(
+  el: HTMLElement,
+  format: "bold" | "italic" | "underline",
+  start: number,
+  end: number,
+): boolean {
+  const range = rangeForFormatOffsets(el, start, end);
+  return range ? applyFormatRangeToElement(el, range, format) : false;
+}
+function applyFormatOperationToElement(
+  el: HTMLElement,
+  op: Extract<Op, { type: "format" }>,
+): boolean {
+  if (op.start !== undefined && op.end !== undefined) {
+    return applyFormatSelectionToElement(el, op.value, op.start, op.end);
+  }
+  applyFormatToElement(el, op.value);
+  return true;
+}
+function applyFormatToDom(pagePath: string, op: Extract<Op, { type: "format" }>): boolean {
+  if (pagePath !== state.current?.pagePath) return false;
   const el = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${op.nodeId}"]`);
-  if (el) applyFormatToElement(el, op.value);
+  if (!el) return false;
+  if (!applyFormatOperationToElement(el, op)) {
+    flash("That selection cannot be formatted safely.");
+    return false;
+  }
+  return true;
 }
 function replaceBlockElement(el: HTMLElement, tag: BlockTag): void {
   const replacement = el.ownerDocument.createElement(tag);
@@ -3982,7 +4406,7 @@ function restoreOpsIntoDom(): void {
       if (el) setSegmentValue(el, Number(segRaw), op.value);
     } else if (op.type === "format") {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
-      if (el) applyFormatToElement(el, op.value);
+      if (el) applyFormatOperationToElement(el, op);
     } else if (op.type === "formatBlock") {
       applyBlockFormatToDom(pagePath, op);
     } else {

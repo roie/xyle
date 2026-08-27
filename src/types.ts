@@ -24,7 +24,15 @@ export type BlockFormat = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 
 export type PageOperation =
   | { type: "text"; nodeId: string; value: string }
-  | { type: "format"; nodeId: string; value: TextFormat }
+  | {
+      type: "format";
+      nodeId: string;
+      value: TextFormat;
+      start?: number;
+      end?: number;
+      sourceStart?: number;
+      sourceEnd?: number;
+    }
   | { type: "formatBlock"; nodeId: string; value: BlockFormat }
   | { type: "lineBreak"; nodeId: string; position: number }
   | { type: "href"; nodeId: string; value: string }
@@ -95,12 +103,19 @@ export interface HistoryEntry {
   label: string;
 }
 
+export interface PreviewSegment {
+  sourceStart: number;
+  sourceEnd: number;
+  textLength: number;
+}
+
 export interface PreviewNode {
   id: string;
   pagePath: string;
   kind: "text" | "link" | "image";
   sourceStart: number;
   sourceEnd: number;
+  segments?: PreviewSegment[];
   tag?: string;
   multiline?: boolean;
   textEditable?: boolean;

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   clickOutsideToCommit,
   editNode,
+  focusCaret,
   loginAndOpenEditor,
   opsCount,
   setSelection,
@@ -135,7 +136,11 @@ test.describe("WebMCP editor tools", () => {
     const heading = content.find(
       (item) => item.type === "text" && item.preview === "Plumbing you can depend on",
     );
+    const lede = content.find(
+      (item) => item.type === "text" && item.preview.includes("Serving Edmonton"),
+    );
     expect(heading?.id).toBeTruthy();
+    expect(lede?.id).toBeTruthy();
 
     await expect(
       invokeTool(page, "update_formatting", { id: heading!.id, format: "bold" }),
@@ -169,15 +174,121 @@ test.describe("WebMCP editor tools", () => {
     });
     await expect(headingLocator).toHaveJSProperty("tagName", "H1");
 
-    await editNode(page, heading!.id);
-    await page
-      .frameLocator("#xyle-preview")
-      .locator(`[data-xyle-node="${heading!.id}"]`)
-      .press("Control+b");
-    await expect(headingLocator.locator('strong[data-xyle-format="bold"]')).toHaveText(
-      heading!.preview,
+    const servingStart = await page.evaluate((id) => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const element = frame.contentDocument!.querySelector(`[data-xyle-node="${id}"]`)!;
+      const firstText = [...element.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
+      return firstText?.textContent?.indexOf("Serving") ?? -1;
+    }, lede!.id);
+    expect(servingStart).toBeGreaterThanOrEqual(0);
+    await editNode(page, lede!.id);
+    await page.evaluate(
+      ({ id, start }) => {
+        const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+        const element = frame.contentDocument!.querySelector<HTMLElement>(
+          `[data-xyle-node="${id}"]`,
+        )!;
+        const text = [...element.childNodes].find((node) => node.nodeType === Node.TEXT_NODE)!;
+        const range = frame.contentDocument!.createRange();
+        range.setStart(text, start);
+        range.setEnd(text, start + "Serving".length);
+        const selection = frame.contentWindow!.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        element.focus();
+      },
+      { id: lede!.id, start: servingStart },
     );
-    expect(await opsCount(page)).toBe(1);
+    await page.keyboard.insertText("Helping");
+    await clickOutsideToCommit(page);
+
+    await editNode(page, lede!.id);
+    await setSelection(page, { nodeId: lede!.id, startOffset: 0 });
+    const formatTools = page.locator(".xyle-format-tools");
+    await expect(formatTools).toBeVisible();
+    await formatTools.getByRole("button", { name: "Bold" }).click();
+    const ledeLocator = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${lede!.id}"]`);
+    await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toContainText(
+      "Helping Edmonton",
+    );
+    await ledeLocator.click();
+    await page.evaluate((id) => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const element = frame.contentDocument!.querySelector<HTMLElement>(
+        `[data-xyle-node="${id}"]`,
+      )!;
+      const textNodes = [...element.querySelectorAll("strong")].flatMap((strong) =>
+        [...strong.childNodes].filter((node): node is Text => node.nodeType === Node.TEXT_NODE),
+      );
+      const text = textNodes.at(-1)!;
+      const range = frame.contentDocument!.createRange();
+      range.setStart(text, text.length);
+      range.collapse(true);
+      const selection = frame.contentWindow!.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      element.focus();
+    }, lede!.id);
+    await page.keyboard.insertText("!");
+    await clickOutsideToCommit(page);
+    await expect(ledeLocator).toContainText("wait.!");
+    expect(await opsCount(page)).toBe(3);
+  });
+
+  test("keeps partial formatting editable after a later text edit", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const lede = content.find(
+      (item) => item.type === "text" && item.preview.includes("Serving Edmonton"),
+    );
+    expect(lede?.id).toBeTruthy();
+
+    await editNode(page, lede!.id);
+    await page.evaluate((id) => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const element = frame.contentDocument!.querySelector<HTMLElement>(
+        `[data-xyle-node="${id}"]`,
+      )!;
+      const text = [...element.childNodes].find(
+        (node): node is Text =>
+          node.nodeType === Node.TEXT_NODE && !!node.textContent?.includes("areas"),
+      )!;
+      const start = text.data.indexOf("areas");
+      const range = frame.contentDocument!.createRange();
+      range.setStart(text, start);
+      range.setEnd(text, start + "areas".length);
+      const selection = frame.contentWindow!.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      element.focus();
+    }, lede!.id);
+    const formatTools = page.locator(".xyle-format-tools");
+    await expect(formatTools).toBeVisible();
+    await formatTools.getByRole("button", { name: "Bold" }).click();
+
+    const ledeLocator = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${lede!.id}"]`);
+    await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toHaveText("areas");
+    await clickOutsideToCommit(page);
+    await editNode(page, lede!.id);
+    await focusCaret(page, lede!.id, "end");
+    await page.keyboard.insertText("!");
+    await clickOutsideToCommit(page);
+    await expect(ledeLocator).toContainText("wait.!");
   });
 
   test("combines human and agent edits before human publishing", async ({ page, browserName }) => {

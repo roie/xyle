@@ -430,6 +430,11 @@ export function preparePreview(
       kind: c.kind,
       sourceStart: c.startTagStart,
       sourceEnd: c.segments.at(-1)?.end ?? c.startTagEnd,
+      segments: c.segments.map((segment) => ({
+        sourceStart: segment.start,
+        sourceEnd: segment.end,
+        textLength: segment.text.length,
+      })),
       tag: c.tag,
       multiline: c.multiline,
       textEditable: c.textEditable,
@@ -520,6 +525,30 @@ function isBlockTag(tag: string): tag is "p" | "h1" | "h2" | "h3" | "h4" | "h5" 
   return tag === "p" || /^h[1-6]$/.test(tag);
 }
 
+function rawOffsetForVisibleText(source: string, offset: number): number | null {
+  if (!Number.isInteger(offset) || offset < 0) return null;
+  let visible = 0;
+  let index = 0;
+  while (index < source.length) {
+    if (visible === offset) return index;
+    if (source[index] === "<") {
+      const close = source.indexOf(">", index + 1);
+      if (close < 0 || !/^<br\b[^>]*\/?>$/i.test(source.slice(index, close + 1))) return null;
+      index = close + 1;
+      continue;
+    }
+    const entity = source.slice(index).match(/^&(?:#\d+|#x[\da-f]+|[a-z]+);/i)?.[0];
+    if (entity) {
+      visible += 1;
+      index += entity.length;
+      continue;
+    }
+    visible += 1;
+    index += 1;
+  }
+  return visible === offset ? index : null;
+}
+
 export async function patchHtml(
   source: Uint8Array,
   change: PageChange,
@@ -582,7 +611,40 @@ export async function patchHtml(
         ) {
           throw new Error(`formatting target ${op.nodeId} is not safely editable`);
         }
-        if (formatOps.some(({ candidate: existing }) => existing.id === candidate.id)) {
+        const hasRange = op.start !== undefined || op.end !== undefined;
+        const hasSourceRange = op.sourceStart !== undefined || op.sourceEnd !== undefined;
+        if (
+          (hasRange && (op.start === undefined || op.end === undefined)) ||
+          (hasSourceRange && (op.sourceStart === undefined || op.sourceEnd === undefined))
+        ) {
+          throw new Error(`formatting range on ${op.nodeId} must include start and end`);
+        }
+        if (
+          hasRange &&
+          (!Number.isInteger(op.start) ||
+            !Number.isInteger(op.end) ||
+            op.start! < 0 ||
+            op.end! <= op.start!)
+        ) {
+          throw new Error(`invalid formatting range on ${op.nodeId}`);
+        }
+        if (
+          hasSourceRange &&
+          (!Number.isInteger(op.sourceStart) ||
+            !Number.isInteger(op.sourceEnd) ||
+            op.sourceStart! < candidate.contentStart! ||
+            op.sourceEnd! <= op.sourceStart!)
+        ) {
+          throw new Error(`invalid formatting source range on ${op.nodeId}`);
+        }
+        if (
+          formatOps.some(
+            ({ candidate: existing, op: existingOp }) =>
+              existing.id === candidate.id &&
+              existingOp.start === op.start &&
+              existingOp.end === op.end,
+          )
+        ) {
           throw new Error(`duplicate formatting op on ${op.nodeId}`);
         }
         formatTag(op.value);
@@ -654,7 +716,16 @@ export async function patchHtml(
   const patches: SourcePatch[] = [];
 
   const formattedTextKeys = new Set<string>();
-  for (const { candidate, op } of formatOps) {
+  const formatGroups = new Map<
+    string,
+    { candidate: Candidate; op: (PageOperation & { type: "format" })[] }
+  >();
+  for (const item of formatOps) {
+    const group = formatGroups.get(item.candidate.id) ?? { candidate: item.candidate, op: [] };
+    group.op.push(item.op);
+    formatGroups.set(item.candidate.id, group);
+  }
+  for (const { candidate, op: operations } of formatGroups.values()) {
     const contentStart = candidate.contentStart!;
     const contentEnd = candidate.contentEnd!;
     let inner = sourceText.slice(contentStart, contentEnd);
@@ -663,18 +734,63 @@ export async function patchHtml(
         ([, intent]) => intent.segment.start >= contentStart && intent.segment.end <= contentEnd,
       )
       .sort(([, left], [, right]) => right.segment.start - left.segment.start);
+
     for (const [key, intent] of nestedIntents) {
       const start = intent.segment.start - contentStart;
       const end = intent.segment.end - contentStart;
       inner = inner.slice(0, start) + intent.markup + inner.slice(end);
       formattedTextKeys.add(key);
     }
-    const tag = formatTag(op.value);
-    patches.push({
-      start: contentStart,
-      end: contentEnd,
-      replacement: `<${tag}>${inner}</${tag}>`,
-    });
+    const ranges = operations
+      .map((op) => {
+        if (op.start === undefined || op.end === undefined) {
+          return { op, start: 0, end: inner.length };
+        }
+        if (
+          op.sourceStart !== undefined &&
+          op.sourceEnd !== undefined &&
+          nestedIntents.length === 0
+        ) {
+          return {
+            op,
+            start: op.sourceStart - contentStart,
+            end: op.sourceEnd - contentStart,
+          };
+        }
+        const start = rawOffsetForVisibleText(inner, op.start);
+        const end = rawOffsetForVisibleText(inner, op.end);
+        if (start === null || end === null) {
+          throw new Error("selection formatting requires plain text and line breaks");
+        }
+        if (nestedIntents.length > 0) return { op, start, end };
+        const segment = candidate.segments[0];
+        if (
+          candidate.segments.length !== 1 ||
+          !segment ||
+          segment.end - segment.start !== segment.text.length
+        ) {
+          throw new Error("selection formatting requires a plain text source range");
+        }
+        return {
+          op,
+          start: segment.start - contentStart + op.start,
+          end: segment.start - contentStart + op.end,
+        };
+      })
+      .sort((left, right) => left.start - right.start);
+    for (let i = 1; i < ranges.length; i++) {
+      if (ranges[i]!.start < ranges[i - 1]!.end) {
+        throw new Error(`overlapping formatting ranges on ${candidate.id}`);
+      }
+    }
+    for (const { op, start, end } of [...ranges].reverse()) {
+      if (start < 0 || end > inner.length || end <= start) {
+        throw new Error(`formatting range on ${candidate.id} is out of bounds`);
+      }
+      const tag = formatTag(op.value);
+      inner = `${inner.slice(0, start)}<${tag}>${inner.slice(start, end)}</${tag}>${inner.slice(end)}`;
+    }
+    patches.push({ start: contentStart, end: contentEnd, replacement: inner });
   }
 
   for (const [key, intent] of textIntents) {

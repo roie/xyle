@@ -243,6 +243,49 @@ describe("patchHtml text fidelity", () => {
     ).resolves.toBe(`<p><em>Updated</em></p>`);
   });
 
+  it("formats only a safe selected text range", async () => {
+    const source = `<p>Hello brave world</p>`;
+    const id = firstNodeId(source);
+    await expect(
+      patchAndGetText(source, [{ type: "format", nodeId: id, value: "bold", start: 6, end: 11 }]),
+    ).resolves.toBe(`<p>Hello <strong>brave</strong> world</p>`);
+    await expect(
+      patchAndGetText(source, [
+        { type: "format", nodeId: id, value: "bold", start: 0, end: 5 },
+        { type: "format", nodeId: id, value: "italic", start: 12, end: 17 },
+      ]),
+    ).resolves.toBe(`<p><strong>Hello</strong> brave <em>world</em></p>`);
+    await expect(
+      patchAndGetText(source, [
+        { type: "text", nodeId: `${id}#0`, value: "Hello bold world" },
+        { type: "format", nodeId: id, value: "bold", start: 6, end: 10 },
+      ]),
+    ).resolves.toBe(`<p>Hello <strong>bold</strong> world</p>`);
+  });
+
+  it("formats a multiline selection while preserving line breaks", async () => {
+    const source = `<p>Serving Edmonton and surrounding areas<br />with calm, capable help for<br />the leaks that cannot wait.</p>`;
+    const id = firstNodeId(source);
+    const candidate = [...analyzePage(source).candidates.values()][0]!;
+    const segments = candidate.segments;
+    const textLength = segments.reduce((total, segment) => total + segment.text.length, 0);
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "format",
+          nodeId: id,
+          value: "bold",
+          start: 0,
+          end: textLength,
+          sourceStart: segments[0]!.start,
+          sourceEnd: segments.at(-1)!.end,
+        },
+      ]),
+    ).resolves.toBe(
+      `<p><strong>Serving Edmonton and surrounding areas<br />with calm, capable help for<br />the leaks that cannot wait.</strong></p>`,
+    );
+  });
+
   it("changes a simple text block to a safe heading level", async () => {
     const source = `<p>Hello</p>`;
     const id = firstNodeId(source);

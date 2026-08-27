@@ -490,7 +490,8 @@ export async function registerWebMcpTools(
     await context.registerTool(
       {
         name: "update_formatting",
-        description: "Apply safe bold, italic, or underline formatting to one Xyle text region.",
+        description:
+          "Apply safe inline formatting or a paragraph/heading block style to one Xyle text region.",
         inputSchema: {
           type: "object",
           properties: {
