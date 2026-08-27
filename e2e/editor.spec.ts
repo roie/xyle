@@ -510,12 +510,10 @@ test.describe("changes drawer and undo", () => {
     await expect(groups.locator(".xyle-change-page")).toHaveText(["/index.html", "/about.html"]);
     const indexGroup = groups.nth(0);
     const aboutGroup = groups.nth(1);
-    const textRow = indexGroup.locator(".xyle-change-row").filter({ hasText: "Text" });
-    const linkRow = indexGroup.locator(".xyle-change-row").filter({ hasText: "Link destination" });
-    await expect(textRow.locator(".xyle-change-label")).toHaveText("Text");
+    const textRow = indexGroup.locator(".xyle-change-row").nth(0);
+    const linkRow = indexGroup.locator(".xyle-change-row").nth(1);
     await expect(textRow.locator(".xyle-change-before")).toContainText(originalText);
     await expect(textRow.locator(".xyle-change-after")).toContainText(updatedText);
-    await expect(linkRow.locator(".xyle-change-label")).toHaveText("Link destination");
     await expect(linkRow.locator(".xyle-change-before")).toContainText(originalHref);
     await expect(linkRow.locator(".xyle-change-after")).toContainText(updatedHref);
     await expect(indexGroup.locator(".xyle-change-arrow")).toHaveCount(2);
@@ -573,6 +571,13 @@ test.describe("changes drawer and undo", () => {
     await page.click("#xyle-changes");
     await expect(page.locator("#xyle-changes-drawer")).toBeVisible();
     await expect(page.locator("#xyle-changes-drawer")).toContainText("about.html");
+    const row = page.locator("#xyle-changes-drawer .xyle-change-row").first();
+    await row.getByRole("button", { name: "Locate" }).click();
+    await expect(row).toHaveClass(/is-located/);
+    await expect(page.locator("#xyle-changes-drawer")).toBeVisible();
+    await expect(page.locator("#xyle-overlay-root .xyle-editable-outline.is-active")).toHaveCount(
+      1,
+    );
     await page.click("#xyle-changes-drawer button:has-text('Undo')");
     await expect(page.locator("#xyle-dirty")).toBeHidden();
 

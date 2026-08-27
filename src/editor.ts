@@ -88,7 +88,6 @@ const editorStyles = `
     border: 0 !important;
     border-radius: 0;
     background: #fff !important;
-    box-shadow: none;
   }
   #xyle-flash,
   #xyle-conflict,
@@ -109,7 +108,6 @@ const editorStyles = `
     color: var(--xyle-ink);
     font-size: 13px;
     font-weight: 500;
-    box-shadow: 0 8px 20px #00000055;
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.15s ease;
@@ -159,7 +157,6 @@ const editorStyles = `
     background: #1c1d1bf5;
     color: var(--xyle-ink);
     font: 600 11px / 1 var(--xyle-font-ui);
-    box-shadow: 0 3px 9px #00000055;
     cursor: pointer;
     pointer-events: auto;
     touch-action: manipulation;
@@ -182,7 +179,6 @@ const editorStyles = `
     border: 1px solid var(--xyle-line);
     border-radius: 999px;
     background: #1c1d1bf5;
-    box-shadow: 0 5px 14px #00000055;
     pointer-events: auto;
     touch-action: manipulation;
   }
@@ -195,7 +191,6 @@ const editorStyles = `
     padding: 0;
     border: 0;
     background: transparent;
-    box-shadow: none;
   }
   .xyle-icon-button {
     position: relative;
@@ -248,7 +243,6 @@ const editorStyles = `
     pointer-events: none;
     transition: opacity 0.12s ease 0.12s;
     white-space: nowrap;
-    box-shadow: 0 3px 10px #00000055;
   }
   .xyle-icon-button[data-tooltip]:hover::after,
   .xyle-icon-button[data-tooltip]:focus-visible::after {
@@ -295,7 +289,6 @@ const editorStyles = `
     border-radius: 10px;
     background: var(--xyle-surface);
     color: var(--xyle-ink);
-    box-shadow: 0 18px 48px #00000066;
   }
   dialog.xyle-dialog::backdrop {
     background: #00000099;
@@ -406,7 +399,6 @@ const editorStyles = `
     border: 1px solid var(--xyle-line);
     border-radius: var(--xyle-radius-md);
     background: var(--xyle-raised);
-    box-shadow: 0 8px 24px #00000026;
   }
   #xyle-conflict {
     position: fixed;
@@ -421,7 +413,6 @@ const editorStyles = `
     border-radius: 10px;
     background: #29271ff5;
     color: var(--xyle-ink);
-    box-shadow: 0 12px 30px #00000066;
   }
   #xyle-conflict strong {
     font-size: 15px;
@@ -483,16 +474,18 @@ const editorStyles = `
   #xyle-changes-drawer .xyle-icon-button {
     width: 2.25rem;
     height: 2.25rem;
-    border: 1px solid var(--xyle-line);
+    border: 0;
     border-radius: var(--xyle-radius-sm);
     background: transparent;
     color: var(--xyle-ink);
     font-size: 1.25rem;
   }
   #xyle-media-drawer .xyle-icon-button:hover,
-  #xyle-changes-drawer .xyle-icon-button:hover {
+  #xyle-media-drawer .xyle-icon-button:focus-visible,
+  #xyle-changes-drawer .xyle-icon-button:hover,
+  #xyle-changes-drawer .xyle-icon-button:focus-visible {
     background: var(--xyle-accent-soft);
-    color: #dce5d9;
+    color: var(--xyle-accent-hover);
   }
   .xyle-changes-list {
     display: grid;
@@ -508,16 +501,24 @@ const editorStyles = `
   .xyle-change-page {
     margin: 0;
     color: var(--xyle-muted);
-    font: 600 11px / 1.4 var(--xyle-font-mono);
+    font: 600 11px / 1.4 var(--xyle-font-ui);
     overflow-wrap: anywhere;
   }
   .xyle-change-row {
     display: grid;
     gap: 0.65rem;
-    padding: 0.75rem;
-    border: 1px solid var(--xyle-line);
-    border-radius: var(--xyle-radius-md);
-    background: var(--xyle-raised);
+    padding: 0.75rem 0;
+    border: 0;
+    border-bottom: 1px solid var(--xyle-line);
+    background: transparent;
+    cursor: pointer;
+  }
+  .xyle-change-row:hover,
+  .xyle-change-row:focus-visible {
+    outline: none;
+  }
+  .xyle-change-row.is-located {
+    background: #1d2a1f;
   }
   .xyle-change-row-header {
     display: flex;
@@ -525,51 +526,73 @@ const editorStyles = `
     justify-content: space-between;
     gap: 0.75rem;
   }
-  .xyle-change-label {
+  .xyle-change-heading {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+  }
+  .xyle-change-index {
     color: var(--xyle-ink);
     font-size: 13px;
     font-weight: 600;
+    line-height: 1;
+  }
+  .xyle-change-row-actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 0.25rem;
   }
   .xyle-change-comparison {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-    align-items: stretch;
-    gap: 0.5rem;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.35rem;
   }
   .xyle-change-value {
+    position: relative;
     min-width: 0;
-    padding: 0.6rem;
-    border: 1px solid var(--xyle-line);
-    border-radius: var(--xyle-radius-sm);
+    padding: 0.2rem 0.6rem 0.2rem 1.65rem;
     color: var(--xyle-muted);
     font-size: 12px;
     line-height: 1.45;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
   }
-  .xyle-change-before {
-    border-color: #d26d6d66;
-    background: #d26d6d0d;
+  .xyle-change-value::before {
+    position: absolute;
+    top: 0.3rem;
+    left: 0.6rem;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .xyle-change-before::before {
+    color: #e38a8a;
+    content: "−";
   }
   .xyle-change-after {
-    border-color: #6da77a66;
-    background: #6da77a0d;
     color: var(--xyle-ink);
   }
-  .xyle-change-value span {
-    display: block;
-    margin-bottom: 0.2rem;
-    color: #777b73;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+  .xyle-change-after::before {
+    color: #8fca99;
+    content: "+";
+  }
+  .xyle-change-highlight {
+    padding: 0 0.1em;
+    border-radius: 2px;
+  }
+  .xyle-change-before .xyle-change-highlight {
+    background: #d26d6d45;
+    color: #f0b1b1;
+  }
+  .xyle-change-after .xyle-change-highlight {
+    background: #6da77a45;
+    color: #b9e2bd;
   }
   .xyle-change-arrow {
-    align-self: center;
-    color: #878c83;
-    font-size: 13px;
+    display: none;
   }
+  .xyle-locate-button,
   .xyle-undo-button {
     display: inline-flex;
     align-items: center;
@@ -584,8 +607,12 @@ const editorStyles = `
     font: 600 12px var(--xyle-font-ui);
     cursor: pointer;
   }
-  .xyle-undo-button:hover {
-    border-color: var(--xyle-accent);
+  .xyle-locate-button:hover,
+  .xyle-locate-button:focus-visible,
+  .xyle-undo-button:hover,
+  .xyle-undo-button:focus-visible {
+    border-color: transparent;
+    background: var(--xyle-accent-soft);
     color: #a1b69a;
   }
   .xyle-action-icon {
@@ -743,7 +770,6 @@ const editorStyles = `
 
   [data-xyle-node] {
     outline: 0 !important;
-    box-shadow: none !important;
     cursor: text;
   }
   img[data-xyle-node] {
@@ -779,7 +805,6 @@ const editorStyles = `
     background: #17201bf2 !important;
     pointer-events: auto !important;
     isolation: isolate !important;
-    box-shadow: 0 5px 16px #00000055 !important;
   }
 
   #xyle-overlay-root .xyle-img-tools button,
@@ -818,15 +843,211 @@ const editorStyles = `
     border: 1px solid #fff !important;
     border-radius: 999px !important;
     background: #667a61 !important;
-    box-shadow:
-      0 0 0 1px #1b1c1a,
-      0 1px 4px #00000055 !important;
   }
 
   @media (prefers-reduced-motion: reduce) {
     #xyle-overlay-root .xyle-editable-outline {
       transition: none !important;
     }
+  }
+}
+
+@layer xyle.diffs {
+  :root {
+    --xyle-ink: #e7ebe8;
+    --xyle-muted: #8f9992;
+    --xyle-surface: #101311;
+    --xyle-raised: #171b18;
+    --xyle-line: #2b342e;
+    --xyle-accent: #667a61;
+    --xyle-accent-hover: #81977b;
+    --xyle-accent-soft: #667a6126;
+  }
+
+  #xyle-flash {
+    background: #101311f5;
+    font-size: 12px;
+  }
+
+  #xyle-dock-handle {
+    border-color: var(--xyle-line);
+    background: #171b18f5;
+    color: var(--xyle-muted);
+    font: 600 10px / 1 var(--xyle-font-ui);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  #xyle-dock-handle:hover,
+  #xyle-dock-handle:focus-visible {
+    background: #202820;
+    color: var(--xyle-ink);
+  }
+
+  #xyle-control-bar {
+    background: #101311f5;
+  }
+
+  .xyle-icon-button {
+    color: var(--xyle-muted);
+  }
+
+  .xyle-icon-button:hover,
+  .xyle-icon-button:focus-visible {
+    background: #ffffff0d;
+    color: var(--xyle-ink);
+  }
+
+  #xyle-editables[aria-pressed="true"] {
+    background: var(--xyle-accent-soft);
+    color: #b5c8b0;
+  }
+
+  .xyle-count-badge {
+    border-color: #101311;
+    background: var(--xyle-accent);
+    color: #f3f7f2;
+  }
+
+  .xyle-icon-button[data-tooltip]::after {
+    background: #202620;
+    font-size: 11px;
+  }
+
+  #xyle-menu {
+    background: #171b18;
+  }
+
+  .xyle-menu-item {
+    color: var(--xyle-muted);
+    font-size: 11px;
+  }
+
+  .xyle-menu-item:hover,
+  .xyle-menu-item:focus-visible {
+    background: var(--xyle-accent-soft);
+    color: var(--xyle-ink);
+  }
+
+  .xyle-drawer {
+    border-left-color: var(--xyle-line);
+    background: #101311;
+    font-family: var(--xyle-font-ui) !important;
+  }
+
+  .xyle-drawer * {
+    font-family: inherit !important;
+  }
+
+  .xyle-drawer-header {
+    border-bottom: 1px solid var(--xyle-line);
+  }
+
+  .xyle-drawer-header strong,
+  .xyle-change-label,
+  .xyle-dialog-heading strong {
+    letter-spacing: 0;
+  }
+
+  .xyle-drawer-header strong {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .xyle-drawer-title-icon {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    fill: none;
+    stroke: var(--xyle-accent-hover);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.6;
+  }
+
+  .xyle-changes-count {
+    color: var(--xyle-muted);
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  .xyle-drawer-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+
+  .xyle-media-cell,
+  .xyle-empty-state {
+    background: #171b18;
+  }
+
+  .xyle-change-row {
+    cursor: pointer;
+  }
+
+  .xyle-change-row.is-located {
+    background: #1d2a1f;
+  }
+
+  .xyle-change-value {
+    font-family: var(--xyle-font-mono);
+    font-size: 11px;
+  }
+
+  .xyle-change-before {
+    background: #2a1c1d;
+  }
+
+  .xyle-change-after {
+    background: #17251a;
+  }
+
+  dialog.xyle-dialog {
+    background: #101311;
+  }
+
+  .xyle-dialog-input,
+  .xyle-media-search {
+    background: #0b0e0c;
+  }
+
+  .xyle-drawer-actions .xyle-dialog-button {
+    width: 100%;
+    margin: 0;
+  }
+
+  .xyle-drawer-actions #xyle-discard {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .xyle-drawer-actions #xyle-drawer-publish {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  #xyle-overlay-root .xyle-img-tools,
+  #xyle-overlay-root .xyle-link-tools {
+    background: #101311f5 !important;
+  }
+
+  #xyle-overlay-root .xyle-img-tools button,
+  #xyle-overlay-root .xyle-link-tools button {
+    color: var(--xyle-muted) !important;
+    font-family: var(--xyle-font-ui) !important;
+    font-size: 10px !important;
+    letter-spacing: 0.02em;
+  }
+
+  #xyle-overlay-root .xyle-img-tools button:hover,
+  #xyle-overlay-root .xyle-link-tools button:hover,
+  #xyle-overlay-root .xyle-img-tools button:focus-visible,
+  #xyle-overlay-root .xyle-link-tools button:focus-visible {
+    background: var(--xyle-accent-soft) !important;
+    color: var(--xyle-ink) !important;
   }
 }
 `;
@@ -868,6 +1089,7 @@ interface HistoryEntry {
 }
 
 const MAX_HISTORY = 100;
+let focusedChangeTarget: HTMLElement | null = null;
 
 const state = {
   current: null as PageData | null,
@@ -1041,7 +1263,7 @@ function wirePreview(): void {
   const focusStyle = doc.createElement("style");
   focusStyle.id = "xyle-preview-focus-style";
   focusStyle.textContent =
-    "[data-xyle-node]:focus, [data-xyle-node]:focus-visible { outline: 0 !important; box-shadow: none !important; }";
+    "[data-xyle-node]:focus, [data-xyle-node]:focus-visible { outline: 0 !important; }";
   doc.head.append(focusStyle);
 
   metaById.clear();
@@ -1265,7 +1487,8 @@ function refreshEditabilityOverlay(): void {
   for (const el of doc.querySelectorAll<HTMLElement>("[data-xyle-node]")) {
     const isEditing = el.classList.contains("xyle-editing");
     const isHovered = el.classList.contains("xyle-hover");
-    const isSelected = isEditing || activeToolsTarget === el || el.matches(":focus-visible");
+    const isChangeFocused = focusedChangeTarget === el;
+    const isSelected = isEditing || isChangeFocused || el.matches(":focus-visible");
     if (!showEditables && !isHovered && !isSelected) continue;
 
     const rect = previewElementRect(el);
@@ -2126,6 +2349,7 @@ async function openMediaDrawer(trigger?: HTMLElement): Promise<void> {
     flash("Media management is unavailable for this deployment.");
     return;
   }
+  closeChangesDrawer(false);
   if (drawerOpen) return;
   drawerOpen = true;
   setInteractionMode("drawer");
@@ -2186,7 +2410,7 @@ function renderMediaDrawer(items: MediaItem[]): void {
   drawer.setAttribute("aria-labelledby", "xyle-media-title");
   drawer.innerHTML = `
     <header class="xyle-drawer-header">
-      <strong id="xyle-media-title">Media</strong>
+      <strong id="xyle-media-title"><svg class="xyle-drawer-title-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="1"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4-4 3 3 2-2 5 4"/></svg><span>Media</span></strong>
       <button id="xyle-media-close" class="xyle-icon-button" aria-label="Close media drawer">×</button>
     </header>
     <label class="xyle-sr-only" for="xyle-media-search">Search images</label>
@@ -2364,6 +2588,7 @@ function updateDirtyUi(): void {
   const chevron = $("#xyle-dock-chevron", dock);
   if (chevron) chevron.textContent = count > 0 ? "⌄" : "⌃";
   refreshMarkers();
+  if ($("#xyle-changes-drawer")) openChangesDrawer();
 }
 
 function snapshotDigest(): Promise<string> {
@@ -2505,7 +2730,7 @@ function buildChrome(): void {
     showEditables = !showEditables;
     applyShowEditables();
   });
-  $("#xyle-publish").addEventListener("click", publish);
+  $("#xyle-publish").addEventListener("click", () => void publish());
   $("#xyle-changes").addEventListener("click", openChangesDrawer);
   $("#xyle-conflict-reload").addEventListener("click", () => location.reload());
   $("#xyle-conflict-dismiss").addEventListener("click", () => {
@@ -2682,6 +2907,39 @@ function closeChangesDrawer(restoreFocus = true): void {
     setInteractionMode(hoveredCandidate ? "hover" : "idle");
 }
 
+let focusedChangeTimer = 0;
+let focusedChangeKey = "";
+
+function focusChange(pagePath: string, nodeId: string): void {
+  const changeKey = `${pagePath}:${nodeId}`;
+  const keepDrawerOpen = pagePath === state.current?.pagePath;
+  if (!keepDrawerOpen) closeChangesDrawer(false);
+  const reveal = (): void => {
+    const baseId = nodeId.split("#", 1)[0];
+    const target = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${baseId}"]`);
+    if (!target) return;
+    window.clearTimeout(focusedChangeTimer);
+    focusedChangeKey = changeKey;
+    document.querySelectorAll<HTMLElement>(".xyle-change-row").forEach((row) => {
+      row.classList.toggle("is-located", row.dataset.changeKey === changeKey);
+    });
+    focusedChangeTarget = target;
+    target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    refreshEditabilityOverlay();
+    focusedChangeTimer = window.setTimeout(() => {
+      if (focusedChangeTarget !== target) return;
+      focusedChangeKey = "";
+      focusedChangeTarget = null;
+      document.querySelectorAll<HTMLElement>(".xyle-change-row").forEach((row) => {
+        row.classList.remove("is-located");
+      });
+      refreshEditabilityOverlay();
+    }, 2200);
+  };
+  if (keepDrawerOpen) reveal();
+  else void loadPage(pagePath, { pushHistory: true }).then(reveal);
+}
+
 function opLabel(op: Op): string {
   switch (op.type) {
     case "text":
@@ -2702,12 +2960,61 @@ function originalValue(pagePath: string, op: Op): string {
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
 
-function appendChangeValue(parent: HTMLElement, kind: "Before" | "After", value: string): void {
+interface ChangePart {
+  value: string;
+  changed: boolean;
+}
+
+function changeParts(before: string, after: string): { before: ChangePart[]; after: ChangePart[] } {
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix])
+    prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before[before.length - suffix - 1] === after[after.length - suffix - 1]
+  ) {
+    suffix += 1;
+  }
+  const beforeEnd = before.length - suffix;
+  const afterEnd = after.length - suffix;
+  const beforeMiddle = before.slice(prefix, beforeEnd);
+  const afterMiddle = after.slice(prefix, afterEnd);
+  return {
+    before: [
+      { value: before.slice(0, prefix), changed: false },
+      { value: beforeMiddle, changed: true },
+      { value: before.slice(before.length - suffix), changed: false },
+    ].filter((part) => part.value),
+    after: [
+      { value: after.slice(0, prefix), changed: false },
+      { value: afterMiddle, changed: true },
+      { value: after.slice(after.length - suffix), changed: false },
+    ].filter((part) => part.value),
+  };
+}
+
+function appendChangeValue(
+  parent: HTMLElement,
+  kind: "Before" | "After",
+  value: string,
+  parts: ChangePart[],
+): void {
   const wrapper = document.createElement("div");
   wrapper.className = `xyle-change-value xyle-change-${kind.toLowerCase()}`;
-  const label = document.createElement("span");
-  label.textContent = kind;
-  wrapper.append(label, document.createTextNode(value || "Empty"));
+  wrapper.setAttribute("aria-label", `${kind}: ${value || "Empty"}`);
+  if (!value) wrapper.append(document.createTextNode("Empty"));
+  for (const part of parts) {
+    if (part.changed) {
+      const highlight = document.createElement("mark");
+      highlight.className = "xyle-change-highlight";
+      highlight.textContent = part.value;
+      wrapper.append(highlight);
+    } else {
+      wrapper.append(document.createTextNode(part.value));
+    }
+  }
   parent.append(wrapper);
 }
 
@@ -2721,11 +3028,17 @@ function openChangesDrawer(): void {
   drawer.setAttribute("role", "dialog");
   drawer.setAttribute("aria-modal", "true");
   drawer.setAttribute("aria-labelledby", "xyle-changes-title");
-  drawer.innerHTML = `<header class="xyle-drawer-header">
-    <strong id="xyle-changes-title">Changes</strong>
+  drawer.append(
+    document.createRange().createContextualFragment(`<header class="xyle-drawer-header">
+    <strong id="xyle-changes-title"><svg class="xyle-drawer-title-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 12h5M8 15h8"/></svg><span>Changes</span><span id="xyle-changes-count" class="xyle-changes-count"></span></strong>
     <button id="xyle-changes-close" class="xyle-icon-button" aria-label="Close changes drawer">×</button>
   </header><div id="xyle-changes-list" class="xyle-changes-list"></div>
-  <button id="xyle-discard" class="xyle-dialog-button xyle-dialog-button--accent"><svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg><span>Discard all changes</span></button>`;
+  <footer class="xyle-drawer-actions">
+    <button id="xyle-drawer-publish" class="xyle-dialog-button xyle-dialog-button--primary"><svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M5 14v5h14v-5"/></svg><span>Publish</span></button>
+    <button id="xyle-discard" class="xyle-dialog-button xyle-dialog-button--accent"><svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg><span>Discard all changes</span></button>
+  </footer>`),
+  );
+  $("#xyle-changes-count", drawer).textContent = String(state.ops.length);
   document.body.append(drawer);
   const closeButton = $("#xyle-changes-close", drawer);
   closeButton.addEventListener("click", () => closeChangesDrawer());
@@ -2760,6 +3073,10 @@ function openChangesDrawer(): void {
     updateDirtyUi();
     void loadPage(state.current?.pagePath ?? "/index.html", { pushHistory: false });
   });
+  $("#xyle-drawer-publish", drawer).addEventListener(
+    "click",
+    () => void publish($("#xyle-drawer-publish", drawer)),
+  );
 
   const list = $("#xyle-changes-list", drawer);
   if (state.ops.length === 0) {
@@ -2777,6 +3094,7 @@ function openChangesDrawer(): void {
     operationsByPage.set(entry.pagePath, pageEntries);
   }
   let pageIndex = 0;
+  let changeNumber = 0;
   for (const [pagePath, entries] of operationsByPage) {
     const group = document.createElement("section");
     group.className = "xyle-change-page-group";
@@ -2788,30 +3106,66 @@ function openChangesDrawer(): void {
     group.append(pageLabel);
     for (const { index, entry } of entries) {
       const row = document.createElement("div");
+      const changeKey = `${pagePath}:${entry.op.nodeId}`;
       row.className = "xyle-change-row";
+      row.dataset.changeKey = changeKey;
+      row.classList.toggle("is-located", focusedChangeKey === changeKey);
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.setAttribute("aria-label", `Locate ${opLabel(entry.op)} change on ${pagePath}`);
+      row.addEventListener("click", () => focusChange(pagePath, entry.op.nodeId));
+      row.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        focusChange(pagePath, entry.op.nodeId);
+      });
       const header = document.createElement("div");
       header.className = "xyle-change-row-header";
-      const label = document.createElement("strong");
-      label.className = "xyle-change-label";
-      label.textContent = opLabel(entry.op);
+      const heading = document.createElement("div");
+      heading.className = "xyle-change-heading";
+      const number = document.createElement("span");
+      number.className = "xyle-change-index";
+      number.textContent = String(++changeNumber);
+      number.setAttribute("aria-hidden", "true");
+      heading.append(number);
+      const rowActions = document.createElement("div");
+      rowActions.className = "xyle-change-row-actions";
+      const locateButton = document.createElement("button");
+      locateButton.type = "button";
+      locateButton.className = "xyle-locate-button";
+      locateButton.innerHTML =
+        '<svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg><span>Locate</span>';
+      locateButton.setAttribute("aria-label", `Locate ${opLabel(entry.op)} change on ${pagePath}`);
+      locateButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        focusChange(pagePath, entry.op.nodeId);
+      });
       const undoButton = document.createElement("button");
+      undoButton.type = "button";
       undoButton.innerHTML =
         '<svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a7 7 0 0 1 7 7"/></svg><span>Undo</span>';
       undoButton.className = "xyle-undo-button";
       undoButton.setAttribute("aria-label", `Undo ${opLabel(entry.op)} change on ${pagePath}`);
-      undoButton.addEventListener("click", () => undoOp(index));
-      header.append(label, undoButton);
+      undoButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        undoOp(index);
+      });
+      rowActions.append(locateButton, undoButton);
+      header.append(heading, rowActions);
       const comparison = document.createElement("div");
       comparison.className = "xyle-change-comparison";
       // User-authored values are appended as text nodes so the privileged shell
       // never interprets edited content as markup.
-      appendChangeValue(comparison, "Before", originalValue(pagePath, entry.op));
+      const beforeValue = originalValue(pagePath, entry.op).trim();
+      const afterValue = entry.op.value.trim();
+      const diff = changeParts(beforeValue, afterValue);
+      appendChangeValue(comparison, "Before", beforeValue, diff.before);
       const arrow = document.createElement("span");
       arrow.className = "xyle-change-arrow";
       arrow.setAttribute("aria-hidden", "true");
       arrow.textContent = "→";
       comparison.append(arrow);
-      appendChangeValue(comparison, "After", entry.op.value);
+      appendChangeValue(comparison, "After", afterValue, diff.after);
       row.append(header, comparison);
       group.append(row);
     }
@@ -2826,7 +3180,6 @@ function undoOp(index: number): void {
   if (!entry) return;
   removeOpsFor(entry.pagePath, opKey(entry.op));
   revertOpInDom(entry.pagePath, entry.op);
-  closeChangesDrawer();
   updateDirtyUi();
 }
 
@@ -2978,11 +3331,12 @@ function redo(): void {
 
 /* ---------- publish ---------- */
 
-async function publish(): Promise<void> {
+async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
   if (commitActiveEditsAndCollect()) return;
   mediaMutationGeneration += 1;
-  const button = $<HTMLButtonElement>("#xyle-publish");
-  const label = $("#xyle-publish-label");
+  const button = sourceButton ?? $<HTMLButtonElement>("#xyle-publish");
+  const label = sourceButton ? $("span", sourceButton) : $("#xyle-publish-label");
+  const idleLabel = sourceButton ? "Publish" : "Publish changes";
   button.disabled = true;
   label.textContent = "Publishing…";
 
@@ -3011,7 +3365,7 @@ async function publish(): Promise<void> {
     if (res.status === 409) {
       $("#xyle-conflict").style.display = "block";
       button.disabled = false;
-      label.textContent = "Publish changes";
+      label.textContent = idleLabel;
       return;
     }
     if (!res.ok) {
@@ -3020,7 +3374,7 @@ async function publish(): Promise<void> {
       };
       flash(`Couldn't publish: ${body.error ?? res.statusText}`);
       button.disabled = false;
-      label.textContent = "Publish changes";
+      label.textContent = idleLabel;
       return;
     }
     const body = (await res.json()) as { snapshotDigest: string };
@@ -3036,7 +3390,7 @@ async function publish(): Promise<void> {
     label.textContent = "Published ✓";
     flash("Published.");
     setTimeout(() => {
-      label.textContent = "Publish changes";
+      label.textContent = idleLabel;
       button.disabled = false;
     }, 1500);
     updateDirtyUi();
@@ -3044,7 +3398,7 @@ async function publish(): Promise<void> {
   } catch {
     flash("Couldn't publish — check your connection and retry.");
     button.disabled = false;
-    label.textContent = "Publish changes";
+    label.textContent = idleLabel;
   }
 }
 
