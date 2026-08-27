@@ -1,6 +1,13 @@
 // Xyle editor shell — browser-side control layer.
 // Drafts live only in memory; publish patches original static source server-side.
 
+import {
+  registerWebMcpTools,
+  type ContentResult,
+  type EditableContent,
+  type TextUpdateResult,
+} from "./webmcp.ts";
+
 const editorStyles = `
 @layer xyle.tokens {
   :root {
@@ -1099,6 +1106,7 @@ const state = {
   assets: new Map<string, { file: File; objectUrl: string }>(),
   publishedSnapshotDigest: "",
 };
+let unregisterWebMcp: (() => void) | null = null;
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document): T =>
   root.querySelector(sel) as T;
@@ -1144,6 +1152,12 @@ async function boot(): Promise<void> {
   exposeTestHook();
   const params = new URLSearchParams(location.search);
   await loadPage(params.get("page") ?? "/index.html", { pushHistory: false });
+
+  unregisterWebMcp = await registerWebMcpTools({
+    listEditableContent,
+    getContent,
+    updateText,
+  });
 
   window.addEventListener("beforeunload", (event) => {
     if (dirtyCount() > 0) {
@@ -2572,6 +2586,68 @@ function dirtyCount(): number {
   return state.ops.length;
 }
 
+function listEditableContent(): EditableContent[] {
+  const current = state.current;
+  if (!current) return [];
+
+  return current.nodes
+    .filter(
+      (meta): meta is NodeMeta & { kind: "text" | "link" } =>
+        (meta.kind === "text" || meta.kind === "link") && meta.textEditable === true,
+    )
+    .map((meta) => ({
+      id: meta.id,
+      type: meta.kind,
+      preview: currentNodeElement(meta.id)?.textContent ?? "",
+    }));
+}
+
+function getContent(nodeId: string): ContentResult {
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+  if (!meta || (meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
+    throw new Error(`Unknown or non-text-editable Xyle node ${nodeId}`);
+  }
+  const element = currentNodeElement(nodeId);
+  if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
+  return { id: nodeId, type: meta.kind, content: element.textContent ?? "" };
+}
+
+function updateText(nodeId: string, text: string): TextUpdateResult {
+  if (session) commitEdit();
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+  if (!meta || (meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
+    throw new Error(`Unknown or non-text-editable Xyle node ${nodeId}`);
+  }
+  if (meta.segmentCount !== 1) {
+    throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
+  }
+
+  const element = currentNodeElement(nodeId);
+  if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
+  const [pair] = collectSegments(element);
+  if (!pair) throw new Error(`Xyle node ${nodeId} has no editable text`);
+
+  const operation: Op = { type: "text", nodeId: `${nodeId}#0`, value: text };
+  rememberOriginalSegment(current.pagePath, operation.nodeId, pair.value);
+  applyOpToDom(current.pagePath, operation);
+  applyOp(current.pagePath, operation, "Edit text");
+  return { id: nodeId, pagePath: current.pagePath, text };
+}
+
+function currentNodeElement(nodeId: string): HTMLElement | null {
+  const doc = previewDoc();
+  if (!doc) return null;
+  return (
+    [...doc.querySelectorAll<HTMLElement>("[data-xyle-node]")].find(
+      (element) => element.dataset.xyleNode === nodeId,
+    ) ?? null
+  );
+}
+
 function updateDirtyUi(): void {
   const count = dirtyCount();
   $("#xyle-dirty").style.display = count > 0 ? "" : "none";
@@ -2833,6 +2909,8 @@ function discardAll(): void {
 
 async function exitEditor(): Promise<void> {
   if (!confirmDiscard("exit")) return;
+  unregisterWebMcp?.();
+  unregisterWebMcp = null;
   discardAll();
   location.assign(state.current?.pagePath ?? "/");
 }
