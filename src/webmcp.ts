@@ -23,9 +23,18 @@ export interface LinkUpdateResult {
   href: string;
 }
 
+export interface ChangeInfo {
+  changeId: string;
+  elementId: string;
+  type: "text" | "href" | "src" | "alt";
+  before: string;
+  after: string;
+}
+
 export interface WebMcpBridge {
   listEditableContent(): EditableContent[];
   getContent(id: string): ContentResult;
+  listChanges(): ChangeInfo[];
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -131,6 +140,21 @@ export async function registerWebMcpTools(
             throw new DOMException("Tool execution canceled", "AbortError");
           }
           return textResult(JSON.stringify(bridge.getContent(parseIdInput(input, "get_content"))));
+        },
+      },
+      { signal: controller.signal },
+    );
+    await context.registerTool(
+      {
+        name: "list_changes",
+        description: "List the current unsaved Xyle changes.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        execute: async (_input, context) => {
+          if (context?.signal?.aborted) {
+            throw new DOMException("Tool execution canceled", "AbortError");
+          }
+          return textResult(JSON.stringify(bridge.listChanges()));
         },
       },
       { signal: controller.signal },

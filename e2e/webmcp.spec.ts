@@ -64,6 +64,7 @@ test.describe("WebMCP editor tools", () => {
       return;
     }
     expect(discovered.tools).toContain("get_content");
+    expect(discovered.tools).toContain("list_changes");
     expect(discovered.tools).toContain("update_text");
     const heading = discovered.content.find((item) => item.type === "text");
     expect(heading?.id).toBeTruthy();
@@ -92,6 +93,15 @@ test.describe("WebMCP editor tools", () => {
       id: heading!.id,
       content: updatedText,
     });
+    await expect(invokeTool(page, "list_changes", {})).resolves.toEqual([
+      {
+        changeId: "change-1",
+        elementId: heading!.id,
+        type: "text",
+        before: originalText,
+        after: updatedText,
+      },
+    ]);
 
     await expect(
       page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${heading!.id}"]`),

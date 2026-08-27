@@ -3,6 +3,7 @@
 
 import {
   registerWebMcpTools,
+  type ChangeInfo,
   type ContentResult,
   type EditableContent,
   type LinkUpdateResult,
@@ -1157,6 +1158,7 @@ async function boot(): Promise<void> {
   unregisterWebMcp = await registerWebMcpTools({
     listEditableContent,
     getContent,
+    listChanges,
     updateText,
     updateLink,
   });
@@ -2604,6 +2606,22 @@ function listEditableContent(): EditableContent[] {
     }));
 }
 
+function listChanges(): ChangeInfo[] {
+  const changes: ChangeInfo[] = [];
+  for (const [index, { pagePath, op }] of state.ops.entries()) {
+    const [elementId] = op.nodeId.split("#");
+    if (!elementId) continue;
+    changes.push({
+      changeId: `change-${index + 1}`,
+      elementId,
+      type: op.type,
+      before: originalValue(pagePath, op),
+      after: op.value,
+    });
+  }
+  return changes;
+}
+
 function getContent(nodeId: string): ContentResult {
   const current = state.current;
   if (!current) throw new Error("No page is loaded");
@@ -3206,7 +3224,8 @@ function openChangesDrawer(): void {
 
   const list = $("#xyle-changes-list", drawer);
   if (state.ops.length === 0) {
-    list.innerHTML = `<p class="xyle-empty-state">No pending changes. Your draft is clean.</p>`;
+    drawer.querySelector(".xyle-drawer-actions")?.remove();
+    list.innerHTML = `<p class="xyle-empty-state">No pending changes.</p>`;
     closeButton.focus();
     return;
   }

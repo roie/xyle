@@ -15,6 +15,15 @@ describe("WebMCP tools", () => {
     const bridge = {
       listEditableContent: () => [{ id: "n1", type: "text" as const, preview: "Xyle" }],
       getContent: (id: string) => ({ id, type: "text" as const, content: "Xyle" }),
+      listChanges: () => [
+        {
+          changeId: "change-1",
+          elementId: "n1",
+          type: "text" as const,
+          before: "Xyle",
+          after: "Hello",
+        },
+      ],
       updateText: (id: string, text: string) => ({ id, pagePath: "/index.html", text }),
       updateLink: (id: string, text?: string, href?: string) => ({
         id,
@@ -28,6 +37,7 @@ describe("WebMCP tools", () => {
     expect(tools.map((tool) => tool.name)).toEqual([
       "list_editable_content",
       "get_content",
+      "list_changes",
       "update_link",
       "update_text",
     ]);
@@ -39,7 +49,10 @@ describe("WebMCP tools", () => {
     await expect(tools[1]!.execute({ id: "n1" }, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.getContent("n1")) }],
     });
-    await expect(tools[2]!.execute({ id: "n1", href: "/about.html" }, { signal })).resolves.toEqual(
+    await expect(tools[2]!.execute({}, { signal })).resolves.toEqual({
+      content: [{ type: "text", text: JSON.stringify(bridge.listChanges()) }],
+    });
+    await expect(tools[3]!.execute({ id: "n1", href: "/about.html" }, { signal })).resolves.toEqual(
       {
         content: [
           {
@@ -49,7 +62,7 @@ describe("WebMCP tools", () => {
         ],
       },
     );
-    await expect(tools[3]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
+    await expect(tools[4]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.updateText("n1", "Hello")) }],
     });
 
@@ -61,6 +74,7 @@ describe("WebMCP tools", () => {
       registerWebMcpTools({
         listEditableContent: () => [],
         getContent: (id) => ({ id, type: "text", content: "" }),
+        listChanges: () => [],
         updateText: (id, text) => ({ id, pagePath: "/index.html", text }),
         updateLink: (id, text, href) => ({
           id,
