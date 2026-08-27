@@ -264,7 +264,7 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
         (op) =>
           !op ||
           typeof op !== "object" ||
-          !["text", "lineBreak", "href", "src", "alt"].includes(
+          !["text", "lineBreak", "href", "src", "alt", "format", "formatBlock", "html"].includes(
             (op as { type?: string }).type ?? "",
           ),
       )

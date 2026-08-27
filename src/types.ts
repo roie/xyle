@@ -34,6 +34,7 @@ export type PageOperation =
       sourceEnd?: number;
     }
   | { type: "formatBlock"; nodeId: string; value: BlockFormat }
+  | { type: "html"; nodeId: string; value: string }
   | { type: "lineBreak"; nodeId: string; position: number }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string }

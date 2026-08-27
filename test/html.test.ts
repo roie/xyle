@@ -85,6 +85,13 @@ describe("preparePreview source locations", () => {
     expect(candidate.segments[0]?.text).toBe("Tom & Jerry");
   });
 
+  it("wraps standalone inline formatting roots for safe editing", () => {
+    const source = `<strong>100%</strong>`;
+    const preview = preparePreview(source, "/index.html", "https://example.com");
+    expect(preview.html).toContain('<span data-xyle-node="n1"><strong>100%</strong></span>');
+    expect(preview.nodes.get("n1")?.tag).toBe("strong");
+  });
+
   it("assigns stable ephemeral ids in document order", () => {
     const source = `<h1>A</h1><p>B</p><a href="/x">C</a><img src="/i.png" alt="">`;
     const { nodes } = preparePreview(source, "/index.html", "http://localhost:4173");
@@ -241,6 +248,31 @@ describe("patchHtml text fidelity", () => {
         { type: "format", nodeId: id, value: "italic" },
       ]),
     ).resolves.toBe(`<p><em>Updated</em></p>`);
+  });
+
+  it("patches inline HTML changes for standalone formatted roots", async () => {
+    const source = `<strong>100%</strong>`;
+    const id = firstNodeId(source);
+    await expect(
+      patchAndGetText(source, [
+        { type: "html", nodeId: id, value: "<strong>10</strong>0<strong>%</strong>" },
+      ]),
+    ).resolves.toBe(`<strong>10</strong>0<strong>%</strong>`);
+  });
+
+  it("patches one net inline HTML change and rejects unsafe markup", async () => {
+    const source = `<p>Hello amazing world</p>`;
+    const id = firstNodeId(source);
+    await expect(
+      patchAndGetText(source, [
+        { type: "html", nodeId: id, value: `Hello <strong>amazing</strong> world` },
+      ]),
+    ).resolves.toBe(`<p>Hello <strong>amazing</strong> world</p>`);
+    await expect(
+      patchAndGetText(source, [
+        { type: "html", nodeId: id, value: `Hello <script>alert(1)</script>` },
+      ]),
+    ).rejects.toThrow(/unsupported/);
   });
 
   it("formats only a safe selected text range", async () => {

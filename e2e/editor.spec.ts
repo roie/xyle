@@ -578,7 +578,7 @@ test.describe("changes drawer and undo", () => {
     await expect(page.locator("#xyle-overlay-root .xyle-editable-outline.is-active")).toHaveCount(
       1,
     );
-    await page.click("#xyle-changes-drawer button:has-text('Undo')");
+    await page.click("#xyle-changes-drawer button:has-text('Revert')");
     await expect(page.locator("#xyle-dirty")).toBeHidden();
 
     const text = await textOf(page, id!);

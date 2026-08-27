@@ -28,6 +28,17 @@ async function textOpFor(page: Page): Promise<{ nodeId: string; value: string } 
   return { nodeId: String(last.op.nodeId), value: String(last.op.value) };
 }
 
+async function committedTextFor(page: Page): Promise<string | null> {
+  const ops = await currentOps(page);
+  const last = ops.at(-1);
+  if (!last || (last.op.type !== "text" && last.op.type !== "html")) return null;
+  if (last.op.type === "text") return String(last.op.value);
+  return page.evaluate((html) => {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    return doc.body.textContent ?? "";
+  }, String(last.op.value));
+}
+
 test.describe("editing fidelity gate", () => {
   let page: Page;
 
@@ -40,9 +51,9 @@ test.describe("editing fidelity gate", () => {
   async function commitAndAssertOp(expectedSuffix: string): Promise<void> {
     await clickOutsideToCommit(page);
     await expect.poll(async () => opsCount(page)).toBeGreaterThan(0);
-    const op = await textOpFor(page);
-    expect(op, "expected a safe text op").toBeTruthy();
-    expect(op!.value.endsWith(expectedSuffix)).toBe(true);
+    const value = await committedTextFor(page);
+    expect(value, "expected a safe text or markup op").toBeTruthy();
+    expect(value!.endsWith(expectedSuffix)).toBe(true);
   }
 
   test("ASCII typing", async () => {

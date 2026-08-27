@@ -1,4 +1,4 @@
-import { parse } from "parse5";
+import { parse, parseFragment, serialize } from "parse5";
 import type { DefaultTreeAdapterTypes } from "parse5";
 import type {
   PageChange,
@@ -80,6 +80,43 @@ const INLINE_TAGS = new Set([
   "bdo",
 ]);
 
+function sanitizeInlineMarkup(markup: string): string {
+  const fragment = parseFragment(markup);
+  const allowedAttributes = new Set(["class", "id", "title", "lang", "dir", "role"]);
+  const visit = (node: P5Node): void => {
+    if (node.nodeName === "#text") return;
+    if (!isElement(node)) throw new Error("formatting HTML contains an unsupported node");
+    if (!INLINE_TAGS.has(node.tagName)) {
+      throw new Error(`formatting HTML contains unsupported <${node.tagName}>`);
+    }
+    for (const attribute of [...node.attrs] as P5Attribute[]) {
+      const name = attribute.name.toLowerCase();
+      if (name === "data-xyle-format" || name === "data-xyle-controlled-break") {
+        node.attrs = node.attrs.filter((candidate) => candidate !== attribute);
+        continue;
+      }
+      if (name.startsWith("data-xyle-")) {
+        throw new Error("formatting HTML contains a reserved Xyle attribute");
+      }
+      if (name.startsWith("on") || name === "style" || name === "src") {
+        throw new Error("formatting HTML contains an unsafe attribute");
+      }
+      if (name === "href") {
+        if (node.tagName !== "a" || !isValidSiteUrl(attribute.value)) {
+          throw new Error("formatting HTML contains an unsafe link");
+        }
+        continue;
+      }
+      if (!allowedAttributes.has(name) && !name.startsWith("aria-") && !name.startsWith("data-")) {
+        throw new Error(`formatting HTML contains unsupported attribute ${name}`);
+      }
+    }
+    for (const child of node.childNodes) visit(child);
+  };
+  for (const child of fragment.childNodes) visit(child);
+  return serialize(fragment);
+}
+
 export interface SegmentInfo {
   /** Source offset of first byte of the text node. */
   start: number;
@@ -103,6 +140,8 @@ interface Candidate {
   startTagEnd: number;
   contentStart?: number;
   contentEnd?: number;
+  elementEnd?: number;
+  previewWrapper?: boolean;
   tagNameStart?: number;
   tagNameEnd?: number;
   endTagNameStart?: number;
@@ -311,6 +350,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
         counter += 1;
         const id = `n${counter}`;
         const loc = node.sourceCodeLocation!;
+        const previewWrapper = new Set(["strong", "b", "em", "i", "u"]).has(tag);
         candidates.set(id, {
           id,
           kind: "text",
@@ -319,6 +359,8 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
           startTagEnd: loc.startTag!.endOffset,
           contentStart: loc.startTag!.endOffset,
           contentEnd: loc.endTag?.startOffset ?? loc.endOffset,
+          elementEnd: loc.endOffset,
+          previewWrapper,
           tagNameStart: loc.startTag!.startOffset + 1,
           tagNameEnd: loc.startTag!.startOffset + 1 + tag.length,
           ...(loc.endTag
@@ -337,11 +379,19 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
     }
 
     if (becameCandidate) {
-      const id = [...candidates.values()].at(-1)!.id;
-      injections.push({
-        offset: candidates.get(id)!.startTagStart + 1 + tag.length,
-        text: ` data-xyle-node="${id}"`,
-      });
+      const candidate = [...candidates.values()].at(-1)!;
+      if (candidate.previewWrapper) {
+        injections.push({
+          offset: candidate.startTagStart,
+          text: `<span data-xyle-node="${candidate.id}">`,
+        });
+        injections.push({ offset: candidate.elementEnd!, text: "</span>" });
+      } else {
+        injections.push({
+          offset: candidate.startTagStart + 1 + tag.length,
+          text: ` data-xyle-node="${candidate.id}"`,
+        });
+      }
     }
 
     // A candidate owns its own subtree's text; nested text containers stay
@@ -579,11 +629,18 @@ export async function patchHtml(
     candidate: Candidate;
     op: PageOperation & { type: "formatBlock" };
   }[] = [];
+  const htmlOps: { candidate: Candidate; op: PageOperation & { type: "html" } }[] = [];
+  const htmlTargets = new Set(
+    change.operations
+      .filter((op): op is PageOperation & { type: "html" } => op.type === "html")
+      .map((op) => op.nodeId),
+  );
 
   for (const op of change.operations) {
     switch (op.type) {
       case "text": {
         const ref = parseSegmentRef(op.nodeId);
+        if (htmlTargets.has(ref.nodeId)) break;
         const candidate = analysis.candidates.get(ref.nodeId);
         if (!candidate || (candidate.kind !== "text" && candidate.kind !== "link")) {
           throw new Error(`unknown text target ${op.nodeId}`);
@@ -600,6 +657,7 @@ export async function patchHtml(
         break;
       }
       case "format": {
+        if (htmlTargets.has(op.nodeId)) break;
         const candidate = analysis.candidates.get(op.nodeId);
         if (!candidate || (candidate.kind !== "text" && candidate.kind !== "link")) {
           throw new Error(`unknown formatting target ${op.nodeId}`);
@@ -649,6 +707,24 @@ export async function patchHtml(
         }
         formatTag(op.value);
         formatOps.push({ candidate, op });
+        break;
+      }
+      case "html": {
+        const candidate = analysis.candidates.get(op.nodeId);
+        if (
+          !candidate ||
+          (candidate.kind !== "text" && candidate.kind !== "link") ||
+          !candidate.textEditable ||
+          candidate.contentStart === undefined ||
+          candidate.contentEnd === undefined
+        ) {
+          throw new Error(`html target ${op.nodeId} is not safely editable`);
+        }
+        const value = sanitizeInlineMarkup(op.value);
+        if (!candidate.multiline && /<br\b/i.test(value)) {
+          throw new Error(`formatting HTML cannot add a line break to <${candidate.tag}>`);
+        }
+        htmlOps.push({ candidate, op: { ...op, value } });
         break;
       }
       case "formatBlock": {
@@ -714,6 +790,16 @@ export async function patchHtml(
   }
 
   const patches: SourcePatch[] = [];
+  for (const { candidate, op } of htmlOps) {
+    if (htmlOps.filter((item) => item.candidate.id === candidate.id).length > 1) {
+      throw new Error(`duplicate html op on ${candidate.id}`);
+    }
+    patches.push({
+      start: candidate.previewWrapper ? candidate.startTagStart : candidate.contentStart!,
+      end: candidate.previewWrapper ? candidate.elementEnd! : candidate.contentEnd!,
+      replacement: op.value,
+    });
+  }
 
   const formattedTextKeys = new Set<string>();
   const formatGroups = new Map<

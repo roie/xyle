@@ -16,6 +16,7 @@ import {
   type TextUpdateResult,
   type UndoResult,
 } from "./webmcp.ts";
+import { cleanInlineHtml, inlineFormatState, toggleInlineFormat } from "./formatting.ts";
 
 const editorStyles = `
 @layer xyle.tokens {
@@ -909,6 +910,14 @@ const editorStyles = `
     outline: 2px solid #a8bea5 !important;
     outline-offset: -1px !important;
   }
+  #xyle-overlay-root .xyle-format-tools button[data-state="on"] {
+    background: #a8bea5 !important;
+    color: #142018 !important;
+  }
+  #xyle-overlay-root .xyle-format-tools button[data-state="mixed"] {
+    background: #ffffff38 !important;
+    box-shadow: inset 0 -2px 0 #a8bea5 !important;
+  }
 
   #xyle-overlay-root .xyle-marker {
     position: absolute !important;
@@ -1164,6 +1173,7 @@ type Op =
       sourceEnd?: number;
     }
   | { type: "formatBlock"; nodeId: string; value: BlockTag }
+  | { type: "html"; nodeId: string; value: string }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string; assetName?: string }
   | { type: "alt"; nodeId: string; value: string };
@@ -1681,6 +1691,7 @@ interface EditSession {
   baselineValues: string[];
   /** Slot keys aligned with baselineValues. */
   baselineKeys: string[];
+  baselineHtml: string;
   baselineSkeleton: string;
   baselineAuthoredBreakCount: number;
 }
@@ -1859,26 +1870,29 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
     return;
   }
   savedFormatSelection = null;
+  const baselineHtml = cleanInlineHtml(el);
+  if (!originalMarkups.has(segmentIdentity(meta.pagePath, meta.id))) {
+    originalMarkups.set(segmentIdentity(meta.pagePath, meta.id), baselineHtml);
+  }
   session = {
     el,
     meta,
     baselineClone,
     baselineValues: baselinePairs.map((p) => p.value),
     baselineKeys: baselinePairs.map((p) => p.key),
+    baselineHtml,
     baselineSkeleton: skeleton(el),
     baselineAuthoredBreakCount: authoredBreakCount(el),
   };
+  const activeSession = session;
 
-  for (const [i, value] of session.baselineValues.entries()) {
+  for (const [i, value] of activeSession.baselineValues.entries()) {
     rememberOriginalSegment(meta.pagePath, `${meta.id}#${i}`, value);
   }
 
-  const hasNoElementChildren = !Array.from(el.children).some((c) => c.tagName !== "BR");
-  const plainOnly = meta.segmentCount === 1 && !meta.multiline && hasNoElementChildren;
-
-  // SAFETY: contentEditable accepts the browser's plaintext-only extension.
-  (el as unknown as { contentEditable: string }).contentEditable =
-    plainOnly && supportsPlaintextOnly() ? "plaintext-only" : "true";
+  // SAFETY: contentEditable is a standard HTMLElement property, but the local
+  // DOM type omits the editor's writable assignment.
+  (el as unknown as { contentEditable: string }).contentEditable = "true";
   el.classList.add("xyle-editing");
   setInteractionMode("editing");
   refreshEditabilityOverlay();
@@ -1911,16 +1925,6 @@ function onPaste(event: ClipboardEvent): void {
   }
   const win = iframe.contentWindow!;
   win.document.execCommand("insertText", false, text);
-}
-
-function supportsPlaintextOnly(): boolean {
-  const probe = document.createElement("div");
-  try {
-    probe.contentEditable = "plaintext-only";
-    return probe.contentEditable === "plaintext-only";
-  } catch {
-    return false;
-  }
 }
 
 function onKeyDown(event: KeyboardEvent): void {
@@ -2012,41 +2016,18 @@ function getFormatSelection(): FormatSelection | null {
   const selection = previewSelection();
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed || !session) return null;
   const range = selection.getRangeAt(0);
-  const hasUnsupportedChildren = [...session.el.children].some((child) => child.tagName !== "BR");
-  if (
-    !session.el.contains(range.startContainer) ||
-    !session.el.contains(range.endContainer) ||
-    hasUnsupportedChildren
-  ) {
+  if (!session.el.contains(range.startContainer) || !session.el.contains(range.endContainer)) {
     return null;
   }
   const start = visibleOffsetForBoundary(session.el, range.startContainer, range.startOffset);
   const end = visibleOffsetForBoundary(session.el, range.endContainer, range.endOffset);
   if (start === null || end === null || start >= end) return null;
 
-  const textNodes = formattingTextNodes(session.el);
-  const startNode = textNodes.indexOf(range.startContainer as Text);
-  const endNode = textNodes.indexOf(range.endContainer as Text);
-  const startSegment = session.meta.segments?.[startNode];
-  const endSegment = session.meta.segments?.[endNode];
-  const sourceIsUnchanged =
-    range.startContainer.nodeType === Node.TEXT_NODE &&
-    range.endContainer.nodeType === Node.TEXT_NODE &&
-    startSegment &&
-    endSegment &&
-    startSegment.sourceEnd - startSegment.sourceStart === startSegment.textLength &&
-    endSegment.sourceEnd - endSegment.sourceStart === endSegment.textLength;
   const frameRect = iframe.getBoundingClientRect();
   const selectionRect = range.getBoundingClientRect();
   return {
     start,
     end,
-    ...(sourceIsUnchanged
-      ? {
-          sourceStart: startSegment.sourceStart + range.startOffset,
-          sourceEnd: endSegment.sourceStart + range.endOffset,
-        }
-      : {}),
     range: range.cloneRange(),
     rect: {
       left: frameRect.left + selectionRect.left,
@@ -2059,8 +2040,18 @@ function getFormatSelection(): FormatSelection | null {
   };
 }
 
+function updateFormatToolState(tools: HTMLElement, target: HTMLElement, range: Range): void {
+  for (const button of tools.querySelectorAll<HTMLButtonElement>("[data-inline-format]")) {
+    const format = button.dataset.inlineFormat as "bold" | "italic" | "underline";
+    const state = inlineFormatState(target, range, format);
+    button.dataset.state = state;
+    button.setAttribute("aria-pressed", state === "on" ? "true" : "false");
+  }
+}
+
 function showFormatTools(): void {
   if (!session) return;
+  const target = session.el;
   const currentSelection = getFormatSelection();
   if (currentSelection) savedFormatSelection = currentSelection;
   const selected = currentSelection ?? savedFormatSelection;
@@ -2069,12 +2060,12 @@ function showFormatTools(): void {
     return;
   }
   if (activeTools?.classList.contains("xyle-format-tools")) {
-    positionContextTools(activeTools, selected.rect, "above");
+    updateFormatToolState(activeTools, target, selected.range);
+    positionContextTools(activeTools, selected.rect, "above", previewElementRect(target));
     return;
   }
   const overlay = shellOverlay();
   if (!overlay) return;
-  const target = session.el;
   const tools = document.createElement("div");
   tools.className = "xyle-format-tools";
   tools.setAttribute("role", "toolbar");
@@ -2086,6 +2077,7 @@ function showFormatTools(): void {
     button.textContent = label;
     button.setAttribute("aria-label", label);
     button.setAttribute("title", label);
+    button.dataset.inlineFormat = format;
     button.addEventListener("pointerdown", (event) => event.preventDefault());
     button.addEventListener("click", () => {
       if (!session) return;
@@ -2098,6 +2090,7 @@ function showFormatTools(): void {
   addInlineButton("bold", "Bold");
   addInlineButton("italic", "Italic");
   addInlineButton("underline", "Underline");
+  updateFormatToolState(tools, target, selected.range);
 
   const separator = document.createElement("span");
   separator.setAttribute("role", "separator");
@@ -2131,7 +2124,7 @@ function showFormatTools(): void {
 
   registerContextTools(tools, target, "above");
   overlay.append(tools);
-  positionContextTools(tools, selected.rect, "above");
+  positionContextTools(tools, selected.rect, "above", previewElementRect(target));
 }
 
 function scheduleFormatTools(): void {
@@ -2299,25 +2292,35 @@ function endEdit(recordChanges: boolean): void {
     recordChanges = false;
   }
   if (recordChanges) {
-    const currentPairs = collectSegments(s.el);
-    const mappingChanged =
-      currentPairs.length !== s.baselineValues.length ||
-      authoredBreakCount(s.el) !== s.baselineAuthoredBreakCount;
-    if (mappingChanged) {
-      flash("That change was reverted because the browser changed the text structure.");
-      restoreBaseline();
+    const currentHtml = cleanInlineHtml(s.el);
+    const hasInlineMarkup =
+      /<(?:a|b|strong|em|i|u)\b/i.test(s.baselineHtml) ||
+      /<(?:a|b|strong|em|i|u)\b/i.test(currentHtml);
+    if (hasInlineMarkup) {
+      const originalHtml =
+        originalMarkups.get(segmentIdentity(s.meta.pagePath, s.meta.id)) ?? s.baselineHtml;
+      reconcileInlineHtml(s.meta.pagePath, s.meta.id, originalHtml, currentHtml);
     } else {
-      for (const [i, pair] of currentPairs.entries()) {
-        if (pair.value !== s.baselineValues[i]) {
-          applyOp(
-            s.meta.pagePath,
-            {
-              type: "text",
-              nodeId: `${s.meta.id}#${i}`,
-              value: pair.value,
-            },
-            "Edit text",
-          );
+      const currentPairs = collectSegments(s.el);
+      const mappingChanged =
+        currentPairs.length !== s.baselineValues.length ||
+        authoredBreakCount(s.el) !== s.baselineAuthoredBreakCount;
+      if (mappingChanged) {
+        flash("That change was reverted because the browser changed the text structure.");
+        restoreBaseline();
+      } else {
+        for (const [i, pair] of currentPairs.entries()) {
+          if (pair.value !== s.baselineValues[i]) {
+            applyOp(
+              s.meta.pagePath,
+              {
+                type: "text",
+                nodeId: `${s.meta.id}#${i}`,
+                value: pair.value,
+              },
+              "Edit text",
+            );
+          }
         }
       }
     }
@@ -2351,6 +2354,7 @@ function positionContextTools(
   tools: HTMLElement,
   targetRect: ViewportRect,
   placement: ContextToolPlacement,
+  avoidRect?: ViewportRect,
 ): void {
   const viewportWidth = document.documentElement.clientWidth;
   const viewportHeight = document.documentElement.clientHeight;
@@ -2358,14 +2362,25 @@ function positionContextTools(
   const maxLeft = Math.max(8, viewportWidth - toolRect.width - 8);
   const left = Math.min(Math.max(targetRect.left, 8), maxLeft);
   const fitsComfortablyInside = targetRect.height >= toolRect.height * 2;
-  let top = targetRect.bottom + 6;
+  const above = targetRect.top - toolRect.height - 6;
+  const below = targetRect.bottom + 6;
+  let top = below;
   if (placement === "inside-bottom" && fitsComfortablyInside) {
     top = targetRect.bottom - toolRect.height - 6;
   } else if (placement === "above") {
-    top = targetRect.top - toolRect.height - 6;
+    const candidates = [above, below];
+    top =
+      candidates.find(
+        (candidate) =>
+          candidate >= 8 &&
+          candidate + toolRect.height <= viewportHeight - 8 &&
+          (!avoidRect ||
+            candidate + toolRect.height <= avoidRect.top ||
+            candidate >= avoidRect.bottom),
+      ) ?? above;
   }
-  if (top < 8 && placement === "above") top = targetRect.bottom + 6;
-  if (top + toolRect.height > viewportHeight - 8) top = targetRect.top - toolRect.height - 6;
+  if (top < 8 && placement === "above") top = below;
+  if (top + toolRect.height > viewportHeight - 8) top = above;
   top = Math.min(Math.max(top, 8), Math.max(8, viewportHeight - toolRect.height - 8));
   // Context controls use viewport coordinates because they are fixed overlays.
   // Adding document scroll offsets would double-count scrolling inside srcdoc.
@@ -3275,6 +3290,52 @@ function isBlockTag(tag: string | undefined): tag is BlockTag {
   return tag === "p" || /^h[1-6]$/.test(tag ?? "");
 }
 
+function reconcileInlineHtml(
+  pagePath: string,
+  nodeId: string,
+  before: string,
+  after: string,
+): void {
+  const existing = state.ops.find(
+    (entry) =>
+      entry.pagePath === pagePath && entry.op.type === "html" && entry.op.nodeId === nodeId,
+  );
+  if (before === after) {
+    if (!existing) {
+      updateDirtyUi();
+      return;
+    }
+    const previous = existing.op;
+    const key = opKey(previous);
+    removeOpsFor(pagePath, key);
+    const history: HistoryEntry = {
+      label: "Format text",
+      assetPaths: [],
+      undo: () => {
+        if (state.ops.some((entry) => entry.pagePath === pagePath && opKey(entry.op) === key)) {
+          return;
+        }
+        replacePendingOp(pagePath, key, previous);
+        applyOpToDom(pagePath, previous);
+        updateDirtyUi();
+      },
+      redo: () => {
+        if (state.ops.some((entry) => entry.pagePath === pagePath && opKey(entry.op) === key)) {
+          return;
+        }
+        replacePendingOp(pagePath, key, null);
+        revertOpInDom(pagePath, previous);
+        updateDirtyUi();
+      },
+    };
+    if (activeChangeSet) activeChangeSet.entries.push(history);
+    else pushHistory(history);
+    updateDirtyUi();
+    return;
+  }
+  applyOp(pagePath, { type: "html", nodeId, value: after }, "Format text");
+}
+
 function updateFormatting(
   nodeId: string,
   format: Formatting,
@@ -3291,68 +3352,41 @@ function updateFormatting(
   if (!meta || (meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
     throw new Error(`Unknown or non-text-editable Xyle node ${nodeId}`);
   }
-  if (meta.segmentCount !== 1 && !selection) {
-    throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
-  }
   const element = currentNodeElement(nodeId);
   if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
-  if (selection && [...element.children].some((child) => child.tagName !== "BR")) {
-    throw new Error("Select plain text inside one simple text region");
-  }
-  const hasWholeRegionFormat = state.ops.some(
-    (entry) =>
-      entry.pagePath === current.pagePath &&
-      entry.op.type === "format" &&
-      entry.op.nodeId === nodeId &&
-      entry.op.start === undefined,
-  );
-  const hasSelectionFormat = state.ops.some(
-    (entry) =>
-      entry.pagePath === current.pagePath &&
-      entry.op.type === "format" &&
-      entry.op.nodeId === nodeId &&
-      entry.op.start !== undefined,
-  );
-  if (selection ? hasWholeRegionFormat : hasSelectionFormat) {
-    throw new Error("Whole-region and selection formatting cannot be combined safely");
+  const inlineFormat = format as "bold" | "italic" | "underline";
+  if (!(inlineFormat === "bold" || inlineFormat === "italic" || inlineFormat === "underline")) {
+    throw new Error("That inline format is not supported");
   }
 
   const identity = segmentIdentity(current.pagePath, nodeId);
-  if (!originalMarkups.has(identity)) originalMarkups.set(identity, element.innerHTML);
-  if (!originalFormats.has(identity)) originalFormats.set(identity, formatOf(element));
-  const previous = selection
-    ? undefined
-    : state.ops.find(
-        (entry) =>
-          entry.pagePath === current.pagePath &&
-          entry.op.type === "format" &&
-          entry.op.nodeId === nodeId,
-      );
-  if (previous) restoreOriginalMarkup(current.pagePath, nodeId);
-  const operation: Op = {
-    type: "format",
-    nodeId,
-    value: format,
-    ...(selection
-      ? {
-          start: selection.start,
-          end: selection.end,
-          sourceStart: selection.sourceStart,
-          sourceEnd: selection.sourceEnd,
-        }
-      : {}),
-  };
-  const applied = selection
-    ? applyFormatRangeToElement(element, selection.range, format)
-    : applyFormatToDom(current.pagePath, operation);
-  if (!applied) throw new Error("That selection cannot be formatted safely");
-  applyOp(current.pagePath, operation, "Format text");
-  if (selection && session) {
+  if (!originalMarkups.has(identity)) originalMarkups.set(identity, cleanInlineHtml(element));
+  const win = previewDoc()?.defaultView;
+  const activeSelection = win?.getSelection();
+  if (!activeSelection) throw new Error("The preview selection is unavailable");
+  activeSelection.removeAllRanges();
+  if (selection) activeSelection.addRange(selection.range.cloneRange());
+  else {
+    const range = element.ownerDocument.createRange();
+    range.selectNodeContents(element);
+    activeSelection.addRange(range);
+  }
+  if (!toggleInlineFormat(element, activeSelection, inlineFormat)) {
+    throw new Error("That selection cannot be formatted safely");
+  }
+  const html = cleanInlineHtml(element);
+  const original = originalMarkups.get(identity) ?? "";
+  reconcileInlineHtml(current.pagePath, nodeId, original, html);
+  if (session) {
     const baselineClone = previewDoc()!.createDocumentFragment();
     for (const child of Array.from(element.childNodes)) baselineClone.append(child.cloneNode(true));
     session.baselineClone = baselineClone;
+    session.baselineValues = collectSegments(element).map((pair) => pair.value);
+    session.baselineKeys = collectSegments(element).map((pair) => pair.key);
     session.baselineSkeleton = skeleton(element);
+    session.baselineAuthoredBreakCount = authoredBreakCount(element);
   }
+  scheduleFormatTools();
   return { id: nodeId, pagePath: current.pagePath, format };
 }
 
@@ -3850,6 +3884,8 @@ function opLabel(op: Op): string {
       return "Formatting";
     case "formatBlock":
       return "Heading level";
+    case "html":
+      return "Formatting";
   }
 }
 
@@ -3863,6 +3899,9 @@ function originalValue(pagePath: string, op: Op): string {
   if (op.type === "formatBlock") {
     const original = originalBlockTags.get(segmentIdentity(pagePath, op.nodeId));
     return original ? blockFormattingFor(original) : "paragraph";
+  }
+  if (op.type === "html") {
+    return originalMarkups.get(segmentIdentity(pagePath, op.nodeId)) ?? "";
   }
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
@@ -4078,9 +4117,9 @@ function openChangesDrawer(): void {
       const undoButton = document.createElement("button");
       undoButton.type = "button";
       undoButton.innerHTML =
-        '<svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a7 7 0 0 1 7 7"/></svg><span>Undo</span>';
+        '<svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a7 7 0 0 1 7 7"/></svg><span>Revert</span>';
       undoButton.className = "xyle-undo-button";
-      undoButton.setAttribute("aria-label", `Undo ${opLabel(entry.op)} change on ${pagePath}`);
+      undoButton.setAttribute("aria-label", `Revert ${opLabel(entry.op)} change on ${pagePath}`);
       undoButton.addEventListener("click", (event) => {
         event.stopPropagation();
         undoOp(index);
@@ -4133,6 +4172,11 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) applyFormatOperationToElement(el, op);
     return;
   }
+  if (op.type === "html") {
+    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
+    if (el) replaceElementContentsFromHtml(el, op.value);
+    return;
+  }
   if (op.type === "formatBlock") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     if (el) applyBlockFormatToDom(pagePath, op);
@@ -4174,6 +4218,8 @@ function revertOpInDom(pagePath: string, op: Op): void {
     }
   } else if (op.type === "formatBlock") {
     restoreOriginalBlockFormat(pagePath, op.nodeId);
+  } else if (op.type === "html") {
+    restoreOriginalMarkup(pagePath, op.nodeId);
   } else if (op.type === "href" || op.type === "src" || op.type === "alt") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     const attr = op.type;
@@ -4199,13 +4245,6 @@ function attrIdentity(pagePath: string, id: string, attr: string): string {
 }
 function formatTag(format: "bold" | "italic" | "underline"): "strong" | "em" | "u" {
   return format === "bold" ? "strong" : format === "italic" ? "em" : "u";
-}
-function formatOf(el: HTMLElement): "bold" | "italic" | "underline" | "none" {
-  const child = el.firstElementChild;
-  if (!child || child.parentElement !== el) return "none";
-  const marker = child.getAttribute("data-xyle-format");
-  if (marker === "bold" || marker === "italic" || marker === "underline") return marker;
-  return "none";
 }
 function applyFormatToElement(el: HTMLElement, format: "bold" | "italic" | "underline"): void {
   const existing = el.firstElementChild;
@@ -4290,16 +4329,6 @@ function applyFormatOperationToElement(
   applyFormatToElement(el, op.value);
   return true;
 }
-function applyFormatToDom(pagePath: string, op: Extract<Op, { type: "format" }>): boolean {
-  if (pagePath !== state.current?.pagePath) return false;
-  const el = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${op.nodeId}"]`);
-  if (!el) return false;
-  if (!applyFormatOperationToElement(el, op)) {
-    flash("That selection cannot be formatted safely.");
-    return false;
-  }
-  return true;
-}
 function replaceBlockElement(el: HTMLElement, tag: BlockTag): void {
   const replacement = el.ownerDocument.createElement(tag);
   for (const attribute of Array.from(el.attributes)) {
@@ -4323,6 +4352,13 @@ function restoreOriginalBlockFormat(pagePath: string, nodeId: string): void {
   const el = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${nodeId}"]`);
   if (tag && el && el.tagName.toLowerCase() !== tag) replaceBlockElement(el, tag);
 }
+function replaceElementContentsFromHtml(el: HTMLElement, markup: string): void {
+  const parsed = new DOMParser().parseFromString(`<body>${markup}</body>`, "text/html");
+  el.replaceChildren(
+    ...Array.from(parsed.body.childNodes).map((node) => el.ownerDocument.importNode(node, true)),
+  );
+}
+
 function restoreOriginalMarkup(pagePath: string, nodeId: string): void {
   if (pagePath !== state.current?.pagePath) return;
   const markup = originalMarkups.get(segmentIdentity(pagePath, nodeId));
@@ -4409,6 +4445,9 @@ function restoreOpsIntoDom(): void {
       if (el) applyFormatOperationToElement(el, op);
     } else if (op.type === "formatBlock") {
       applyBlockFormatToDom(pagePath, op);
+    } else if (op.type === "html") {
+      const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
+      if (el) replaceElementContentsFromHtml(el, op.value);
     } else {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) {

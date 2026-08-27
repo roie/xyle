@@ -52,7 +52,7 @@ export interface FormattingUpdateResult {
 export interface ChangeInfo {
   changeId: string;
   elementId: string;
-  type: "text" | "href" | "src" | "alt" | "format" | "formatBlock";
+  type: "text" | "href" | "src" | "alt" | "format" | "formatBlock" | "html";
   before: string;
   after: string;
   changeSetId?: string;

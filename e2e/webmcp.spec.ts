@@ -152,8 +152,21 @@ test.describe("WebMCP editor tools", () => {
       heading!.preview,
     );
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
-      { type: "format", before: "none", after: "bold" },
+      {
+        type: "html",
+        before: "Plumbing you can depend on",
+        after: "<strong>Plumbing you can depend on</strong>",
+      },
     ]);
+    await expect(
+      invokeTool(page, "update_formatting", { id: heading!.id, format: "bold" }),
+    ).resolves.toMatchObject({ id: heading!.id, format: "bold" });
+    await expect(headingLocator.locator('strong[data-xyle-format="bold"]')).toHaveCount(0);
+    await expect(invokeTool(page, "list_changes", {})).resolves.toEqual([]);
+    await expect(
+      invokeTool(page, "update_formatting", { id: heading!.id, format: "bold" }),
+    ).resolves.toMatchObject({ id: heading!.id, format: "bold" });
+    await expect(invokeTool(page, "list_changes", {})).resolves.toHaveLength(1);
 
     await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
       changeId: "change-1",
@@ -210,7 +223,7 @@ test.describe("WebMCP editor tools", () => {
     const ledeLocator = page
       .frameLocator("#xyle-preview")
       .locator(`[data-xyle-node="${lede!.id}"]`);
-    await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toContainText(
+    await expect(ledeLocator.locator('strong[data-xyle-format="bold"]').first()).toContainText(
       "Helping Edmonton",
     );
     await ledeLocator.click();
@@ -234,7 +247,7 @@ test.describe("WebMCP editor tools", () => {
     await page.keyboard.insertText("!");
     await clickOutsideToCommit(page);
     await expect(ledeLocator).toContainText("wait.!");
-    expect(await opsCount(page)).toBe(3);
+    expect(await opsCount(page)).toBe(2);
   });
 
   test("keeps partial formatting editable after a later text edit", async ({
@@ -251,9 +264,13 @@ test.describe("WebMCP editor tools", () => {
       type: string;
       preview: string;
     }>;
+    const heading = content.find(
+      (item) => item.type === "text" && item.preview === "Plumbing you can depend on",
+    );
     const lede = content.find(
       (item) => item.type === "text" && item.preview.includes("Serving Edmonton"),
     );
+    expect(heading?.id).toBeTruthy();
     expect(lede?.id).toBeTruthy();
 
     await editNode(page, lede!.id);
@@ -277,18 +294,116 @@ test.describe("WebMCP editor tools", () => {
     }, lede!.id);
     const formatTools = page.locator(".xyle-format-tools");
     await expect(formatTools).toBeVisible();
+    const placement = await page.evaluate((id) => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const element = frame.contentDocument!.querySelector<HTMLElement>(
+        `[data-xyle-node="${id}"]`,
+      )!;
+      const frameRect = frame.getBoundingClientRect();
+      const elementRect = element.getBoundingClientRect();
+      const toolRect = document.querySelector(".xyle-format-tools")!.getBoundingClientRect();
+      const top = frameRect.top + elementRect.top;
+      const bottom = frameRect.top + elementRect.bottom;
+      return toolRect.bottom <= top || toolRect.top >= bottom;
+    }, lede!.id);
+    expect(placement).toBe(true);
     await formatTools.getByRole("button", { name: "Bold" }).click();
+    await expect(formatTools.getByRole("button", { name: "Bold" })).toHaveAttribute(
+      "data-state",
+      "on",
+    );
 
     const ledeLocator = page
       .frameLocator("#xyle-preview")
       .locator(`[data-xyle-node="${lede!.id}"]`);
     await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toHaveText("areas");
+    await expect(
+      page.evaluate(() =>
+        document.querySelector("#xyle-preview")
+          ? (document.querySelector("#xyle-preview") as HTMLIFrameElement)
+              .contentWindow!.getSelection()!
+              .toString()
+          : "",
+      ),
+    ).resolves.toBe("areas");
     await clickOutsideToCommit(page);
+    await editNode(page, heading!.id);
+    await focusCaret(page, heading!.id, "end");
+    await page.keyboard.insertText("?");
+    await clickOutsideToCommit(page);
+
     await editNode(page, lede!.id);
-    await focusCaret(page, lede!.id, "end");
-    await page.keyboard.insertText("!");
+    await page.evaluate((id) => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const element = frame.contentDocument!.querySelector<HTMLElement>(
+        `[data-xyle-node="${id}"]`,
+      )!;
+      const text = [...element.querySelectorAll("strong")]
+        .flatMap((strong) => [...strong.childNodes])
+        .find(
+          (node): node is Text => node.nodeType === Node.TEXT_NODE && node.textContent === "areas",
+        )!;
+      const range = frame.contentDocument!.createRange();
+      range.selectNodeContents(text);
+      const selection = frame.contentWindow!.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      element.focus();
+    }, lede!.id);
+    await expect(formatTools).toBeVisible();
+    await formatTools.getByRole("button", { name: "Bold" }).click();
     await clickOutsideToCommit(page);
-    await expect(ledeLocator).toContainText("wait.!");
+    await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toHaveCount(0);
+    await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
+      { type: "text", after: "Plumbing you can depend on?" },
+    ]);
+  });
+
+  test("combines overlapping inline formats", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const lede = content.find(
+      (item) => item.type === "text" && item.preview.includes("Serving Edmonton"),
+    );
+    expect(lede?.id).toBeTruthy();
+    await editNode(page, lede!.id);
+    await page.evaluate((id) => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const element = frame.contentDocument!.querySelector<HTMLElement>(
+        `[data-xyle-node="${id}"]`,
+      )!;
+      const text = [...element.childNodes].find(
+        (node): node is Text =>
+          node.nodeType === Node.TEXT_NODE && !!node.textContent?.includes("areas"),
+      )!;
+      const start = text.data.indexOf("areas");
+      const range = frame.contentDocument!.createRange();
+      range.setStart(text, start);
+      range.setEnd(text, start + "areas".length);
+      const selection = frame.contentWindow!.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      element.focus();
+    }, lede!.id);
+    const formatTools = page.locator(".xyle-format-tools");
+    await expect(formatTools).toBeVisible();
+    await formatTools.getByRole("button", { name: "Bold" }).click();
+    await formatTools.getByRole("button", { name: "Italic" }).click();
+    await formatTools.getByRole("button", { name: "Underline" }).click();
+    const ledeLocator = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${lede!.id}"]`);
+    await expect(ledeLocator.locator('strong[data-xyle-format="bold"] em u')).toHaveText("areas");
+    await clickOutsideToCommit(page);
+    await expect(invokeTool(page, "list_changes", {})).resolves.toHaveLength(1);
   });
 
   test("combines human and agent edits before human publishing", async ({ page, browserName }) => {
