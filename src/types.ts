@@ -22,6 +22,46 @@ export interface XyleConfig {
 export type TextFormat = "bold" | "italic" | "underline";
 export type BlockFormat = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface CropRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type MediaSource =
+  | { kind: "existing"; src: string }
+  | {
+      kind: "staged";
+      assetId: string;
+      previewUrl: string;
+      mime: string;
+      width: number;
+      height: number;
+    };
+
+export interface MediaState {
+  source: MediaSource;
+  alt: { present: boolean; value: string };
+  crop: CropRect | null;
+  focus: Point | null;
+  framing?: { fit: "cover" | "contain" };
+}
+
+export interface MediaCapabilities {
+  replace: boolean;
+  alt: boolean;
+  crop: boolean;
+  focus: boolean;
+  cropReason?: string;
+  focusReason?: string;
+}
+
 export type PageOperation =
   | { type: "text"; nodeId: string; value: string }
   | {
@@ -35,9 +75,17 @@ export type PageOperation =
     }
   | { type: "formatBlock"; nodeId: string; value: BlockFormat }
   | { type: "html"; nodeId: string; value: string }
+  | { type: "media"; nodeId: string; value: MediaState }
   | { type: "lineBreak"; nodeId: string; position: number }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string }
+  | {
+      type: "imageStyle";
+      nodeId: string;
+      fit: "cover" | "contain";
+      focalX: number;
+      focalY: number;
+    }
   | { type: "alt"; nodeId: string; value: string };
 
 export interface PageChange {
@@ -121,6 +169,7 @@ export interface PreviewNode {
   multiline?: boolean;
   textEditable?: boolean;
   segmentCount?: number;
+  mediaCapabilities?: MediaCapabilities;
 }
 
 export interface PreparedPreview {

@@ -15,8 +15,17 @@ import {
   type LinkUpdateResult,
   type TextUpdateResult,
   type UndoResult,
+  type MediaPatchInput,
+  type MediaUpdateResult,
 } from "./webmcp.ts";
 import { cleanInlineHtml, inlineFormatState, toggleInlineFormat } from "./formatting.ts";
+import {
+  clampUnit,
+  mediaSourcePath,
+  mediaStatesEqual,
+  normalizeMediaState,
+} from "./media-state.ts";
+import type { MediaCapabilities, MediaState, Point, CropRect } from "./types.ts";
 
 const editorStyles = `
 @layer xyle.tokens {
@@ -311,6 +320,75 @@ const editorStyles = `
     background: #00000099;
     backdrop-filter: blur(2px);
   }
+  #xyle-overlay-root .xyle-inline-media-editor {
+    all: initial;
+    position: fixed !important;
+    z-index: 20 !important;
+    display: grid !important;
+    gap: 0.65rem !important;
+    box-sizing: border-box !important;
+    color: #eef3ec !important;
+    font: 500 13px / 1.4 var(--xyle-font-ui) !important;
+    pointer-events: none !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor.xyle-on-canvas {
+    max-width: none !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-media-editor-panel {
+    display: grid !important;
+    gap: 0.65rem !important;
+    box-sizing: border-box !important;
+    max-width: calc(100vw - 1.5rem) !important;
+    max-height: calc(100vh - 1.5rem) !important;
+    padding: 0.8rem !important;
+    overflow: auto !important;
+    border: 1px solid #a1b69a !important;
+    border-radius: 10px !important;
+    background: #151815 !important;
+    box-shadow: 0 14px 36px #000b !important;
+    pointer-events: auto !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-heading {
+    display: grid !important;
+    gap: 0.2rem !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-label {
+    display: grid !important;
+    gap: 0.35rem !important;
+    color: #aab6aa !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-input {
+    width: 100% !important;
+    box-sizing: border-box !important;
+    padding: 0.45rem !important;
+    border: 1px solid #435047 !important;
+    border-radius: 5px !important;
+    background: #10130f !important;
+    color: #eef3ec !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-actions {
+    display: flex !important;
+    justify-content: flex-end !important;
+    gap: 0.4rem !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-button {
+    min-height: 2rem !important;
+    padding: 0 0.65rem !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-stage {
+    min-height: 0 !important;
+    height: var(--xyle-crop-height, 15rem) !important;
+    aspect-ratio: var(--xyle-crop-aspect, 16 / 9) !important;
+    pointer-events: auto !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor.xyle-on-canvas .xyle-crop-stage {
+    background: transparent !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-stage img {
+    height: 100% !important;
+  }
   .xyle-dialog-form {
     display: grid;
     gap: 0.75rem;
@@ -355,11 +433,68 @@ const editorStyles = `
     outline: 2px solid var(--xyle-accent-soft);
     outline-offset: 1px;
   }
+  .xyle-crop-stage {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-height: 15rem;
+    overflow: hidden;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: #0b0e0c;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  .xyle-crop-stage img {
+    display: block;
+    width: 100%;
+    height: 15rem;
+    object-fit: cover;
+    transform-origin: center;
+    user-select: none;
+    pointer-events: none;
+  }
+  .xyle-focal-target {
+    position: absolute;
+    width: 1.25rem;
+    height: 1.25rem;
+    padding: 0;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: #a1b69a66;
+    box-shadow: 0 0 0 1px #121512, 0 2px 8px #0009;
+    transform: translate(-50%, -50%);
+    cursor: grab;
+  }
+  .xyle-focal-target:active {
+    cursor: grabbing;
+  }
+  .xyle-range-value {
+    color: var(--xyle-ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .xyle-dialog-range {
+    width: 100%;
+    accent-color: #a1b69a;
+  }
   .xyle-dialog-error {
     min-height: 1.1rem;
     margin: 0;
     color: var(--xyle-danger);
     font-size: 12px;
+  }
+  .xyle-dialog-check {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: var(--xyle-muted);
+    font-size: 12px;
+  }
+  .xyle-dialog-check input {
+    accent-color: #a1b69a;
+  }
+  dialog.xyle-alt-popover::backdrop {
+    background: transparent;
   }
   .xyle-dialog-actions {
     display: flex;
@@ -1152,6 +1287,7 @@ interface NodeMeta {
   multiline?: boolean;
   textEditable?: boolean;
   segmentCount?: number;
+  mediaCapabilities?: MediaCapabilities;
 }
 
 interface PageData {
@@ -1174,8 +1310,16 @@ type Op =
     }
   | { type: "formatBlock"; nodeId: string; value: BlockTag }
   | { type: "html"; nodeId: string; value: string }
+  | { type: "media"; nodeId: string; value: MediaState }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string; assetName?: string }
+  | {
+      type: "imageStyle";
+      nodeId: string;
+      fit: "cover" | "contain";
+      focalX: number;
+      focalY: number;
+    }
   | { type: "alt"; nodeId: string; value: string };
 
 interface PageOps {
@@ -1276,6 +1420,7 @@ async function boot(): Promise<void> {
     applyChangeSet,
     undoChangeSet,
     replaceAsset,
+    updateMedia,
     updateFormatting,
     updateText,
     updateLink,
@@ -1291,6 +1436,7 @@ async function boot(): Promise<void> {
 }
 
 async function loadPage(pagePath: string, opts: { pushHistory: boolean }): Promise<void> {
+  activeMediaEditor?.();
   const res = await api(`/__xyle/api/page?path=${encodeURIComponent(pagePath)}`);
   if (!res.ok) {
     flash("That page could not be loaded.");
@@ -2485,6 +2631,12 @@ function openHrefDialog(el: HTMLElement, meta: NodeMeta): void {
       }
     }
     dialog.remove();
+    closeContextTools(false);
+    shellOverlay()
+      ?.querySelectorAll(".xyle-img-tools")
+      .forEach((tools) => {
+        tools.remove();
+      });
     el.focus();
   });
   dialog.querySelector("form")!.addEventListener("submit", (event) => {
@@ -2530,6 +2682,7 @@ function isSafeUrl(url: string): boolean {
 /* ---------- images & media ---------- */
 
 let selectedImage: { el: HTMLImageElement; meta: NodeMeta } | null = null;
+let activeMediaEditor: (() => void) | null = null;
 let mediaMutationGeneration = 0;
 
 function wireImage(el: HTMLElement, meta: NodeMeta): void {
@@ -2550,6 +2703,367 @@ function wireImage(el: HTMLElement, meta: NodeMeta): void {
   });
 }
 
+function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, Math.round(value)));
+}
+
+function mediaStateFromImage(img: HTMLImageElement): MediaState {
+  const objectFit = img.style.objectFit;
+  const objectPosition = img.style.objectPosition;
+  const position = [...objectPosition.matchAll(/(-?\d+(?:\.\d+)?)%/g)].map((match) =>
+    Number(match[1]),
+  );
+  return normalizeMediaState({
+    source: { kind: "existing", src: img.getAttribute("src") ?? "" },
+    alt: { present: img.hasAttribute("alt"), value: img.getAttribute("alt") ?? "" },
+    crop: null,
+    focus:
+      position.length >= 2
+        ? { x: clampUnit((position[0] ?? 50) / 100), y: clampUnit((position[1] ?? 50) / 100) }
+        : null,
+    ...(objectFit === "cover" || objectFit === "contain" ? { framing: { fit: objectFit } } : {}),
+  });
+}
+
+function rememberOriginalMedia(
+  pagePath: string,
+  nodeId: string,
+  img: HTMLImageElement,
+): MediaState {
+  const key = segmentIdentity(pagePath, nodeId);
+  const existing = originalMedia.get(key);
+  if (existing) return existing;
+  const state = mediaStateFromImage(img);
+  originalMedia.set(key, state);
+  return state;
+}
+
+function currentMediaState(pagePath: string, nodeId: string, img: HTMLImageElement): MediaState {
+  rememberOriginalMedia(pagePath, nodeId, img);
+  const pending = state.ops.find(
+    (entry) =>
+      entry.pagePath === pagePath && entry.op.type === "media" && entry.op.nodeId === nodeId,
+  );
+  return pending?.op.type === "media" ? pending.op.value : mediaStateFromImage(img);
+}
+
+interface MediaPatch {
+  source?: MediaState["source"];
+  alt?: MediaState["alt"];
+  crop?: CropRect | null;
+  focus?: Point | null;
+  framing?: MediaState["framing"] | null;
+}
+
+function applyMediaPatch(
+  pagePath: string,
+  nodeId: string,
+  img: HTMLImageElement,
+  patch: MediaPatch,
+  label: string,
+): void {
+  const original = rememberOriginalMedia(pagePath, nodeId, img);
+  const current = currentMediaState(pagePath, nodeId, img);
+  const next = normalizeMediaState({
+    source: patch.source ?? current.source,
+    alt: patch.alt ?? current.alt,
+    crop: patch.crop === undefined ? current.crop : patch.crop,
+    focus: patch.focus === undefined ? current.focus : patch.focus,
+    ...(patch.framing === undefined
+      ? current.framing
+        ? { framing: current.framing }
+        : {}
+      : patch.framing
+        ? { framing: patch.framing }
+        : {}),
+  });
+  if (!isSafeUrl(mediaSourcePath(next.source))) throw new Error("Unsafe media source rejected");
+  const previous = state.ops.find(
+    (entry) =>
+      entry.pagePath === pagePath && entry.op.type === "media" && entry.op.nodeId === nodeId,
+  )?.op;
+  const op: Op = { type: "media", nodeId, value: next };
+  const key = opKey(op);
+  replacePendingOp(pagePath, key, mediaStatesEqual(next, original) ? null : op);
+  applyMediaStateToDom(img, mediaStatesEqual(next, original) ? original : next);
+  const entry: HistoryEntry = {
+    label,
+    assetPaths: assetPathsFor(previous, op),
+    undo: () => {
+      replacePendingOp(pagePath, key, previous ?? null);
+      applyMediaStateToDom(img, previous?.type === "media" ? previous.value : original);
+      updateDirtyUi();
+    },
+    redo: () => {
+      replacePendingOp(pagePath, key, mediaStatesEqual(next, original) ? null : op);
+      applyMediaStateToDom(img, mediaStatesEqual(next, original) ? original : next);
+      updateDirtyUi();
+    },
+  };
+  if (activeChangeSet) activeChangeSet.entries.push(entry);
+  else pushHistory(entry);
+  updateDirtyUi();
+}
+
+function cropRectForFrame(
+  img: HTMLImageElement,
+  stage: HTMLElement,
+  zoom: number,
+  focus: Point,
+): CropRect {
+  const sourceAspect =
+    img.naturalWidth > 0 && img.naturalHeight > 0 ? img.naturalWidth / img.naturalHeight : 1;
+  const frameAspect =
+    stage.clientWidth > 0 && stage.clientHeight > 0
+      ? stage.clientWidth / stage.clientHeight
+      : sourceAspect;
+  const baseWidth = sourceAspect > frameAspect ? frameAspect / sourceAspect : 1;
+  const baseHeight = sourceAspect > frameAspect ? 1 : sourceAspect / frameAspect;
+  const width = Math.min(1, baseWidth / Math.max(1, zoom));
+  const height = Math.min(1, baseHeight / Math.max(1, zoom));
+  return {
+    x: Math.min(1 - width, Math.max(0, focus.x - width / 2)),
+    y: Math.min(1 - height, Math.max(0, focus.y - height / 2)),
+    width,
+    height,
+  };
+}
+
+function openImageCropEditor(
+  img: HTMLImageElement,
+  meta: NodeMeta,
+  mode: "crop" | "focus" = "crop",
+): void {
+  activeMediaEditor?.();
+  const media = currentMediaState(meta.pagePath, meta.id, img);
+  const computed = img.ownerDocument.defaultView?.getComputedStyle(img);
+  const currentFit =
+    media.framing?.fit ?? (computed?.objectFit === "contain" ? "contain" : "cover");
+  const currentFocus =
+    media.focus ??
+    (media.crop
+      ? { x: media.crop.x + media.crop.width / 2, y: media.crop.y + media.crop.height / 2 }
+      : { x: 0.5, y: 0.5 });
+  const imageRect = previewElementRect(img);
+  const isSmall = imageRect.width < 180 || imageRect.height < 140;
+  const aspect =
+    imageRect.width > 0 && imageRect.height > 0 ? imageRect.width / imageRect.height : 1;
+  const inline = !isSmall;
+  const width = inline ? imageRect.width : Math.min(420, window.innerWidth - 24);
+  const height = inline
+    ? imageRect.height
+    : Math.min(width / aspect, window.innerHeight * (mode === "focus" ? 0.5 : 0.32));
+  const originalImageStyles = {
+    height: img.style.height,
+    objectFit: img.style.objectFit,
+    objectPosition: img.style.objectPosition,
+    transform: img.style.transform,
+    transformOrigin: img.style.transformOrigin,
+    clipPath: img.style.clipPath,
+    visibility: img.style.visibility,
+    width: img.style.width,
+  };
+  const editor = document.createElement("div");
+  editor.className = `xyle-inline-media-editor${inline ? " xyle-on-canvas" : ""}`;
+  editor.setAttribute("role", "group");
+  editor.setAttribute("aria-label", `${mode === "focus" ? "Image focus" : "Image crop"} editor`);
+  editor.style.left = `${inline ? imageRect.left : Math.max(12, Math.min(window.innerWidth - width - 12, imageRect.left))}px`;
+  const maximumTop = Math.max(12, window.innerHeight - height - (mode === "focus" ? 220 : 390));
+  editor.style.top = `${inline ? imageRect.top : Math.max(12, Math.min(maximumTop, imageRect.top))}px`;
+  editor.style.width = `${Math.max(180, width)}px`;
+  editor.style.setProperty("--xyle-crop-aspect", String(aspect));
+  editor.style.setProperty("--xyle-crop-height", `${height}px`);
+  editor.replaceChildren(
+    document.createRange().createContextualFragment(`
+    <div class="xyle-crop-stage" role="application" aria-label="Image crop preview">
+      <img alt="" src="">
+      <button type="button" class="xyle-focal-target" aria-label="Focal point. Use arrow keys to move."></button>
+    </div>
+    <div class="xyle-media-editor-panel">
+      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">${mode === "focus" ? "Image focus" : "Image framing"}</span><strong id="xyle-crop-dialog-title">${mode === "focus" ? "Focus point" : "Crop & focal point"}</strong></div>
+      <label class="xyle-dialog-label" data-frame-control>Frame
+        <select class="xyle-dialog-input" name="fit">
+          <option value="cover">Crop to fill</option>
+          <option value="contain">Show full image</option>
+        </select>
+      </label>
+      <label class="xyle-dialog-label" data-zoom-control>Zoom <output class="xyle-range-value" for="xyle-zoom"></output>
+        <input id="xyle-zoom" class="xyle-dialog-range" type="range" min="1" max="3" step="0.01" value="1">
+      </label>
+      <label class="xyle-dialog-label">Horizontal focus <output class="xyle-range-value" for="xyle-focal-x"></output>
+        <input id="xyle-focal-x" class="xyle-dialog-range" type="range" min="0" max="100" step="1" value="50">
+      </label>
+      <label class="xyle-dialog-label">Vertical focus <output class="xyle-range-value" for="xyle-focal-y"></output>
+        <input id="xyle-focal-y" class="xyle-dialog-range" type="range" min="0" max="100" step="1" value="50">
+      </label>
+      <div class="xyle-dialog-actions">
+        <button class="xyle-dialog-button" type="button" data-reset>Reset</button>
+        <button class="xyle-dialog-button" type="button" data-cancel>Cancel</button>
+        <button class="xyle-dialog-button xyle-dialog-button--primary" type="button" data-done>Done</button>
+      </div>
+    </div>`),
+  );
+  const stage = editor.querySelector(".xyle-crop-stage") as HTMLElement;
+  const preview = stage.querySelector("img") as HTMLImageElement;
+  const target = stage.querySelector(".xyle-focal-target") as HTMLButtonElement;
+  const fit = editor.querySelector("select[name=fit]") as HTMLSelectElement;
+  const zoomInput = editor.querySelector("#xyle-zoom") as HTMLInputElement;
+  const xInput = editor.querySelector("#xyle-focal-x") as HTMLInputElement;
+  const yInput = editor.querySelector("#xyle-focal-y") as HTMLInputElement;
+  const zoomOutput = editor.querySelector("output[for=xyle-zoom]") as HTMLOutputElement;
+  if (mode === "focus") {
+    editor.querySelector<HTMLElement>("[data-frame-control]")?.setAttribute("hidden", "");
+    editor.querySelector<HTMLElement>("[data-zoom-control]")?.setAttribute("hidden", "");
+  }
+  const xOutput = editor.querySelector("output[for=xyle-focal-x]") as HTMLOutputElement;
+  const yOutput = editor.querySelector("output[for=xyle-focal-y]") as HTMLOutputElement;
+  preview.src =
+    media.source.kind === "staged" ? media.source.previewUrl : img.currentSrc || img.src;
+  if (inline) preview.remove();
+  fit.value = currentFit;
+  xInput.value = String(Math.round(currentFocus.x * 100));
+  yInput.value = String(Math.round(currentFocus.y * 100));
+  const setFocus = (x: number, y: number): void => {
+    xInput.value = String(clampPercent(x * 100));
+    yInput.value = String(clampPercent(y * 100));
+    updatePreview();
+  };
+  const updatePreview = (): void => {
+    const x = clampUnit(clampPercent(Number(xInput.value)) / 100);
+    const y = clampUnit(clampPercent(Number(yInput.value)) / 100);
+    const zoom = Math.max(1, Number(zoomInput.value));
+    const objectFit = fit.value as "cover" | "contain";
+    const objectPosition = `${x * 100}% ${y * 100}%`;
+    if (inline) {
+      img.style.width = `${imageRect.width}px`;
+      img.style.height = `${imageRect.height}px`;
+      img.style.objectFit = objectFit;
+      img.style.objectPosition = objectPosition;
+      img.style.transform = `scale(${zoom})`;
+      img.style.transformOrigin = objectPosition;
+      img.style.clipPath = "inset(0)";
+    } else {
+      preview.style.objectFit = objectFit;
+      preview.style.objectPosition = objectPosition;
+      preview.style.transform = `scale(${zoom})`;
+    }
+    target.style.left = `${x * 100}%`;
+    target.style.top = `${y * 100}%`;
+    zoomOutput.value = `${zoom.toFixed(2)}×`;
+    xOutput.value = `${Math.round(x * 100)}%`;
+    yOutput.value = `${Math.round(y * 100)}%`;
+  };
+  let editorClosed = false;
+  const close = (save: boolean): void => {
+    if (editorClosed) return;
+    editorClosed = true;
+    if (activeMediaEditor === close) activeMediaEditor = null;
+    if (save) {
+      const focus = {
+        x: clampUnit(clampPercent(Number(xInput.value)) / 100),
+        y: clampUnit(clampPercent(Number(yInput.value)) / 100),
+      };
+      const crop =
+        mode === "crop"
+          ? fit.value === "cover"
+            ? cropRectForFrame(img, stage, Number(zoomInput.value), focus)
+            : null
+          : media.crop;
+      applyMediaPatch(
+        meta.pagePath,
+        meta.id,
+        img,
+        mode === "focus"
+          ? { focus }
+          : { crop, focus, framing: { fit: fit.value as "cover" | "contain" } },
+        mode === "focus" ? "Adjust image focus" : "Adjust image framing",
+      );
+    }
+    img.style.height = originalImageStyles.height;
+    if (!save) {
+      img.style.objectFit = originalImageStyles.objectFit;
+      img.style.objectPosition = originalImageStyles.objectPosition;
+    }
+    img.style.transform = originalImageStyles.transform;
+    img.style.transformOrigin = originalImageStyles.transformOrigin;
+    img.style.clipPath = originalImageStyles.clipPath;
+    img.style.visibility = originalImageStyles.visibility;
+    img.style.width = originalImageStyles.width;
+    editor.remove();
+    img.focus();
+  };
+  fit.addEventListener("input", updatePreview);
+  zoomInput.addEventListener("input", updatePreview);
+  xInput.addEventListener("input", updatePreview);
+  yInput.addEventListener("input", updatePreview);
+  editor.querySelector<HTMLButtonElement>("[data-reset]")?.addEventListener("click", () => {
+    fit.value = "cover";
+    zoomInput.value = "1";
+    setFocus(0.5, 0.5);
+  });
+  editor
+    .querySelector<HTMLButtonElement>("[data-cancel]")
+    ?.addEventListener("click", () => close(false));
+  editor
+    .querySelector<HTMLButtonElement>("[data-done]")
+    ?.addEventListener("click", () => close(true));
+  editor.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close(false);
+    }
+  });
+  target.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 0.05 : 0.01;
+    const x = clampUnit(
+      Number(xInput.value) / 100 +
+        (event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0),
+    );
+    const y = clampUnit(
+      Number(yInput.value) / 100 +
+        (event.key === "ArrowDown" ? step : event.key === "ArrowUp" ? -step : 0),
+    );
+    if (["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault();
+      setFocus(x, y);
+    }
+  });
+  let dragging = false;
+  stage.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    dragging = true;
+    stage.setPointerCapture(event.pointerId);
+    setFocusFromPointer(event);
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (dragging) setFocusFromPointer(event);
+  });
+  stage.addEventListener("pointerup", () => {
+    dragging = false;
+  });
+  function setFocusFromPointer(event: PointerEvent): void {
+    const rect = stage.getBoundingClientRect();
+    setFocus((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
+  }
+  closeContextTools(false);
+  activeMediaEditor = () => close(false);
+  if (!inline) img.style.visibility = "hidden";
+  shellOverlay()?.append(editor);
+  if (inline) {
+    const panel = editor.querySelector<HTMLElement>(".xyle-media-editor-panel");
+    if (panel) {
+      panel.style.position = "fixed";
+      panel.style.left = `${Math.max(12, Math.min(window.innerWidth - width - 12, imageRect.left))}px`;
+      panel.style.width = `${Math.min(width, window.innerWidth - 24)}px`;
+      const panelHeight = panel.getBoundingClientRect().height;
+      const below = imageRect.bottom + 8;
+      panel.style.top = `${below + panelHeight <= window.innerHeight - 12 ? below : Math.max(12, imageRect.top - panelHeight - 8)}px`;
+    }
+  }
+  updatePreview();
+  target.focus();
+}
+
 function showImageTools(img: HTMLImageElement, meta: NodeMeta, focusFirst = false): void {
   const overlay = shellOverlay();
   if (!overlay) return;
@@ -2558,12 +3072,20 @@ function showImageTools(img: HTMLImageElement, meta: NodeMeta, focusFirst = fals
   tools.setAttribute("role", "group");
   tools.setAttribute("aria-label", "Image actions");
   tools.dataset.forNode = meta.id;
+  const capabilities = meta.mediaCapabilities ?? {
+    replace: true,
+    alt: true,
+    crop: true,
+    focus: true,
+  };
   const replace = document.createElement("button");
   replace.type = "button";
   replace.textContent = "Replace";
-  if (mediaManagementUnavailable) {
+  if (mediaManagementUnavailable || !capabilities.replace) {
     replace.disabled = true;
-    replace.title = "Media management is unavailable for this deployment";
+    replace.title = mediaManagementUnavailable
+      ? "Media management is unavailable for this deployment"
+      : "Responsive image replacement is not supported yet";
   }
   replace.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -2582,6 +3104,32 @@ function showImageTools(img: HTMLImageElement, meta: NodeMeta, focusFirst = fals
     selectImage(img, meta);
     void openMediaDrawer(img);
   });
+  const crop = document.createElement("button");
+  crop.type = "button";
+  crop.textContent = "Crop";
+  crop.disabled = !capabilities.crop;
+  crop.title = capabilities.crop
+    ? "Adjust crop and focal point"
+    : (capabilities.cropReason ?? "Cropping is not supported for this image");
+  crop.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeContextTools(false);
+    selectImage(img, meta);
+    openImageCropEditor(img, meta);
+  });
+  const focus = document.createElement("button");
+  focus.type = "button";
+  focus.textContent = "Focus";
+  focus.disabled = !capabilities.focus;
+  focus.title = capabilities.focus
+    ? "Choose the important area to keep visible"
+    : (capabilities.focusReason ?? "Focal positioning is not supported for this image");
+  focus.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeContextTools(false);
+    selectImage(img, meta);
+    openImageCropEditor(img, meta, "focus");
+  });
   const alt = document.createElement("button");
   alt.type = "button";
   alt.textContent = "Alt";
@@ -2591,7 +3139,7 @@ function showImageTools(img: HTMLImageElement, meta: NodeMeta, focusFirst = fals
     selectImage(img, meta);
     openAltEditor(img, meta);
   });
-  tools.append(replace, media, alt);
+  tools.append(replace, media, crop, focus, alt);
   tools.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -2648,7 +3196,6 @@ async function useFileForImage(img: HTMLImageElement, meta: NodeMeta, file: File
     flash("Only JPEG, PNG, WebP and AVIF uploads are supported.");
     return;
   }
-  rememberOriginalAttr(meta.pagePath, meta.id, "src", img.getAttribute("src") ?? "");
   const digestHex = await sha256Hex(bytes);
   if (mutationGeneration !== mediaMutationGeneration) return;
   const ext = extFor(detectedContentType);
@@ -2656,16 +3203,31 @@ async function useFileForImage(img: HTMLImageElement, meta: NodeMeta, file: File
   const existingAsset = state.assets.get(assetPath);
   const objectUrl = existingAsset?.objectUrl ?? URL.createObjectURL(file);
   if (!existingAsset) state.assets.set(assetPath, { file, objectUrl });
-  img.addEventListener("load", scheduleOverlayRefresh, { once: true });
-  img.src = objectUrl;
-  scheduleOverlayRefresh();
-
-  applyOp(
+  let width = img.naturalWidth || 1;
+  let height = img.naturalHeight || 1;
+  try {
+    const bitmap = await createImageBitmap(file);
+    width = bitmap.width;
+    height = bitmap.height;
+    bitmap.close();
+  } catch {
+    // The image element will still validate and display the staged asset.
+  }
+  const source = {
+    kind: "staged" as const,
+    assetId: assetPath,
+    previewUrl: objectUrl,
+    mime: detectedContentType,
+    width,
+    height,
+  };
+  applyMediaPatch(
     meta.pagePath,
-    { type: "src", nodeId: meta.id, value: assetPath, assetName: file.name },
+    meta.id,
+    img,
+    { source, crop: null, focus: null },
     "Replace image",
   );
-  updateDirtyUi();
 }
 
 function detectRasterContentType(bytes: Uint8Array): string | null {
@@ -2703,15 +3265,54 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function imageStyleDescription(op: Extract<Op, { type: "imageStyle" }>): string {
+  return `${op.fit}; focal point ${Math.round(op.focalX)}% ${Math.round(op.focalY)}%`;
+}
+
+function mediaStateDescription(state: MediaState): string {
+  const source = mediaSourcePath(state.source);
+  const alt = state.alt.present ? `; alt ${state.alt.value}` : "; alt missing";
+  const framing = state.framing ? `; ${state.framing.fit}` : "";
+  const focus = state.focus
+    ? `; focus ${Math.round(state.focus.x * 100)}% ${Math.round(state.focus.y * 100)}%`
+    : "";
+  const crop = state.crop
+    ? `; crop ${Math.round(state.crop.x * 100)}% ${Math.round(state.crop.y * 100)}% ${Math.round(state.crop.width * 100)}% ${Math.round(state.crop.height * 100)}%`
+    : "";
+  return `${source}${alt}${framing}${focus}${crop}`;
+}
+
+function applyImageStyle(img: HTMLImageElement, op: Extract<Op, { type: "imageStyle" }>): void {
+  img.style.objectFit = op.fit;
+  img.style.objectPosition = `${op.focalX}% ${op.focalY}%`;
+}
+
+function applyMediaStateToDom(img: HTMLImageElement, media: MediaState): void {
+  const source = mediaSourcePath(media.source);
+  const asset = state.assets.get(source);
+  const previewSource = asset?.objectUrl ?? source;
+  img.setAttribute("src", previewSource);
+  img.src = previewSource;
+  if (media.alt.present) img.setAttribute("alt", media.alt.value);
+  else img.removeAttribute("alt");
+  if (media.framing) img.style.objectFit = media.framing.fit;
+  else img.style.removeProperty("object-fit");
+  if (media.focus) {
+    img.style.objectPosition = `${media.focus.x * 100}% ${media.focus.y * 100}%`;
+  } else {
+    img.style.removeProperty("object-position");
+  }
+}
+
 function selectImage(img: HTMLImageElement, meta: NodeMeta): void {
   selectedImage = { el: img, meta };
 }
 
 function openAltEditor(img: HTMLImageElement, meta: NodeMeta): void {
+  activeMediaEditor?.();
   const existing = img.getAttribute("alt") ?? "";
-  rememberOriginalAttr(meta.pagePath, meta.id, "alt", existing);
   const dialog = document.createElement("dialog");
-  dialog.className = "xyle-dialog";
+  dialog.className = "xyle-dialog xyle-alt-popover";
   dialog.setAttribute("aria-labelledby", "xyle-alt-dialog-title");
   dialog.replaceChildren(
     document.createRange().createContextualFragment(`
@@ -2720,25 +3321,63 @@ function openAltEditor(img: HTMLImageElement, meta: NodeMeta): void {
       <label class="xyle-dialog-label">Alt text
         <input class="xyle-dialog-input" name="alt" value="" autocomplete="off">
       </label>
+      <label class="xyle-dialog-check"><input type="checkbox" name="decorative"> Decorative image</label>
       <div class="xyle-dialog-actions">
         <button class="xyle-dialog-button" value="cancel">Cancel</button>
         <button class="xyle-dialog-button xyle-dialog-button--primary" value="save">Save alt text</button>
       </div>
     </form>`),
   );
-  const altInput = dialog.querySelector("input") as HTMLInputElement;
+  const altInput = dialog.querySelector("input[name=alt]") as HTMLInputElement;
+  const decorative = dialog.querySelector("input[name=decorative]") as HTMLInputElement;
   altInput.value = existing;
-  document.body.append(dialog);
-  dialog.addEventListener("close", () => {
-    if (dialog.returnValue === "save") {
-      const value = altInput.value;
-      applyOp(meta.pagePath, { type: "alt", nodeId: meta.id, value }, "Edit alt text");
-      img.setAttribute("alt", value);
+  const rect = previewElementRect(img);
+  dialog.style.position = "fixed";
+  dialog.style.margin = "0";
+  dialog.style.left = `${Math.max(12, Math.min(window.innerWidth - 320, rect.left))}px`;
+  dialog.style.top = `${Math.max(12, Math.min(window.innerHeight - 190, rect.bottom + 8))}px`;
+  const close = (save: boolean): void => {
+    if (save) {
+      applyMediaPatch(
+        meta.pagePath,
+        meta.id,
+        img,
+        { alt: { present: true, value: decorative.checked ? "" : altInput.value } },
+        "Edit alt text",
+      );
     }
+    if (activeMediaEditor === cancel) activeMediaEditor = null;
+    dialog.close();
+  };
+  const cancel = (): void => close(false);
+  activeMediaEditor = cancel;
+  dialog.addEventListener("close", () => {
+    if (activeMediaEditor === cancel) activeMediaEditor = null;
     dialog.remove();
     img.focus();
   });
-  dialog.showModal();
+  dialog
+    .querySelector<HTMLButtonElement>("button[value=save]")
+    ?.addEventListener("click", (event) => {
+      event.preventDefault();
+      close(true);
+    });
+  dialog
+    .querySelector<HTMLButtonElement>("button[value=cancel]")
+    ?.addEventListener("click", (event) => {
+      event.preventDefault();
+      cancel();
+    });
+  dialog.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancel();
+    }
+  });
+  document.body.append(dialog);
+  dialog.show();
+  altInput.focus();
+  altInput.select();
 }
 
 /* ---------- media drawer ---------- */
@@ -2911,10 +3550,13 @@ function renderMediaDrawer(items: MediaItem[]): void {
 function chooseExistingMedia(path: string): void {
   if (!selectedImage) return;
   const { el, meta } = selectedImage;
-  rememberOriginalAttr(meta.pagePath, meta.id, "src", el.getAttribute("src") ?? "");
-  el.setAttribute("src", path);
-  el.src = path;
-  applyOp(meta.pagePath, { type: "src", nodeId: meta.id, value: path }, "Replace image");
+  applyMediaPatch(
+    meta.pagePath,
+    meta.id,
+    el,
+    { source: { kind: "existing", src: path }, crop: null, focus: null },
+    "Replace image",
+  );
   closeMediaDrawer();
   flash("Image updated.");
 }
@@ -2925,8 +3567,11 @@ function assetPathsFor(...ops: Array<Op | undefined>): string[] {
   return [
     ...new Set(
       ops
-        .filter((op): op is Extract<Op, { type: "src" }> => op?.type === "src")
-        .map((op) => op.value)
+        .filter(
+          (op): op is Extract<Op, { type: "src" | "media" }> =>
+            op?.type === "src" || op?.type === "media",
+        )
+        .map((op) => (op.type === "src" ? op.value : mediaSourcePath(op.value.source)))
         .filter((path) => state.assets.has(path)),
     ),
   ];
@@ -3047,6 +3692,7 @@ function listEditableContent(): EditableContent[] {
           id: meta.id,
           type: meta.kind,
           preview: element?.getAttribute("alt") || element?.getAttribute("src") || "",
+          ...(meta.mediaCapabilities ? { capabilities: meta.mediaCapabilities } : {}),
         };
       }
       return { id: meta.id, type: meta.kind, preview: element?.textContent ?? "" };
@@ -3064,7 +3710,14 @@ function listChanges(): ChangeInfo[] {
       elementId,
       type: op.type,
       before: originalValue(pagePath, op),
-      after: op.type === "formatBlock" ? blockFormattingFor(op.value) : op.value,
+      after:
+        op.type === "formatBlock"
+          ? blockFormattingFor(op.value)
+          : op.type === "imageStyle"
+            ? imageStyleDescription(op)
+            : op.type === "media"
+              ? mediaStateDescription(op.value)
+              : op.value,
       ...(entry.changeSetId
         ? {
             changeSetId: entry.changeSetId,
@@ -3229,6 +3882,40 @@ function getContent(nodeId: string): ContentResult {
   return { id: nodeId, type: meta.kind, content: element.textContent ?? "" };
 }
 
+function updateMedia(nodeId: string, patch: MediaPatchInput): MediaUpdateResult {
+  if (session) commitEdit();
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+  if (!meta || meta.kind !== "image") throw new Error(`Unknown Xyle image ${nodeId}`);
+  if (patch.src !== undefined && meta.mediaCapabilities?.replace === false) {
+    throw new Error("Responsive image replacement is not supported yet");
+  }
+  if (
+    (patch.crop !== undefined || patch.focus !== undefined || patch.fit !== undefined) &&
+    meta.mediaCapabilities &&
+    (!meta.mediaCapabilities.crop || !meta.mediaCapabilities.focus)
+  ) {
+    throw new Error(meta.mediaCapabilities.cropReason ?? "Image framing is not supported");
+  }
+  const element = currentNodeElement(nodeId) as HTMLImageElement | null;
+  if (!element) throw new Error(`Xyle image ${nodeId} is not present in the preview`);
+  const mediaPatch: MediaPatch = {
+    ...(patch.src !== undefined ? { source: { kind: "existing", src: patch.src } } : {}),
+    ...(patch.alt !== undefined ? { alt: { present: true, value: patch.alt } } : {}),
+    ...(patch.crop !== undefined ? { crop: patch.crop } : {}),
+    ...(patch.focus !== undefined ? { focus: patch.focus } : {}),
+    ...(patch.fit !== undefined ? { framing: { fit: patch.fit } } : {}),
+  };
+  applyMediaPatch(current.pagePath, nodeId, element, mediaPatch, "Update image");
+  return {
+    id: nodeId,
+    pagePath: current.pagePath,
+    src: element.getAttribute("src") ?? "",
+    alt: element.getAttribute("alt") ?? "",
+  };
+}
+
 function replaceAsset(nodeId: string, src: string, alt?: string): AssetUpdateResult {
   if (session) commitEdit();
   const current = state.current;
@@ -3239,15 +3926,7 @@ function replaceAsset(nodeId: string, src: string, alt?: string): AssetUpdateRes
   const element = currentNodeElement(nodeId) as HTMLImageElement | null;
   if (!element) throw new Error(`Xyle image ${nodeId} is not present in the preview`);
 
-  rememberOriginalAttr(current.pagePath, nodeId, "src", element.getAttribute("src") ?? "");
-  element.setAttribute("src", src);
-  element.src = src;
-  applyOp(current.pagePath, { type: "src", nodeId, value: src }, "Replace image");
-  if (alt !== undefined) {
-    rememberOriginalAttr(current.pagePath, nodeId, "alt", element.getAttribute("alt") ?? "");
-    element.setAttribute("alt", alt);
-    applyOp(current.pagePath, { type: "alt", nodeId, value: alt }, "Edit image alt text");
-  }
+  updateMedia(nodeId, { src, ...(alt !== undefined ? { alt } : {}) });
   return {
     id: nodeId,
     pagePath: current.pagePath,
@@ -3735,6 +4414,7 @@ function confirmDiscard(action: string): boolean {
 }
 
 function discardAll(): void {
+  activeMediaEditor?.();
   mediaMutationGeneration += 1;
   closeMediaDrawer(false);
   closeChangesDrawer(false);
@@ -3754,6 +4434,7 @@ function discardAll(): void {
   activeChangeSet = null;
   originalSegments.clear();
   originalAttrs.clear();
+  originalMedia.clear();
   originalMarkups.clear();
   originalFormats.clear();
   originalBlockTags.clear();
@@ -3886,6 +4567,10 @@ function opLabel(op: Op): string {
       return "Heading level";
     case "html":
       return "Formatting";
+    case "media":
+      return "Media";
+    case "imageStyle":
+      return "Image crop";
   }
 }
 
@@ -3902,6 +4587,13 @@ function originalValue(pagePath: string, op: Op): string {
   }
   if (op.type === "html") {
     return originalMarkups.get(segmentIdentity(pagePath, op.nodeId)) ?? "";
+  }
+  if (op.type === "imageStyle") {
+    return originalAttrs.get(attrIdentity(pagePath, op.nodeId, "style")) ?? "";
+  }
+  if (op.type === "media") {
+    const original = originalMedia.get(segmentIdentity(pagePath, op.nodeId));
+    return original ? mediaStateDescription(original) : "";
   }
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
@@ -4101,7 +4793,10 @@ function openChangesDrawer(): void {
       number.className = "xyle-change-index";
       number.textContent = String(++changeNumber);
       number.setAttribute("aria-hidden", "true");
-      heading.append(number);
+      const changeLabel = document.createElement("span");
+      changeLabel.className = "xyle-change-kind";
+      changeLabel.textContent = opLabel(entry.op);
+      heading.append(number, changeLabel);
       const rowActions = document.createElement("div");
       rowActions.className = "xyle-change-row-actions";
       const locateButton = document.createElement("button");
@@ -4131,7 +4826,12 @@ function openChangesDrawer(): void {
       // User-authored values are appended as text nodes so the privileged shell
       // never interprets edited content as markup.
       const beforeValue = originalValue(pagePath, entry.op).trim();
-      const afterValue = entry.op.value.trim();
+      const afterValue =
+        entry.op.type === "imageStyle"
+          ? imageStyleDescription(entry.op)
+          : entry.op.type === "media"
+            ? mediaStateDescription(entry.op.value)
+            : entry.op.value.trim();
       const diff = changeParts(beforeValue, afterValue);
       appendChangeValue(comparison, "Before", beforeValue, diff.before);
       const arrow = document.createElement("span");
@@ -4177,6 +4877,16 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) replaceElementContentsFromHtml(el, op.value);
     return;
   }
+  if (op.type === "imageStyle") {
+    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
+    if (el instanceof HTMLImageElement) applyImageStyle(el, op);
+    return;
+  }
+  if (op.type === "media") {
+    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
+    if (el instanceof HTMLImageElement) applyMediaStateToDom(el, op.value);
+    return;
+  }
   if (op.type === "formatBlock") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     if (el) applyBlockFormatToDom(pagePath, op);
@@ -4220,6 +4930,17 @@ function revertOpInDom(pagePath: string, op: Op): void {
     restoreOriginalBlockFormat(pagePath, op.nodeId);
   } else if (op.type === "html") {
     restoreOriginalMarkup(pagePath, op.nodeId);
+  } else if (op.type === "imageStyle") {
+    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
+    if (el instanceof HTMLImageElement) {
+      const original = originalAttrs.get(attrIdentity(pagePath, op.nodeId, "style"));
+      if (original !== undefined) el.setAttribute("style", original);
+      else el.removeAttribute("style");
+    }
+  } else if (op.type === "media") {
+    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
+    const original = originalMedia.get(segmentIdentity(pagePath, op.nodeId));
+    if (el instanceof HTMLImageElement && original) applyMediaStateToDom(el, original);
   } else if (op.type === "href" || op.type === "src" || op.type === "alt") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     const attr = op.type;
@@ -4233,6 +4954,7 @@ function revertOpInDom(pagePath: string, op: Op): void {
 
 const originalSegments = new Map<string, string>();
 const originalAttrs = new Map<string, string>();
+const originalMedia = new Map<string, MediaState>();
 const originalMarkups = new Map<string, string>();
 const originalFormats = new Map<string, "bold" | "italic" | "underline" | "none">();
 const originalBlockTags = new Map<string, BlockTag>();
@@ -4448,6 +5170,12 @@ function restoreOpsIntoDom(): void {
     } else if (op.type === "html") {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) replaceElementContentsFromHtml(el, op.value);
+    } else if (op.type === "imageStyle") {
+      const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
+      if (el instanceof HTMLImageElement) applyImageStyle(el, op);
+    } else if (op.type === "media") {
+      const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
+      if (el instanceof HTMLImageElement) applyMediaStateToDom(el, op.value);
     } else {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) {
@@ -4477,6 +5205,7 @@ function redo(): void {
 /* ---------- publish ---------- */
 
 async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
+  activeMediaEditor?.();
   if (commitActiveEditsAndCollect()) return;
   mediaMutationGeneration += 1;
   const button = sourceButton ?? $<HTMLButtonElement>("#xyle-publish");
@@ -4494,7 +5223,14 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     }),
   );
   const referencedAssets = new Set(
-    state.ops.flatMap(({ op }) => (op.type === "src" ? [op.value] : [])),
+    state.ops.flatMap(({ op }) => {
+      if (op.type === "src") return [op.value];
+      if (op.type === "media") {
+        const source = op.value.source;
+        return source.kind === "staged" ? [source.assetId] : [];
+      }
+      return [];
+    }),
   );
   for (const path of referencedAssets) {
     const asset = state.assets.get(path);
@@ -4534,6 +5270,7 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     activeChangeSet = null;
     originalSegments.clear();
     originalAttrs.clear();
+    originalMedia.clear();
     originalMarkups.clear();
     originalFormats.clear();
     originalBlockTags.clear();

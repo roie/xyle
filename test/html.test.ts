@@ -135,8 +135,86 @@ describe("preparePreview source locations", () => {
       '<img src="/ok.jpg" alt="fine">',
     ].join("");
     const images = [...analyzePage(source).candidates.values()].filter((c) => c.kind === "image");
-    expect(images).toHaveLength(1);
-    expect(images[0]!.attrs.has("src")).toBe(true);
+    expect(images).toHaveLength(3);
+    expect(images[0]!.mediaCapabilities?.replace).toBe(false);
+    expect(images[1]!.mediaCapabilities?.replace).toBe(false);
+    expect(images[2]!.attrs.has("src")).toBe(true);
+  });
+
+  it("patches safe image framing while preserving other styles", async () => {
+    const source = `<img src="/hero.jpg" style="width: 100%; object-fit: contain; color: red;">`;
+    const id = [...analyzePage(source).candidates.values()][0]!.id;
+    await expect(
+      patchAndGetText(source, [
+        { type: "imageStyle", nodeId: id, fit: "cover", focalX: 20, focalY: 70 },
+      ]),
+    ).resolves.toBe(
+      `<img src="/hero.jpg" style="width: 100%; color: red; object-fit: cover; object-position: 20% 70%;">`,
+    );
+  });
+
+  it("patches one unified media state", async () => {
+    const source = `<a href="/"><img src="/hero.jpg" alt="Old" style="width: 100%;"></a>`;
+    const id = [...analyzePage(source).candidates.values()].find(
+      (candidate) => candidate.kind === "image",
+    )!.id;
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "media",
+          nodeId: id,
+          value: {
+            source: { kind: "existing", src: "/new.webp" },
+            alt: { present: true, value: "New" },
+            crop: null,
+            focus: { x: 0.7, y: 0.3 },
+            framing: { fit: "cover" },
+          },
+        },
+      ]),
+    ).resolves.toBe(
+      `<a href="/"><img src="/new.webp" alt="New" style="width: 100%; object-fit: cover; object-position: 70% 30%;"></a>`,
+    );
+  });
+
+  it("allows SVG replacement but rejects SVG framing", async () => {
+    const source = `<img src="/logo.svg" alt="Logo">`;
+    const image = [...analyzePage(source).candidates.values()][0]!;
+    expect(image.mediaCapabilities).toMatchObject({
+      replace: true,
+      alt: true,
+      crop: false,
+      focus: false,
+    });
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "media",
+          nodeId: image.id,
+          value: {
+            source: { kind: "existing", src: "/new-logo.svg" },
+            alt: { present: true, value: "New logo" },
+            crop: null,
+            focus: null,
+          },
+        },
+      ]),
+    ).resolves.toBe(`<img src="/new-logo.svg" alt="New logo">`);
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "media",
+          nodeId: image.id,
+          value: {
+            source: { kind: "existing", src: "/new-logo.svg" },
+            alt: { present: true, value: "New logo" },
+            crop: null,
+            focus: { x: 0.5, y: 0.5 },
+            framing: { fit: "contain" },
+          },
+        },
+      ]),
+    ).rejects.toThrow(/raster-cropped|framing is not supported/);
   });
 
   it("honors simple ignore selectors for preview and patches", async () => {

@@ -1,7 +1,10 @@
+import type { CropRect, MediaCapabilities, Point } from "./types.ts";
+
 export interface EditableContent {
   id: string;
   type: "text" | "link" | "image";
   preview: string;
+  capabilities?: MediaCapabilities;
 }
 
 export interface ContentResult {
@@ -31,6 +34,21 @@ export interface AssetUpdateResult {
   alt: string;
 }
 
+export interface MediaPatchInput {
+  src?: string;
+  alt?: string;
+  crop?: CropRect | null;
+  focus?: Point | null;
+  fit?: "cover" | "contain";
+}
+
+export interface MediaUpdateResult {
+  id: string;
+  pagePath: string;
+  src: string;
+  alt: string;
+}
+
 export type Formatting =
   | "bold"
   | "italic"
@@ -52,7 +70,16 @@ export interface FormattingUpdateResult {
 export interface ChangeInfo {
   changeId: string;
   elementId: string;
-  type: "text" | "href" | "src" | "alt" | "format" | "formatBlock" | "html";
+  type:
+    | "text"
+    | "href"
+    | "src"
+    | "alt"
+    | "format"
+    | "formatBlock"
+    | "html"
+    | "imageStyle"
+    | "media";
   before: string;
   after: string;
   changeSetId?: string;
@@ -89,6 +116,7 @@ export interface WebMcpBridge {
   applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSetResult;
   undoChangeSet(changeSetId: string): ChangeSetUndoResult;
   replaceAsset(id: string, src: string, alt?: string): AssetUpdateResult;
+  updateMedia?: (id: string, patch: MediaPatchInput) => MediaUpdateResult;
   updateFormatting(id: string, format: Formatting): FormattingUpdateResult;
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
@@ -141,6 +169,71 @@ function parseTextUpdateInput(value: unknown): { id: string; text: string } {
     throw new Error("update_text requires string fields id and text");
   }
   return { id: value.id, text: value.text };
+}
+
+function parseMediaInput(value: unknown): { id: string; patch: MediaPatchInput } {
+  if (!isRecord(value) || typeof value.id !== "string") {
+    throw new Error("update_media requires a string id");
+  }
+  const patch: MediaPatchInput = {};
+  if (value.src !== undefined) {
+    if (typeof value.src !== "string") throw new Error("update_media src must be a string");
+    patch.src = value.src;
+  }
+  if (value.alt !== undefined) {
+    if (typeof value.alt !== "string") throw new Error("update_media alt must be a string");
+    patch.alt = value.alt;
+  }
+  if (value.fit !== undefined) {
+    if (value.fit !== "cover" && value.fit !== "contain") {
+      throw new Error("update_media fit must be cover or contain");
+    }
+    patch.fit = value.fit;
+  }
+  for (const name of ["crop", "focus"] as const) {
+    const point = value[name];
+    if (point === null) {
+      patch[name] = null;
+      continue;
+    }
+    if (point !== undefined) {
+      if (!isRecord(point) || typeof point.x !== "number" || typeof point.y !== "number") {
+        throw new Error(`update_media ${name} requires numeric x and y`);
+      }
+      if (
+        !Number.isFinite(point.x) ||
+        !Number.isFinite(point.y) ||
+        point.x < 0 ||
+        point.x > 1 ||
+        point.y < 0 ||
+        point.y > 1
+      ) {
+        throw new Error(`update_media ${name} coordinates must be between 0 and 1`);
+      }
+      if (name === "crop") {
+        if (typeof point.width !== "number" || typeof point.height !== "number") {
+          throw new Error("update_media crop requires numeric width and height");
+        }
+        if (
+          !Number.isFinite(point.width) ||
+          !Number.isFinite(point.height) ||
+          point.width <= 0 ||
+          point.height <= 0 ||
+          point.width > 1 ||
+          point.height > 1 ||
+          point.x + point.width > 1 ||
+          point.y + point.height > 1
+        ) {
+          throw new Error("update_media crop rectangle is outside the image");
+        }
+        patch.crop = { x: point.x, y: point.y, width: point.width, height: point.height };
+      } else {
+        patch.focus = { x: point.x, y: point.y };
+      }
+    }
+  }
+  if (Object.keys(patch).length === 0) throw new Error("update_media requires a media property");
+  return { id: value.id, patch };
 }
 
 function parseAssetInput(value: unknown): { id: string; src: string; alt?: string } {
@@ -483,6 +576,48 @@ export async function registerWebMcpTools(
           }
           const parsed = parseAssetInput(input);
           return textResult(JSON.stringify(bridge.replaceAsset(parsed.id, parsed.src, parsed.alt)));
+        },
+      },
+      { signal: controller.signal },
+    );
+    await context.registerTool(
+      {
+        name: "update_media",
+        description: "Safely update one image source, crop, focus point, or alt text.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "The current Xyle image id." },
+            src: { type: "string", description: "A safe image URL or site path." },
+            alt: { type: "string", description: "Alternative text for the image." },
+            fit: { type: "string", enum: ["cover", "contain"] },
+            crop: {
+              type: ["object", "null"],
+              properties: {
+                x: { type: "number", minimum: 0, maximum: 1 },
+                y: { type: "number", minimum: 0, maximum: 1 },
+                width: { type: "number", exclusiveMinimum: 0, maximum: 1 },
+                height: { type: "number", exclusiveMinimum: 0, maximum: 1 },
+              },
+            },
+            focus: {
+              type: ["object", "null"],
+              properties: {
+                x: { type: "number", minimum: 0, maximum: 1 },
+                y: { type: "number", minimum: 0, maximum: 1 },
+              },
+            },
+          },
+          required: ["id"],
+        },
+        annotations: { untrustedContentHint: true },
+        execute: async (input, context) => {
+          if (context?.signal?.aborted) {
+            throw new DOMException("Tool execution canceled", "AbortError");
+          }
+          const parsed = parseMediaInput(input);
+          if (!bridge.updateMedia) throw new Error("update_media is unavailable");
+          return textResult(JSON.stringify(bridge.updateMedia(parsed.id, parsed.patch)));
         },
       },
       { signal: controller.signal },

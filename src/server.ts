@@ -6,7 +6,17 @@ import { computeSnapshotDigest, digestBytes, normalizeSitePath } from "./manifes
 import { isControlSitePath, isPathInsideRoot } from "./control-paths.ts";
 import { preparePreview, patchHtml } from "./html.ts";
 import { discoverMedia, MAX_UPLOAD_BYTES, validateUpload, uploadPathFor } from "./media.ts";
-import type { Publisher, SiteFile, XyleManifest, XyleDigest } from "./types.ts";
+import { deriveCroppedImage } from "./crop.ts";
+import { mediaSourcePath } from "./media-state.ts";
+import type {
+  MediaState,
+  PageOperation,
+  PublishedSnapshot,
+  Publisher,
+  SiteFile,
+  XyleManifest,
+  XyleDigest,
+} from "./types.ts";
 
 export interface RuntimeContext {
   root: string;
@@ -264,9 +274,18 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
         (op) =>
           !op ||
           typeof op !== "object" ||
-          !["text", "lineBreak", "href", "src", "alt", "format", "formatBlock", "html"].includes(
-            (op as { type?: string }).type ?? "",
-          ),
+          ![
+            "text",
+            "lineBreak",
+            "href",
+            "src",
+            "alt",
+            "format",
+            "formatBlock",
+            "html",
+            "imageStyle",
+            "media",
+          ].includes((op as { type?: string }).type ?? ""),
       )
     )
       return null;
@@ -280,6 +299,53 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
     pagePaths.add(normalizedPath);
   }
   return metadata as PublishMetadata;
+}
+
+async function materializeMediaOperations(
+  operations: PageOperation[],
+  current: PublishedSnapshot,
+  root: string,
+  submitted: Map<string, Uint8Array>,
+): Promise<{ operations: PageOperation[]; assets: SiteFile[] }> {
+  const assets: SiteFile[] = [];
+  const knownAssets = new Set(Object.keys(current.manifest.files));
+  const materialized = new Map<string, string>();
+  const output: PageOperation[] = [];
+  for (const operation of operations) {
+    if (operation.type !== "media" || !operation.value.crop) {
+      output.push(operation);
+      continue;
+    }
+    const sourcePath = mediaSourcePath(operation.value.source);
+    if (!sourcePath.startsWith("/") || !isPathInsideRoot(root, resolve(root, `.${sourcePath}`))) {
+      throw new Error("cropping requires a local image source");
+    }
+    const sourceBytes = submitted.get(sourcePath) ?? (await readSiteFile(root, sourcePath));
+    const cropKey = `${sourcePath}:${JSON.stringify(operation.value.crop)}`;
+    let derivedPath = materialized.get(cropKey);
+    if (!derivedPath) {
+      const derived = await deriveCroppedImage(sourceBytes, operation.value.crop);
+      derivedPath = derived.path;
+      materialized.set(cropKey, derivedPath);
+      if (!knownAssets.has(derivedPath)) {
+        const digest = await digestBytes(derived.bytes);
+        assets.push({
+          path: derivedPath,
+          bytes: derived.bytes,
+          digest,
+          contentType: derived.contentType,
+        });
+        knownAssets.add(derivedPath);
+      }
+    }
+    const value: MediaState = {
+      ...operation.value,
+      source: { kind: "existing", src: derivedPath },
+      crop: null,
+    };
+    output.push({ ...operation, value });
+  }
+  return { operations: output, assets };
 }
 
 async function handlePublish(request: Request, context: RuntimeContext): Promise<Response> {
@@ -320,6 +386,14 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
   }
 
   const changedFiles: SiteFile[] = [];
+  const addedFiles: SiteFile[] = [];
+  const addedAssetPaths = new Set<string>();
+  const submitted = new Map<string, Uint8Array>();
+  for (const [name, value] of form.entries()) {
+    if (value instanceof File && name.startsWith("/__media/")) {
+      submitted.set(name, new Uint8Array(await value.arrayBuffer()));
+    }
+  }
   const updatedEntries: Record<string, { digest: XyleDigest; size: number; contentType: string }> =
     {};
 
@@ -337,12 +411,28 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
     const bytes = await readSiteFile(context.root, pagePath);
     let patched: Uint8Array;
     try {
+      const materialized = await materializeMediaOperations(
+        change.operations,
+        current,
+        context.root,
+        submitted,
+      );
+      for (const asset of materialized.assets) {
+        if (addedAssetPaths.has(asset.path)) continue;
+        addedAssetPaths.add(asset.path);
+        addedFiles.push(asset);
+        updatedEntries[asset.path] = {
+          digest: asset.digest,
+          size: asset.bytes.byteLength,
+          contentType: asset.contentType,
+        };
+      }
       patched = await patchHtml(
         bytes,
         {
           pagePath,
           baseDigest: change.baseDigest,
-          operations: change.operations,
+          operations: materialized.operations,
         },
         context.ignoreSelectors ? { ignoreSelectors: context.ignoreSelectors } : {},
       );
@@ -363,7 +453,6 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
     };
   }
 
-  const addedFiles: SiteFile[] = [];
   for (const [name, value] of form.entries()) {
     if (!(value instanceof File) || !name.startsWith("/__media/")) continue;
     const bytes = new Uint8Array(await value.arrayBuffer());

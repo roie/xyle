@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { clickNode, currentOps, findNodeByText, loginAndOpenEditor, opsCount } from "./helpers.ts";
+import type { MediaState } from "../src/types.ts";
 
 const PNG_BYTES = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
@@ -43,7 +44,7 @@ test.describe("media editing", () => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       return doc.querySelectorAll("picture [data-xyle-node]").length;
     });
-    expect(pictureCandidates).toBe(0);
+    expect(pictureCandidates).toBe(1);
   });
 
   test("keyboard image activation focuses actions and Escape returns focus", async ({ page }) => {
@@ -60,7 +61,7 @@ test.describe("media editing", () => {
     await expect(page.locator(".xyle-img-tools")).toHaveCount(0);
   });
 
-  test("replacing an image previews via blob and records a src op", async ({ page }) => {
+  test("replacing an image previews via blob and records a media change", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const id = await page.evaluate(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
@@ -79,7 +80,7 @@ test.describe("media editing", () => {
       .poll(async () =>
         page.evaluate(() => document.querySelectorAll(".xyle-img-tools button").length),
       )
-      .toBe(3);
+      .toBe(5);
 
     const chooserPromise = page.waitForEvent("filechooser");
     await page.locator(".xyle-img-tools button:has-text('Replace')").click();
@@ -103,8 +104,36 @@ test.describe("media editing", () => {
       .toBe(true);
 
     const ops = await currentOps(page);
-    const srcOp = ops.find((entry) => entry.op.type === "src");
-    expect(srcOp?.op.value).toMatch(/^\/__media\/[0-9a-f]{64}\.png$/);
+    const mediaOp = ops.find((entry) => entry.op.type === "media");
+    expect((mediaOp?.op as { value: MediaState } | undefined)?.value.source).toMatchObject({
+      kind: "staged",
+      assetId: expect.stringMatching(/^\/__media\/[0-9a-f]{64}\.png$/),
+    });
+  });
+
+  test("adjusts image crop and focal point as one change", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+    const dialog = page.locator(".xyle-inline-media-editor");
+    await expect(dialog).toBeVisible();
+    await expect(page.locator("dialog.xyle-dialog")).toHaveCount(0);
+    await dialog.locator("select[name=fit]").selectOption("cover");
+    await dialog.locator("#xyle-focal-x").fill("24");
+    await dialog.locator("#xyle-focal-y").fill("68");
+    await dialog.getByRole("button", { name: "Done" }).click();
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    const op = (await currentOps(page)).find((entry) => entry.op.type === "media");
+    expect((op?.op as { value: MediaState } | undefined)?.value).toMatchObject({
+      framing: { fit: "cover" },
+      focus: { x: 0.24, y: 0.68 },
+    });
+    expect((op?.op as { value: MediaState } | undefined)?.value.crop).not.toBeNull();
+    await expect(image).toHaveJSProperty("style.objectFit", "cover");
+    await expect(image).toHaveJSProperty("style.objectPosition", "24% 68%");
   });
 
   test("upload path uses detected bytes instead of the supplied MIME type", async ({ page }) => {
@@ -123,8 +152,11 @@ test.describe("media editing", () => {
     });
 
     await expect.poll(async () => opsCount(page)).toBe(1);
-    const srcOp = (await currentOps(page)).find((entry) => entry.op.type === "src");
-    expect(srcOp?.op.value).toMatch(/^\/__media\/[0-9a-f]{64}\.png$/);
+    const mediaOp = (await currentOps(page)).find((entry) => entry.op.type === "media");
+    expect((mediaOp?.op as { value: MediaState } | undefined)?.value.source).toMatchObject({
+      kind: "staged",
+      assetId: expect.stringMatching(/^\/__media\/[0-9a-f]{64}\.png$/),
+    });
   });
 
   test("pointer-opened media drawer restores focus to the selected image", async ({ page }) => {
@@ -146,7 +178,13 @@ test.describe("media editing", () => {
 
   test("repeated local replacements remain reachable through undo and redo", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
-    const image = page.frameLocator("#xyle-preview").locator("img[data-xyle-node]");
+    const imageId = await page.evaluate(() => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      return doc
+        .querySelector('img[data-xyle-node][src="/assets/hero-wide.webp"]')
+        ?.getAttribute("data-xyle-node");
+    });
+    const image = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${imageId}"]`);
     await image.click();
     const replaceWith = async (name: string, buffer: Buffer): Promise<void> => {
       const chooserPromise = page.waitForEvent("filechooser");
@@ -172,7 +210,13 @@ test.describe("media editing", () => {
 
   test("Discard closes media UI and clears stale image selection", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
-    const image = page.frameLocator("#xyle-preview").locator("img[data-xyle-node]");
+    const imageId = await page.evaluate(() => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      return doc
+        .querySelector('img[data-xyle-node][src="/assets/hero-wide.webp"]')
+        ?.getAttribute("data-xyle-node");
+    });
+    const image = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${imageId}"]`);
     await expect(image).toHaveAttribute("src", "/assets/hero-wide.webp");
     await image.click();
     const chooserPromise = page.waitForEvent("filechooser");
@@ -315,13 +359,13 @@ test.describe("media editing", () => {
     await page.click("dialog button[value='save']");
     await expect.poll(async () => opsCount(page)).toBe(1);
     const ops = await currentOps(page);
-    expect(ops[0]?.op.type).toBe("alt");
+    expect(ops[0]?.op.type).toBe("media");
 
     await page.click("#xyle-changes");
     const change = page
       .getByRole("dialog", { name: "Changes" })
       .locator(".xyle-change-row")
-      .filter({ hasText: "Alt text" });
+      .filter({ hasText: "Media" });
     await expect(change.locator(".xyle-change-before")).toContainText(originalAlt);
     await expect(change.locator(".xyle-change-after")).toContainText(altText);
     await page.getByRole("button", { name: "Close changes drawer" }).click();
@@ -344,13 +388,50 @@ test.describe("media editing", () => {
     const chooser = await chooserPromise;
     await chooser.setFiles({ name: "published.png", mimeType: "image/png", buffer: PNG_BYTES });
     await expect.poll(async () => opsCount(page)).toBe(1);
-    const srcOp = (await currentOps(page)).find((entry) => entry.op.type === "src");
-    const uploadedPath = String(srcOp?.op.value);
+    const mediaOp = (await currentOps(page)).find((entry) => entry.op.type === "media");
+    const source = (mediaOp?.op as { value: MediaState } | undefined)?.value.source;
+    const uploadedPath = source?.kind === "staged" ? source.assetId : "";
     expect(uploadedPath).toMatch(/^\/__media\/[0-9a-f]{64}\.png$/);
 
     await page.click("#xyle-publish");
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     expect((await page.request.get(uploadedPath)).ok()).toBe(true);
     expect((await page.request.get("/__xyle/api/manifest")).ok()).toBe(true);
+  });
+
+  test("publishes a derived crop without changing the original asset", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const selected = await page.evaluate(() => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      const images = [...doc.querySelectorAll("img[data-xyle-node]")] as HTMLImageElement[];
+      const image =
+        images.find(
+          (candidate) =>
+            !candidate.closest("picture") &&
+            /\.(?:jpg|jpeg|png|webp|avif)(?:$|\?)/i.test(candidate.src),
+        ) ?? images[0];
+      return {
+        id: image?.getAttribute("data-xyle-node"),
+        src: image?.getAttribute("src") ?? "",
+      };
+    });
+    expect(selected.id).toBeTruthy();
+    const image = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${selected.id}"]`);
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+    const dialog = page.locator(".xyle-inline-media-editor");
+    await expect(dialog).toBeVisible();
+    await dialog.locator("#xyle-zoom").fill("1.5");
+    await dialog.locator("#xyle-focal-x").fill("70");
+    await dialog.locator("#xyle-focal-y").fill("30");
+    await dialog.getByRole("button", { name: "Done" }).click();
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    await page.click("#xyle-publish");
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const html = await (await page.request.get("/index.html")).text();
+    expect(html).toMatch(/src="\/__media\/[0-9a-f]{64}\.webp"/);
+    expect(html).toContain("object-fit: cover");
+    expect(html).toContain("object-position: 70% 30%");
+    expect(html).not.toContain(`src="${selected.src}"`);
   });
 });

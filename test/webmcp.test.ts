@@ -37,6 +37,15 @@ describe("WebMCP tools", () => {
         src,
         alt: alt ?? "",
       }),
+      updateMedia: (
+        id: string,
+        patch: { src?: string; alt?: string; fit?: "cover" | "contain" },
+      ) => ({
+        id,
+        pagePath: "/index.html",
+        src: patch.src ?? "/images/old.jpg",
+        alt: patch.alt ?? "",
+      }),
       updateFormatting: (id: string, format: Formatting) => ({
         id,
         pagePath: "/index.html",
@@ -61,6 +70,7 @@ describe("WebMCP tools", () => {
       "undo_change",
       "update_link",
       "replace_asset",
+      "update_media",
       "update_formatting",
       "update_text",
     ]);
@@ -114,7 +124,17 @@ describe("WebMCP tools", () => {
         },
       ],
     });
-    await expect(tools[8]!.execute({ id: "n1", format: "bold" }, { signal })).resolves.toEqual({
+    await expect(
+      tools[8]!.execute({ id: "n1", src: "/images/crop.jpg", fit: "cover" }, { signal }),
+    ).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(bridge.updateMedia("n1", { src: "/images/crop.jpg", fit: "cover" })),
+        },
+      ],
+    });
+    await expect(tools[9]!.execute({ id: "n1", format: "bold" }, { signal })).resolves.toEqual({
       content: [
         {
           type: "text",
@@ -122,7 +142,7 @@ describe("WebMCP tools", () => {
         },
       ],
     });
-    await expect(tools[9]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
+    await expect(tools[10]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.updateText("n1", "Hello")) }],
     });
     await expect(
@@ -145,6 +165,12 @@ describe("WebMCP tools", () => {
         applyChangeSet: (label, _changes) => ({ changeSetId: "changeset-1", label, changes: [] }),
         undoChangeSet: (changeSetId) => ({ changeSetId, undone: true }),
         replaceAsset: (id, src, alt) => ({ id, pagePath: "/index.html", src, alt: alt ?? "" }),
+        updateMedia: (id, patch) => ({
+          id,
+          pagePath: "/index.html",
+          src: patch.src ?? "",
+          alt: patch.alt ?? "",
+        }),
         updateFormatting: (id, format) => ({ id, pagePath: "/index.html", format }),
         updateText: (id, text) => ({ id, pagePath: "/index.html", text }),
         updateLink: (id, text, href) => ({

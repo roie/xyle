@@ -7,8 +7,10 @@ import type {
   TextFormat,
   PreviewNode,
   XyleDigest,
+  MediaState,
 } from "./types.ts";
 import { digestBytes } from "./digest.ts";
+import { mediaSourcePath, normalizeMediaState } from "./media-state.ts";
 
 type P5Document = DefaultTreeAdapterTypes.Document;
 type P5Node = DefaultTreeAdapterTypes.Node;
@@ -151,6 +153,7 @@ interface Candidate {
   /** Descendant text nodes (excluding nested link/image candidates), document order. */
   segments: SegmentInfo[];
   attrs: Map<string, AttrRange>;
+  mediaCapabilities?: import("./types.ts").MediaCapabilities;
 }
 
 export interface PageAnalysis {
@@ -210,6 +213,47 @@ function collectSegments(root: P5Element, stopAt: (el: P5Element) => boolean): S
   };
   for (const child of root.childNodes) visit(child);
   return segments;
+}
+
+function sourceAttrValue(source: string, attr: AttrRange): string {
+  const raw = source.slice(attr.sliceStart, attr.sliceEnd);
+  const equals = raw.indexOf("=");
+  if (equals === -1) return "";
+  const value = raw.slice(equals + 1).trim();
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function imageStyleValue(
+  existing: string,
+  fit: "cover" | "contain",
+  focalX: number,
+  focalY: number,
+): string {
+  return mediaStyleValue(existing, {
+    source: { kind: "existing", src: "" },
+    alt: { present: true, value: "" },
+    crop: null,
+    focus: { x: focalX / 100, y: focalY / 100 },
+    framing: { fit },
+  });
+}
+
+function mediaStyleValue(existing: string, media: MediaState): string {
+  let retained = existing;
+  if (media.framing) retained = retained.replace(/(?:^|;)\s*object-fit\s*:[^;]*/gi, "");
+  if (media.focus) retained = retained.replace(/(?:^|;)\s*object-position\s*:[^;]*/gi, "");
+  retained = retained.replace(/^\s*;|;\s*$/g, "").trim();
+  const additions = [
+    media.framing ? `object-fit: ${media.framing.fit}` : "",
+    media.focus ? `object-position: ${media.focus.x * 100}% ${media.focus.y * 100}%` : "",
+  ].filter(Boolean);
+  return `${retained}${retained && additions.length ? "; " : ""}${additions.join("; ")}${additions.length ? ";" : ""}`;
 }
 
 function collectAttrRanges(el: P5Element): Map<string, AttrRange> {
@@ -287,18 +331,32 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
     if (tag === "img") {
       const src = attrValue(node, "src");
       const hidden = node.attrs.some((a) => a.name === "hidden");
-      if (
-        src !== null &&
-        !node.attrs.some((a) => a.name === "srcset") &&
-        !insidePicture &&
-        !hidden
-      ) {
+      if (src !== null && !hidden) {
         counter += 1;
         const id = `n${counter}`;
         const loc = node.sourceCodeLocation!;
+        const responsive = insidePicture || node.attrs.some((a) => a.name === "srcset");
+        const extension = src.split(/[?#]/, 1)[0]?.toLowerCase().slice(src.lastIndexOf("."));
+        const nonCropFormat = extension === ".svg" || extension === ".gif";
         candidates.set(id, {
           id,
           kind: "image",
+          mediaCapabilities: {
+            replace: !responsive,
+            alt: true,
+            crop: !responsive && !nonCropFormat,
+            focus: !responsive && !nonCropFormat,
+            ...(responsive
+              ? { cropReason: "Responsive image sources need deliberate mapping." }
+              : nonCropFormat
+                ? { cropReason: "This image format is not safely raster-cropped." }
+                : {}),
+            ...(responsive
+              ? { focusReason: "Responsive image sources need deliberate mapping." }
+              : nonCropFormat
+                ? { focusReason: "This image format is not safely raster-cropped." }
+                : {}),
+          },
           tag,
           startTagStart: loc.startTag!.startOffset,
           startTagEnd: loc.startTag!.endOffset,
@@ -489,6 +547,7 @@ export function preparePreview(
       multiline: c.multiline,
       textEditable: c.textEditable,
       segmentCount: c.segments.length,
+      ...(c.mediaCapabilities ? { mediaCapabilities: c.mediaCapabilities } : {}),
     };
     nodes.set(c.id, node);
   }
@@ -630,6 +689,11 @@ export async function patchHtml(
     op: PageOperation & { type: "formatBlock" };
   }[] = [];
   const htmlOps: { candidate: Candidate; op: PageOperation & { type: "html" } }[] = [];
+  const imageStyleOps: {
+    candidate: Candidate;
+    op: PageOperation & { type: "imageStyle" };
+  }[] = [];
+  const mediaOps: { candidate: Candidate; op: PageOperation & { type: "media" } }[] = [];
   const htmlTargets = new Set(
     change.operations
       .filter((op): op is PageOperation & { type: "html" } => op.type === "html")
@@ -727,6 +791,68 @@ export async function patchHtml(
         htmlOps.push({ candidate, op: { ...op, value } });
         break;
       }
+      case "media": {
+        const candidate = analysis.candidates.get(op.nodeId);
+        if (!candidate || candidate.kind !== "image") {
+          throw new Error(`media target ${op.nodeId} is not an image`);
+        }
+        const value = normalizeMediaState(op.value);
+        if (
+          (value.framing && value.framing.fit !== "cover" && value.framing.fit !== "contain") ||
+          (value.focus &&
+            (!Number.isFinite(value.focus.x) ||
+              !Number.isFinite(value.focus.y) ||
+              value.focus.x < 0 ||
+              value.focus.x > 1 ||
+              value.focus.y < 0 ||
+              value.focus.y > 1))
+        ) {
+          throw new Error(`invalid media framing for ${op.nodeId}`);
+        }
+        if ((value.framing || value.focus) && candidate.mediaCapabilities?.crop === false) {
+          throw new Error(
+            candidate.mediaCapabilities.cropReason ?? "image framing is not supported",
+          );
+        }
+        if (!isValidSiteUrl(mediaSourcePath(value.source))) {
+          throw new Error("unsafe media source rejected");
+        }
+        if (value.crop) {
+          throw new Error("media crop must be materialized before publishing");
+        }
+        if (mediaOps.some(({ candidate: existing }) => existing.id === candidate.id)) {
+          throw new Error(`duplicate media op on ${candidate.id}`);
+        }
+        mediaOps.push({ candidate, op: { ...op, value } });
+        break;
+      }
+      case "imageStyle": {
+        const candidate = analysis.candidates.get(op.nodeId);
+        if (!candidate || candidate.kind !== "image") {
+          throw new Error(`image style target ${op.nodeId} is not an image`);
+        }
+        if (
+          candidate.mediaCapabilities?.crop === false ||
+          candidate.mediaCapabilities?.focus === false
+        ) {
+          throw new Error(
+            candidate.mediaCapabilities.cropReason ?? "image framing is not supported",
+          );
+        }
+        if (
+          (op.fit !== "cover" && op.fit !== "contain") ||
+          !Number.isFinite(op.focalX) ||
+          !Number.isFinite(op.focalY) ||
+          op.focalX < 0 ||
+          op.focalX > 100 ||
+          op.focalY < 0 ||
+          op.focalY > 100
+        ) {
+          throw new Error(`invalid image style for ${op.nodeId}`);
+        }
+        imageStyleOps.push({ candidate, op });
+        break;
+      }
       case "formatBlock": {
         const candidate = analysis.candidates.get(op.nodeId);
         if (
@@ -781,6 +907,9 @@ export async function patchHtml(
           if (!isValidSiteUrl(op.value)) throw new Error("unsafe link destination rejected");
         } else {
           if (candidate.kind !== "image") throw new Error(`${op.type} op requires an image target`);
+          if (op.type === "src" && candidate.mediaCapabilities?.replace === false) {
+            throw new Error("responsive image replacement is not supported yet");
+          }
           if (!isValidSiteUrl(op.value)) throw new Error("unsafe media source rejected");
         }
         attrOps.push({ candidate, op });
@@ -799,6 +928,66 @@ export async function patchHtml(
       end: candidate.previewWrapper ? candidate.elementEnd! : candidate.contentEnd!,
       replacement: op.value,
     });
+  }
+  for (const { candidate, op } of mediaOps) {
+    const source = mediaSourcePath(op.value.source);
+    const srcAttr = candidate.attrs.get("src");
+    patches.push({
+      start: srcAttr?.sliceStart ?? candidate.startTagEnd - 1,
+      end: srcAttr?.sliceEnd ?? candidate.startTagEnd - 1,
+      replacement: srcAttr ? `src="${escapeHtmlAttr(source)}"` : ` src="${escapeHtmlAttr(source)}"`,
+    });
+    const altAttr = candidate.attrs.get("alt");
+    if (op.value.alt.present) {
+      const replacement = `alt="${escapeHtmlAttr(op.value.alt.value)}"`;
+      patches.push({
+        start: altAttr?.sliceStart ?? candidate.startTagEnd - 1,
+        end: altAttr?.sliceEnd ?? candidate.startTagEnd - 1,
+        replacement: altAttr ? replacement : ` ${replacement}`,
+      });
+    } else if (altAttr) {
+      patches.push({ start: altAttr.sliceStart, end: altAttr.sliceEnd, replacement: "" });
+    }
+    if (op.value.framing || op.value.focus) {
+      const existing = candidate.attrs.has("style")
+        ? sourceAttrValue(sourceText, candidate.attrs.get("style")!)
+        : "";
+      const style = mediaStyleValue(existing, op.value);
+      const styleAttr = candidate.attrs.get("style");
+      const replacement = `style="${escapeHtmlAttr(style)}"`;
+      patches.push({
+        start: styleAttr?.sliceStart ?? candidate.startTagEnd - 1,
+        end: styleAttr?.sliceEnd ?? candidate.startTagEnd - 1,
+        replacement: styleAttr ? replacement : ` ${replacement}`,
+      });
+    }
+  }
+  for (const { candidate, op } of imageStyleOps) {
+    if (imageStyleOps.filter((item) => item.candidate.id === candidate.id).length > 1) {
+      throw new Error(`duplicate image style op on ${candidate.id}`);
+    }
+    const style = imageStyleValue(
+      candidate.attrs.has("style")
+        ? sourceAttrValue(sourceText, candidate.attrs.get("style")!)
+        : "",
+      op.fit,
+      op.focalX,
+      op.focalY,
+    );
+    const attr = candidate.attrs.get("style");
+    if (attr) {
+      patches.push({
+        start: attr.sliceStart,
+        end: attr.sliceEnd,
+        replacement: `style="${escapeHtmlAttr(style)}"`,
+      });
+    } else {
+      patches.push({
+        start: candidate.startTagEnd - 1,
+        end: candidate.startTagEnd - 1,
+        replacement: ` style="${escapeHtmlAttr(style)}"`,
+      });
+    }
   }
 
   const formattedTextKeys = new Set<string>();
