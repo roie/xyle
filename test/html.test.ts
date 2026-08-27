@@ -229,6 +229,29 @@ describe("patchHtml text fidelity", () => {
     ).rejects.toThrow(/single-line|rejects line breaks/);
   });
 
+  it("applies safe formatting and combines it with a text edit", async () => {
+    const source = `<p>Hello</p>`;
+    const id = firstNodeId(source);
+    await expect(
+      patchAndGetText(source, [{ type: "format", nodeId: id, value: "bold" }]),
+    ).resolves.toBe(`<p><strong>Hello</strong></p>`);
+    await expect(
+      patchAndGetText(source, [
+        { type: "text", nodeId: `${id}#0`, value: "Updated" },
+        { type: "format", nodeId: id, value: "italic" },
+      ]),
+    ).resolves.toBe(`<p><em>Updated</em></p>`);
+  });
+
+  it("rejects unsupported formatting values", async () => {
+    const source = `<p>Hello</p>`;
+    await expect(
+      patchSource(source, [
+        { type: "format", nodeId: firstNodeId(source), value: "strike" as never },
+      ]),
+    ).rejects.toThrow(/unsupported text format/);
+  });
+
   it("escapes injected markup as literal text", async () => {
     const source = `<h1>Hello</h1>`;
     const out = await patchAndGetText(source, [

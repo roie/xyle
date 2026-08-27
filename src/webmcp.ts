@@ -1,13 +1,14 @@
 export interface EditableContent {
   id: string;
-  type: "text" | "link";
+  type: "text" | "link" | "image";
   preview: string;
 }
 
 export interface ContentResult {
   id: string;
-  type: "text" | "link";
+  type: "text" | "link" | "image";
   content: string;
+  alt?: string;
 }
 
 export interface TextUpdateResult {
@@ -23,16 +24,48 @@ export interface LinkUpdateResult {
   href: string;
 }
 
+export interface AssetUpdateResult {
+  id: string;
+  pagePath: string;
+  src: string;
+  alt: string;
+}
+
+export interface FormattingUpdateResult {
+  id: string;
+  pagePath: string;
+  format: "bold" | "italic" | "underline";
+}
+
 export interface ChangeInfo {
   changeId: string;
   elementId: string;
-  type: "text" | "href" | "src" | "alt";
+  type: "text" | "href" | "src" | "alt" | "format";
   before: string;
   after: string;
+  changeSetId?: string;
+  changeSetLabel?: string;
 }
 
 export interface UndoResult {
   changeId: string;
+  undone: true;
+}
+
+export type ChangeSetOperation =
+  | { type: "text"; id: string; text: string }
+  | { type: "link"; id: string; text?: string; href?: string }
+  | { type: "asset"; id: string; src: string; alt?: string }
+  | { type: "formatting"; id: string; format: "bold" | "italic" | "underline" };
+
+export interface ChangeSetResult {
+  changeSetId: string;
+  label: string;
+  changes: ChangeInfo[];
+}
+
+export interface ChangeSetUndoResult {
+  changeSetId: string;
   undone: true;
 }
 
@@ -41,6 +74,10 @@ export interface WebMcpBridge {
   getContent(id: string): ContentResult;
   listChanges(): ChangeInfo[];
   undoChange(changeId: string): UndoResult;
+  applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSetResult;
+  undoChangeSet(changeSetId: string): ChangeSetUndoResult;
+  replaceAsset(id: string, src: string, alt?: string): AssetUpdateResult;
+  updateFormatting(id: string, format: "bold" | "italic" | "underline"): FormattingUpdateResult;
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -94,6 +131,33 @@ function parseTextUpdateInput(value: unknown): { id: string; text: string } {
   return { id: value.id, text: value.text };
 }
 
+function parseAssetInput(value: unknown): { id: string; src: string; alt?: string } {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.src !== "string") {
+    throw new Error("replace_asset requires string fields id and src");
+  }
+  if (value.alt !== undefined && typeof value.alt !== "string") {
+    throw new Error("replace_asset alt must be a string");
+  }
+  return {
+    id: value.id,
+    src: value.src,
+    ...(value.alt !== undefined ? { alt: value.alt } : {}),
+  };
+}
+
+function parseFormattingInput(value: unknown): {
+  id: string;
+  format: "bold" | "italic" | "underline";
+} {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.format !== "string") {
+    throw new Error("update_formatting requires string fields id and format");
+  }
+  if (value.format !== "bold" && value.format !== "italic" && value.format !== "underline") {
+    throw new Error("update_formatting format must be bold, italic, or underline");
+  }
+  return { id: value.id, format: value.format };
+}
+
 function parseLinkUpdateInput(value: unknown): { id: string; text?: string; href?: string } {
   if (!isRecord(value) || typeof value.id !== "string") {
     throw new Error("update_link requires a string id");
@@ -112,6 +176,84 @@ function parseLinkUpdateInput(value: unknown): { id: string; text?: string; href
     ...(value.text !== undefined ? { text: value.text } : {}),
     ...(value.href !== undefined ? { href: value.href } : {}),
   };
+}
+
+function parseChangeSetInput(value: unknown): { label: string; changes: ChangeSetOperation[] } {
+  if (!isRecord(value) || typeof value.label !== "string") {
+    throw new Error("apply_change_set requires a string label");
+  }
+  const label = value.label.trim();
+  if (!label || label.length > 100) {
+    throw new Error("apply_change_set label must be 1 to 100 characters");
+  }
+  if (!Array.isArray(value.changes) || value.changes.length === 0 || value.changes.length > 20) {
+    throw new Error("apply_change_set requires 1 to 20 changes");
+  }
+  const ids = new Set<string>();
+  const changes: ChangeSetOperation[] = [];
+  for (const rawChange of value.changes) {
+    if (!isRecord(rawChange) || typeof rawChange.id !== "string" || !rawChange.id) {
+      throw new Error("Each change requires a string id");
+    }
+    if (ids.has(rawChange.id)) throw new Error(`Duplicate change target ${rawChange.id}`);
+    ids.add(rawChange.id);
+    if (rawChange.type === "text") {
+      if (typeof rawChange.text !== "string") throw new Error("Text changes require a string text");
+      changes.push({ type: "text", id: rawChange.id, text: rawChange.text });
+      continue;
+    }
+    if (rawChange.type === "link") {
+      if (rawChange.text !== undefined && typeof rawChange.text !== "string") {
+        throw new Error("Link change text must be a string");
+      }
+      if (rawChange.href !== undefined && typeof rawChange.href !== "string") {
+        throw new Error("Link change href must be a string");
+      }
+      if (rawChange.text === undefined && rawChange.href === undefined) {
+        throw new Error("Link changes require text or href");
+      }
+      changes.push({
+        type: "link",
+        id: rawChange.id,
+        ...(rawChange.text !== undefined ? { text: rawChange.text } : {}),
+        ...(rawChange.href !== undefined ? { href: rawChange.href } : {}),
+      });
+      continue;
+    }
+    if (rawChange.type === "asset") {
+      if (typeof rawChange.src !== "string") throw new Error("Asset changes require a string src");
+      if (rawChange.alt !== undefined && typeof rawChange.alt !== "string") {
+        throw new Error("Asset change alt must be a string");
+      }
+      changes.push({
+        type: "asset",
+        id: rawChange.id,
+        src: rawChange.src,
+        ...(rawChange.alt !== undefined ? { alt: rawChange.alt } : {}),
+      });
+      continue;
+    }
+    if (rawChange.type === "formatting") {
+      if (
+        rawChange.format !== "bold" &&
+        rawChange.format !== "italic" &&
+        rawChange.format !== "underline"
+      ) {
+        throw new Error("Formatting changes require bold, italic, or underline");
+      }
+      changes.push({ type: "formatting", id: rawChange.id, format: rawChange.format });
+      continue;
+    }
+    throw new Error("Change type must be text, link, asset, or formatting");
+  }
+  return { label, changes };
+}
+
+function parseChangeSetIdInput(value: unknown): string {
+  if (!isRecord(value) || typeof value.changeSetId !== "string") {
+    throw new Error("undo_change_set requires a string changeSetId");
+  }
+  return value.changeSetId;
 }
 
 export async function registerWebMcpTools(
@@ -174,6 +316,65 @@ export async function registerWebMcpTools(
     );
     await context.registerTool(
       {
+        name: "apply_change_set",
+        description: "Apply several safe Xyle edits as one reviewable and undoable task.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            label: { type: "string", description: "A short name for this editing task." },
+            changes: {
+              type: "array",
+              minItems: 1,
+              maxItems: 20,
+              items: {
+                type: "object",
+                properties: {
+                  type: { type: "string", enum: ["text", "link", "asset", "formatting"] },
+                  id: { type: "string", description: "The current Xyle node id." },
+                  text: { type: "string", description: "Replacement text." },
+                  href: { type: "string", description: "A safe URL or path." },
+                  src: { type: "string", description: "A safe image URL or path." },
+                  alt: { type: "string", description: "Alternative text for an image." },
+                  format: { type: "string", enum: ["bold", "italic", "underline"] },
+                },
+                required: ["type", "id"],
+              },
+            },
+          },
+          required: ["label", "changes"],
+        },
+        annotations: { untrustedContentHint: true },
+        execute: async (input, context) => {
+          if (context?.signal?.aborted) {
+            throw new DOMException("Tool execution canceled", "AbortError");
+          }
+          const parsed = parseChangeSetInput(input);
+          return textResult(JSON.stringify(bridge.applyChangeSet(parsed.label, parsed.changes)));
+        },
+      },
+      { signal: controller.signal },
+    );
+    await context.registerTool(
+      {
+        name: "undo_change_set",
+        description: "Undo every current Xyle change created by one editing task.",
+        inputSchema: {
+          type: "object",
+          properties: { changeSetId: { type: "string", description: "The Xyle change-set id." } },
+          required: ["changeSetId"],
+        },
+        annotations: { untrustedContentHint: true },
+        execute: async (input, context) => {
+          if (context?.signal?.aborted) {
+            throw new DOMException("Tool execution canceled", "AbortError");
+          }
+          return textResult(JSON.stringify(bridge.undoChangeSet(parseChangeSetIdInput(input))));
+        },
+      },
+      { signal: controller.signal },
+    );
+    await context.registerTool(
+      {
         name: "undo_change",
         description: "Undo one current unsaved Xyle change.",
         inputSchema: {
@@ -211,6 +412,53 @@ export async function registerWebMcpTools(
           }
           const parsed = parseLinkUpdateInput(input);
           return textResult(JSON.stringify(bridge.updateLink(parsed.id, parsed.text, parsed.href)));
+        },
+      },
+      { signal: controller.signal },
+    );
+    await context.registerTool(
+      {
+        name: "replace_asset",
+        description: "Replace one Xyle image source and optionally update its alt text.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "The current Xyle image id." },
+            src: { type: "string", description: "A safe image URL or site path." },
+            alt: { type: "string", description: "Optional alternative text." },
+          },
+          required: ["id", "src"],
+        },
+        annotations: { untrustedContentHint: true },
+        execute: async (input, context) => {
+          if (context?.signal?.aborted) {
+            throw new DOMException("Tool execution canceled", "AbortError");
+          }
+          const parsed = parseAssetInput(input);
+          return textResult(JSON.stringify(bridge.replaceAsset(parsed.id, parsed.src, parsed.alt)));
+        },
+      },
+      { signal: controller.signal },
+    );
+    await context.registerTool(
+      {
+        name: "update_formatting",
+        description: "Apply safe bold, italic, or underline formatting to one Xyle text region.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "The current Xyle text or link id." },
+            format: { type: "string", enum: ["bold", "italic", "underline"] },
+          },
+          required: ["id", "format"],
+        },
+        annotations: { untrustedContentHint: true },
+        execute: async (input, context) => {
+          if (context?.signal?.aborted) {
+            throw new DOMException("Tool execution canceled", "AbortError");
+          }
+          const parsed = parseFormattingInput(input);
+          return textResult(JSON.stringify(bridge.updateFormatting(parsed.id, parsed.format)));
         },
       },
       { signal: controller.signal },

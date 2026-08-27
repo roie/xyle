@@ -25,6 +25,23 @@ describe("WebMCP tools", () => {
         },
       ],
       undoChange: (changeId: string) => ({ changeId, undone: true as const }),
+      applyChangeSet: (label: string, _changes: unknown[]) => ({
+        changeSetId: "changeset-1",
+        label,
+        changes: [],
+      }),
+      undoChangeSet: (changeSetId: string) => ({ changeSetId, undone: true as const }),
+      replaceAsset: (id: string, src: string, alt?: string) => ({
+        id,
+        pagePath: "/index.html",
+        src,
+        alt: alt ?? "",
+      }),
+      updateFormatting: (id: string, format: "bold" | "italic" | "underline") => ({
+        id,
+        pagePath: "/index.html",
+        format,
+      }),
       updateText: (id: string, text: string) => ({ id, pagePath: "/index.html", text }),
       updateLink: (id: string, text?: string, href?: string) => ({
         id,
@@ -39,8 +56,12 @@ describe("WebMCP tools", () => {
       "list_editable_content",
       "get_content",
       "list_changes",
+      "apply_change_set",
+      "undo_change_set",
       "undo_change",
       "update_link",
+      "replace_asset",
+      "update_formatting",
       "update_text",
     ]);
 
@@ -54,10 +75,26 @@ describe("WebMCP tools", () => {
     await expect(tools[2]!.execute({}, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.listChanges()) }],
     });
-    await expect(tools[3]!.execute({ changeId: "change-1" }, { signal })).resolves.toEqual({
+    await expect(
+      tools[3]!.execute(
+        { label: "Hero rewrite", changes: [{ type: "text", id: "n1", text: "Hello" }] },
+        { signal },
+      ),
+    ).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(bridge.applyChangeSet("Hero rewrite", [])),
+        },
+      ],
+    });
+    await expect(tools[4]!.execute({ changeSetId: "changeset-1" }, { signal })).resolves.toEqual({
+      content: [{ type: "text", text: JSON.stringify(bridge.undoChangeSet("changeset-1")) }],
+    });
+    await expect(tools[5]!.execute({ changeId: "change-1" }, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.undoChange("change-1")) }],
     });
-    await expect(tools[4]!.execute({ id: "n1", href: "/about.html" }, { signal })).resolves.toEqual(
+    await expect(tools[6]!.execute({ id: "n1", href: "/about.html" }, { signal })).resolves.toEqual(
       {
         content: [
           {
@@ -67,9 +104,33 @@ describe("WebMCP tools", () => {
         ],
       },
     );
-    await expect(tools[5]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
+    await expect(
+      tools[7]!.execute({ id: "n1", src: "/images/new.jpg", alt: "A new image" }, { signal }),
+    ).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(bridge.replaceAsset("n1", "/images/new.jpg", "A new image")),
+        },
+      ],
+    });
+    await expect(tools[8]!.execute({ id: "n1", format: "bold" }, { signal })).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(bridge.updateFormatting("n1", "bold")),
+        },
+      ],
+    });
+    await expect(tools[9]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.updateText("n1", "Hello")) }],
     });
+    await expect(
+      tools[3]!.execute(
+        { label: " ", changes: [{ type: "text", id: "n1", text: "x" }] },
+        { signal },
+      ),
+    ).rejects.toThrow("label must be 1 to 100 characters");
 
     unregister?.();
   });
@@ -81,6 +142,10 @@ describe("WebMCP tools", () => {
         getContent: (id) => ({ id, type: "text", content: "" }),
         listChanges: () => [],
         undoChange: (changeId) => ({ changeId, undone: true }),
+        applyChangeSet: (label, _changes) => ({ changeSetId: "changeset-1", label, changes: [] }),
+        undoChangeSet: (changeSetId) => ({ changeSetId, undone: true }),
+        replaceAsset: (id, src, alt) => ({ id, pagePath: "/index.html", src, alt: alt ?? "" }),
+        updateFormatting: (id, format) => ({ id, pagePath: "/index.html", format }),
         updateText: (id, text) => ({ id, pagePath: "/index.html", text }),
         updateLink: (id, text, href) => ({
           id,

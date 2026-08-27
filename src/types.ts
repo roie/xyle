@@ -19,8 +19,11 @@ export interface XyleConfig {
   ignoreSelectors: string[];
 }
 
+export type TextFormat = "bold" | "italic" | "underline";
+
 export type PageOperation =
   | { type: "text"; nodeId: string; value: string }
+  | { type: "format"; nodeId: string; value: TextFormat }
   | { type: "lineBreak"; nodeId: string; position: number }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string }

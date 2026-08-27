@@ -3,8 +3,13 @@
 
 import {
   registerWebMcpTools,
+  type AssetUpdateResult,
   type ChangeInfo,
+  type ChangeSetOperation,
+  type ChangeSetResult,
+  type ChangeSetUndoResult,
   type ContentResult,
+  type FormattingUpdateResult,
   type EditableContent,
   type LinkUpdateResult,
   type TextUpdateResult,
@@ -513,6 +518,31 @@ const editorStyles = `
     color: var(--xyle-muted);
     font: 600 11px / 1.4 var(--xyle-font-ui);
     overflow-wrap: anywhere;
+  }
+  .xyle-change-set {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--xyle-line);
+  }
+  .xyle-change-set-label {
+    min-width: 0;
+    color: var(--xyle-ink);
+    font: 600 12px / 1.35 var(--xyle-font-ui);
+    overflow-wrap: anywhere;
+  }
+  .xyle-change-set-label::before {
+    margin-right: 0.4rem;
+    color: var(--xyle-accent-hover);
+    content: "Task";
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .xyle-change-set-undo {
+    flex: none;
   }
   .xyle-change-row {
     display: grid;
@@ -1081,6 +1111,7 @@ interface PageData {
 
 type Op =
   | { type: "text"; nodeId: string; value: string }
+  | { type: "format"; nodeId: string; value: "bold" | "italic" | "underline" }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string; assetName?: string }
   | { type: "alt"; nodeId: string; value: string };
@@ -1091,11 +1122,27 @@ interface PageOps {
   operations: Op[];
 }
 
+interface PendingOp {
+  pagePath: string;
+  op: Op;
+  changeSetId?: string;
+  changeSetLabel?: string;
+}
+
 interface HistoryEntry {
   label: string;
   undo: () => void;
   redo: () => void;
   assetPaths: string[];
+  changeSetId?: string;
+}
+
+interface ChangeSetRecord {
+  id: string;
+  label: string;
+  entries: HistoryEntry[];
+  history?: HistoryEntry;
+  undone: boolean;
 }
 
 const MAX_HISTORY = 100;
@@ -1103,12 +1150,15 @@ let focusedChangeTarget: HTMLElement | null = null;
 
 const state = {
   current: null as PageData | null,
-  ops: [] as { pagePath: string; op: Op }[],
+  ops: [] as PendingOp[],
   history: [] as HistoryEntry[],
   historyIndex: 0,
+  changeSetSequence: 0,
+  changeSets: new Map<string, ChangeSetRecord>(),
   assets: new Map<string, { file: File; objectUrl: string }>(),
   publishedSnapshotDigest: "",
 };
+let activeChangeSet: ChangeSetRecord | null = null;
 let unregisterWebMcp: (() => void) | null = null;
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document): T =>
@@ -1161,6 +1211,10 @@ async function boot(): Promise<void> {
     getContent,
     listChanges,
     undoChange,
+    applyChangeSet,
+    undoChangeSet,
+    replaceAsset,
+    updateFormatting,
     updateText,
     updateLink,
   });
@@ -1816,13 +1870,27 @@ function onBeforeInput(event: InputEvent): void {
     }
     case "formatBold":
     case "formatItalic":
-    case "formatUnderline":
+    case "formatUnderline": {
+      event.preventDefault();
+      if (!session || session.meta.segmentCount !== 1) {
+        flash("Formatting is not supported for this text structure.");
+        return;
+      }
+      const format =
+        event.inputType === "formatBold"
+          ? "bold"
+          : event.inputType === "formatItalic"
+            ? "italic"
+            : "underline";
+      updateFormatting(session.meta.id, format);
+      return;
+    }
     case "formatStrikeThrough":
     case "insertHorizontalRule":
     case "insertOrderedList":
     case "insertUnorderedList": {
       event.preventDefault();
-      flash("Formatting commands are not available.");
+      flash("That formatting command is not supported.");
       return;
     }
     case "insertFromPaste": {
@@ -2544,30 +2612,52 @@ function cleanupUnreachableAssets(includeHistory = true): void {
   }
 }
 
-function applyOp(pagePath: string, op: Op, label: string): void {
+function applyOp(pagePath: string, op: Op, label: string): HistoryEntry {
   const key = opKey(op);
   const previous = state.ops.find(
     (entry) => entry.pagePath === pagePath && opKey(entry.op) === key,
   );
-  replacePendingOp(pagePath, key, op);
+  const previousChangeSet = previous?.changeSetId
+    ? { id: previous.changeSetId, label: previous.changeSetLabel ?? "" }
+    : undefined;
+  const changeSet = activeChangeSet
+    ? { id: activeChangeSet.id, label: activeChangeSet.label }
+    : undefined;
+  replacePendingOp(pagePath, key, op, changeSet);
 
+  const isCurrent = (): boolean =>
+    state.ops.some((entry) => entry.pagePath === pagePath && entry.op === op);
   const undo = (): void => {
-    replacePendingOp(pagePath, key, previous?.op ?? null);
+    if (!isCurrent()) return;
+    replacePendingOp(pagePath, key, previous?.op ?? null, previousChangeSet);
     if (previous) applyOpToDom(pagePath, previous.op);
     else revertOpInDom(pagePath, op);
     updateDirtyUi();
   };
   const redo = (): void => {
-    replacePendingOp(pagePath, key, op);
+    const current = state.ops.find(
+      (entry) => entry.pagePath === pagePath && opKey(entry.op) === key,
+    );
+    if (current && current.op !== previous?.op) return;
+    replacePendingOp(pagePath, key, op, changeSet);
     applyOpToDom(pagePath, op);
     updateDirtyUi();
   };
-  pushHistory({ label, undo, redo, assetPaths: assetPathsFor(previous?.op, op) });
+  const entry: HistoryEntry = {
+    label,
+    undo,
+    redo,
+    assetPaths: assetPathsFor(previous?.op, op),
+    ...(changeSet ? { changeSetId: changeSet.id } : {}),
+  };
+  if (activeChangeSet) activeChangeSet.entries.push(entry);
+  else pushHistory(entry);
   updateDirtyUi();
+  return entry;
 }
 
 function opKey(op: Op): string {
-  const target = op.nodeId.includes("#") ? op.nodeId : `${op.nodeId}:${op.type}`;
+  const target = op.type === "text" ? op.nodeId : `${op.nodeId}:${op.type}`;
   return `${op.type}@${target}`;
 }
 function removeOpsFor(pagePath: string, key: string): void {
@@ -2575,9 +2665,20 @@ function removeOpsFor(pagePath: string, key: string): void {
     (entry) => !(entry.pagePath === pagePath && opKey(entry.op) === key),
   );
 }
-function replacePendingOp(pagePath: string, key: string, op: Op | null): void {
+function replacePendingOp(
+  pagePath: string,
+  key: string,
+  op: Op | null,
+  changeSet?: { id: string; label: string },
+): void {
   removeOpsFor(pagePath, key);
-  if (op) state.ops.push({ pagePath, op });
+  if (op) {
+    state.ops.push({
+      pagePath,
+      op,
+      ...(changeSet ? { changeSetId: changeSet.id, changeSetLabel: changeSet.label } : {}),
+    });
+  }
 }
 
 function pushHistory(entry: HistoryEntry): void {
@@ -2598,19 +2699,27 @@ function listEditableContent(): EditableContent[] {
 
   return current.nodes
     .filter(
-      (meta): meta is NodeMeta & { kind: "text" | "link" } =>
-        (meta.kind === "text" || meta.kind === "link") && meta.textEditable === true,
+      (meta) =>
+        meta.kind === "image" ||
+        ((meta.kind === "text" || meta.kind === "link") && meta.textEditable === true),
     )
-    .map((meta) => ({
-      id: meta.id,
-      type: meta.kind,
-      preview: currentNodeElement(meta.id)?.textContent ?? "",
-    }));
+    .map((meta) => {
+      const element = currentNodeElement(meta.id);
+      if (meta.kind === "image") {
+        return {
+          id: meta.id,
+          type: meta.kind,
+          preview: element?.getAttribute("alt") || element?.getAttribute("src") || "",
+        };
+      }
+      return { id: meta.id, type: meta.kind, preview: element?.textContent ?? "" };
+    });
 }
 
 function listChanges(): ChangeInfo[] {
   const changes: ChangeInfo[] = [];
-  for (const [index, { pagePath, op }] of state.ops.entries()) {
+  for (const [index, entry] of state.ops.entries()) {
+    const { pagePath, op } = entry;
     const [elementId] = op.nodeId.split("#");
     if (!elementId) continue;
     changes.push({
@@ -2619,6 +2728,12 @@ function listChanges(): ChangeInfo[] {
       type: op.type,
       before: originalValue(pagePath, op),
       after: op.value,
+      ...(entry.changeSetId
+        ? {
+            changeSetId: entry.changeSetId,
+            changeSetLabel: entry.changeSetLabel,
+          }
+        : {}),
     });
   }
   return changes;
@@ -2639,16 +2754,198 @@ function undoChange(changeId: string): UndoResult {
   return { changeId, undone: true };
 }
 
+function applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSetResult {
+  if (activeChangeSet) throw new Error("Cannot start a nested Xyle change set");
+  if (!state.current) throw new Error("No page is loaded");
+  if (!label.trim() || label.length > 100) {
+    throw new Error("Change-set label must be 1 to 100 characters");
+  }
+  if (changes.length === 0 || changes.length > 20) {
+    throw new Error("Change set must contain 1 to 20 changes");
+  }
+  if (session) commitEdit();
+
+  const current = state.current;
+  const seenIds = new Set<string>();
+  for (const change of changes) {
+    if (!change.id || seenIds.has(change.id)) {
+      throw new Error(`Duplicate or missing change target ${change.id}`);
+    }
+    seenIds.add(change.id);
+    const meta = current.nodes.find((candidate) => candidate.id === change.id);
+    const element = currentNodeElement(change.id);
+    if (!meta || !element) throw new Error(`Unknown or unavailable Xyle node ${change.id}`);
+    if (change.type === "text") {
+      if ((meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
+        throw new Error(`Unknown or non-text-editable Xyle node ${change.id}`);
+      }
+      if (meta.segmentCount !== 1 || !collectSegments(element)[0]) {
+        throw new Error(`Xyle node ${change.id} has ambiguous text mapping`);
+      }
+      continue;
+    }
+    if (change.type === "asset") {
+      if (meta.kind !== "image") throw new Error(`Xyle node ${change.id} is not an image`);
+      if (!isSafeUrl(change.src)) throw new Error("Unsafe media source rejected");
+      continue;
+    }
+    if (change.type === "formatting") {
+      if ((meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
+        throw new Error(`Xyle node ${change.id} does not support formatting`);
+      }
+      if (meta.segmentCount !== 1 || !collectSegments(element)[0]) {
+        throw new Error(`Xyle node ${change.id} has ambiguous text mapping`);
+      }
+      continue;
+    }
+    if (change.type !== "link" || meta.kind !== "link") {
+      throw new Error(`Xyle node ${change.id} is not a link`);
+    }
+    if (change.text !== undefined && (!meta.textEditable || meta.segmentCount !== 1)) {
+      throw new Error(`Xyle link ${change.id} has ambiguous text mapping`);
+    }
+    if (change.href !== undefined && !isSafeUrl(change.href)) {
+      throw new Error("Unsafe link destination rejected");
+    }
+    if (change.text === undefined && change.href === undefined) {
+      throw new Error("Link changes require text or href");
+    }
+  }
+
+  const record: ChangeSetRecord = {
+    id: `changeset-${++state.changeSetSequence}`,
+    label: label.trim(),
+    entries: [],
+    undone: false,
+  };
+  state.changeSets.set(record.id, record);
+  activeChangeSet = record;
+  try {
+    for (const change of changes) {
+      if (change.type === "text") updateText(change.id, change.text);
+      else if (change.type === "link") updateLink(change.id, change.text, change.href);
+      else if (change.type === "asset") replaceAsset(change.id, change.src, change.alt);
+      else updateFormatting(change.id, change.format);
+    }
+  } catch (error) {
+    for (const entry of [...record.entries].reverse()) entry.undo();
+    state.changeSets.delete(record.id);
+    throw error;
+  } finally {
+    activeChangeSet = null;
+  }
+
+  const history: HistoryEntry = {
+    label: record.label,
+    changeSetId: record.id,
+    assetPaths: [...new Set(record.entries.flatMap((entry) => entry.assetPaths))],
+    undo: () => {
+      for (const entry of [...record.entries].reverse()) entry.undo();
+      record.undone = true;
+      updateDirtyUi();
+    },
+    redo: () => {
+      for (const entry of record.entries) entry.redo();
+      record.undone = false;
+      updateDirtyUi();
+    },
+  };
+  record.history = history;
+  pushHistory(history);
+  return {
+    changeSetId: record.id,
+    label: record.label,
+    changes: listChanges().filter((change) => change.changeSetId === record.id),
+  };
+}
+
+function undoChangeSet(changeSetId: string): ChangeSetUndoResult {
+  const record = state.changeSets.get(changeSetId);
+  if (!record?.history || record.undone) {
+    throw new Error(`Unknown or already undone Xyle change set ${changeSetId}`);
+  }
+  record.history.undo();
+  return { changeSetId, undone: true };
+}
+
 function getContent(nodeId: string): ContentResult {
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+  const element = currentNodeElement(nodeId);
+  if (!meta || !element) throw new Error(`Unknown or unavailable Xyle node ${nodeId}`);
+  if (meta.kind === "image") {
+    return {
+      id: nodeId,
+      type: meta.kind,
+      content: element.getAttribute("src") ?? "",
+      alt: element.getAttribute("alt") ?? "",
+    };
+  }
+  if ((meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
+    throw new Error(`Unknown or non-text-editable Xyle node ${nodeId}`);
+  }
+  return { id: nodeId, type: meta.kind, content: element.textContent ?? "" };
+}
+
+function replaceAsset(nodeId: string, src: string, alt?: string): AssetUpdateResult {
+  if (session) commitEdit();
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+  if (!meta || meta.kind !== "image") throw new Error(`Unknown Xyle image ${nodeId}`);
+  if (!isSafeUrl(src)) throw new Error("Unsafe media source rejected");
+  const element = currentNodeElement(nodeId) as HTMLImageElement | null;
+  if (!element) throw new Error(`Xyle image ${nodeId} is not present in the preview`);
+
+  rememberOriginalAttr(current.pagePath, nodeId, "src", element.getAttribute("src") ?? "");
+  element.setAttribute("src", src);
+  element.src = src;
+  applyOp(current.pagePath, { type: "src", nodeId, value: src }, "Replace image");
+  if (alt !== undefined) {
+    rememberOriginalAttr(current.pagePath, nodeId, "alt", element.getAttribute("alt") ?? "");
+    element.setAttribute("alt", alt);
+    applyOp(current.pagePath, { type: "alt", nodeId, value: alt }, "Edit image alt text");
+  }
+  return {
+    id: nodeId,
+    pagePath: current.pagePath,
+    src: element.getAttribute("src") ?? "",
+    alt: element.getAttribute("alt") ?? "",
+  };
+}
+
+function updateFormatting(
+  nodeId: string,
+  format: "bold" | "italic" | "underline",
+): FormattingUpdateResult {
+  if (session) commitEdit();
   const current = state.current;
   if (!current) throw new Error("No page is loaded");
   const meta = current.nodes.find((candidate) => candidate.id === nodeId);
   if (!meta || (meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
     throw new Error(`Unknown or non-text-editable Xyle node ${nodeId}`);
   }
+  if (meta.segmentCount !== 1) {
+    throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
+  }
   const element = currentNodeElement(nodeId);
   if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
-  return { id: nodeId, type: meta.kind, content: element.textContent ?? "" };
+
+  const identity = segmentIdentity(current.pagePath, nodeId);
+  if (!originalMarkups.has(identity)) originalMarkups.set(identity, element.innerHTML);
+  if (!originalFormats.has(identity)) originalFormats.set(identity, formatOf(element));
+  const previous = state.ops.find(
+    (entry) =>
+      entry.pagePath === current.pagePath &&
+      entry.op.type === "format" &&
+      entry.op.nodeId === nodeId,
+  );
+  if (previous) restoreOriginalMarkup(current.pagePath, nodeId);
+  const operation: Op = { type: "format", nodeId, value: format };
+  applyFormatToDom(current.pagePath, operation);
+  applyOp(current.pagePath, operation, "Format text");
+  return { id: nodeId, pagePath: current.pagePath, format };
 }
 
 function updateText(nodeId: string, text: string): TextUpdateResult {
@@ -2986,8 +3283,13 @@ function discardAll(): void {
   state.ops = [];
   state.history = [];
   state.historyIndex = 0;
+  state.changeSets.clear();
+  state.changeSetSequence = 0;
+  activeChangeSet = null;
   originalSegments.clear();
   originalAttrs.clear();
+  originalMarkups.clear();
+  originalFormats.clear();
 }
 
 async function exitEditor(): Promise<void> {
@@ -3111,12 +3413,17 @@ function opLabel(op: Op): string {
       return "Image";
     case "alt":
       return "Alt text";
+    case "format":
+      return "Formatting";
   }
 }
 
 function originalValue(pagePath: string, op: Op): string {
   if (op.type === "text") {
     return originalSegments.get(segmentIdentity(pagePath, op.nodeId)) ?? "";
+  }
+  if (op.type === "format") {
+    return originalFormats.get(segmentIdentity(pagePath, op.nodeId)) ?? "none";
   }
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
@@ -3257,6 +3564,7 @@ function openChangesDrawer(): void {
   }
   let pageIndex = 0;
   let changeNumber = 0;
+  const renderedChangeSetActions = new Set<string>();
   for (const [pagePath, entries] of operationsByPage) {
     const group = document.createElement("section");
     group.className = "xyle-change-page-group";
@@ -3267,6 +3575,32 @@ function openChangesDrawer(): void {
     group.setAttribute("aria-labelledby", pageLabel.id);
     group.append(pageLabel);
     for (const { index, entry } of entries) {
+      if (entry.changeSetId && !renderedChangeSetActions.has(entry.changeSetId)) {
+        renderedChangeSetActions.add(entry.changeSetId);
+        const task = document.createElement("div");
+        task.className = "xyle-change-set";
+        const taskLabel = document.createElement("strong");
+        taskLabel.className = "xyle-change-set-label";
+        taskLabel.textContent = entry.changeSetLabel ?? "Grouped changes";
+        const taskUndo = document.createElement("button");
+        taskUndo.type = "button";
+        taskUndo.className = "xyle-undo-button xyle-change-set-undo";
+        taskUndo.textContent = "Undo task";
+        taskUndo.setAttribute("aria-label", `Undo task ${taskLabel.textContent}`);
+        taskUndo.addEventListener("click", (event) => {
+          event.stopPropagation();
+          try {
+            undoChangeSet(entry.changeSetId!);
+            drawer.remove();
+            updateDirtyUi();
+            openChangesDrawer();
+          } catch (error) {
+            flash((error as Error).message);
+          }
+        });
+        task.append(taskLabel, taskUndo);
+        group.append(task);
+      }
       const row = document.createElement("div");
       const changeKey = `${pagePath}:${entry.op.nodeId}`;
       row.className = "xyle-change-row";
@@ -3355,6 +3689,11 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) setSegmentValue(el, Number(segRaw), op.value);
     return;
   }
+  if (op.type === "format") {
+    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
+    if (el) applyFormatToElement(el, op.value);
+    return;
+  }
   const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
   if (!el) return;
   const asset = state.assets.get(op.value);
@@ -3375,6 +3714,9 @@ function revertOpInDom(pagePath: string, op: Op): void {
       const runs = setSegmentValue(el as HTMLElement, Number(segRaw), original);
       void runs;
     }
+  } else if (op.type === "format") {
+    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
+    if (el) restoreOriginalMarkup(pagePath, op.nodeId);
   } else if (op.type === "href" || op.type === "src" || op.type === "alt") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     const attr = op.type;
@@ -3388,12 +3730,51 @@ function revertOpInDom(pagePath: string, op: Op): void {
 
 const originalSegments = new Map<string, string>();
 const originalAttrs = new Map<string, string>();
+const originalMarkups = new Map<string, string>();
+const originalFormats = new Map<string, "bold" | "italic" | "underline" | "none">();
 
 function segmentIdentity(pagePath: string, id: string): string {
   return `${pagePath}@${id}`;
 }
 function attrIdentity(pagePath: string, id: string, attr: string): string {
   return `${pagePath}@${id}:${attr}`;
+}
+function formatTag(format: "bold" | "italic" | "underline"): "strong" | "em" | "u" {
+  return format === "bold" ? "strong" : format === "italic" ? "em" : "u";
+}
+function formatOf(el: HTMLElement): "bold" | "italic" | "underline" | "none" {
+  const child = el.firstElementChild;
+  if (!child || child.parentElement !== el) return "none";
+  const marker = child.getAttribute("data-xyle-format");
+  if (marker === "bold" || marker === "italic" || marker === "underline") return marker;
+  return "none";
+}
+function applyFormatToElement(el: HTMLElement, format: "bold" | "italic" | "underline"): void {
+  const existing = el.firstElementChild;
+  if (existing?.getAttribute("data-xyle-format")) {
+    while (existing.firstChild) el.insertBefore(existing.firstChild, existing);
+    existing.remove();
+  }
+  const wrapper = el.ownerDocument.createElement(formatTag(format));
+  wrapper.setAttribute("data-xyle-format", format);
+  while (el.firstChild) wrapper.append(el.firstChild);
+  el.append(wrapper);
+}
+function applyFormatToDom(pagePath: string, op: Extract<Op, { type: "format" }>): void {
+  if (pagePath !== state.current?.pagePath) return;
+  const el = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${op.nodeId}"]`);
+  if (el) applyFormatToElement(el, op.value);
+}
+function restoreOriginalMarkup(pagePath: string, nodeId: string): void {
+  if (pagePath !== state.current?.pagePath) return;
+  const markup = originalMarkups.get(segmentIdentity(pagePath, nodeId));
+  const el = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${nodeId}"]`);
+  if (markup !== undefined && el) {
+    const parsed = new DOMParser().parseFromString(markup, "text/html");
+    el.replaceChildren(
+      ...Array.from(parsed.body.childNodes).map((node) => el.ownerDocument.importNode(node, true)),
+    );
+  }
 }
 function rememberOriginalSegment(pagePath: string, id: string, value: string): void {
   const key = segmentIdentity(pagePath, id);
@@ -3465,6 +3846,9 @@ function restoreOpsIntoDom(): void {
       const [baseId, segRaw] = op.nodeId.split("#");
       const el = doc.querySelector(`[data-xyle-node="${baseId}"]`) as HTMLElement | null;
       if (el) setSegmentValue(el, Number(segRaw), op.value);
+    } else if (op.type === "format") {
+      const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
+      if (el) applyFormatToElement(el, op.value);
     } else {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) {
@@ -3546,8 +3930,13 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     state.ops = [];
     state.history = [];
     state.historyIndex = 0;
+    state.changeSets.clear();
+    state.changeSetSequence = 0;
+    activeChangeSet = null;
     originalSegments.clear();
     originalAttrs.clear();
+    originalMarkups.clear();
+    originalFormats.clear();
     selectedImage = null;
     label.textContent = "Published ✓";
     flash("Published.");

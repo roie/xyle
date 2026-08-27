@@ -13,11 +13,7 @@ type ModelContext = {
   executeTool(tool: Tool, input: string): Promise<unknown>;
 };
 
-async function invokeTool(
-  page: Page,
-  name: string,
-  input: Record<string, string>,
-): Promise<unknown> {
+async function invokeTool(page: Page, name: string, input: unknown): Promise<unknown> {
   return page.evaluate(
     async ({ name, input }) => {
       const context = (document as Document & { modelContext?: ModelContext }).modelContext!;
@@ -122,6 +118,53 @@ test.describe("WebMCP editor tools", () => {
     expect(await opsCount(page)).toBe(0);
   });
 
+  test("applies safe formatting through WebMCP and human editing", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const heading = content.find((item) => item.type === "text");
+    expect(heading?.id).toBeTruthy();
+
+    await expect(
+      invokeTool(page, "update_formatting", { id: heading!.id, format: "bold" }),
+    ).resolves.toMatchObject({ id: heading!.id, format: "bold" });
+    const headingLocator = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${heading!.id}"]`);
+    await expect(headingLocator.locator('strong[data-xyle-format="bold"]')).toHaveText(
+      heading!.preview,
+    );
+    await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
+      { type: "format", before: "none", after: "bold" },
+    ]);
+
+    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
+      changeId: "change-1",
+      undone: true,
+    });
+    await expect(headingLocator.locator('strong[data-xyle-format="bold"]')).toHaveCount(0);
+
+    await editNode(page, heading!.id);
+    await page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${heading!.id}"]`)
+      .press("Control+b");
+    await expect(headingLocator.locator('strong[data-xyle-format="bold"]')).toHaveText(
+      heading!.preview,
+    );
+    expect(await opsCount(page)).toBe(1);
+  });
+
   test("combines human and agent edits before human publishing", async ({ page, browserName }) => {
     test.skip(
       browserName !== "chromium" || test.info().project.name !== "webmcp",
@@ -178,6 +221,96 @@ test.describe("WebMCP editor tools", () => {
     expect(published).toContain("Get a quote");
     expect(published).not.toContain("Start editing");
     await expect(page.locator("#xyle-dirty")).toBeHidden();
+  });
+
+  test("groups several agent edits and undoes the task as one change", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const textNodes = content.filter((item) => item.type === "text");
+    const heading = textNodes[0];
+    const paragraph = textNodes.find((item) => item.id !== heading?.id);
+    const cta = content.find((item) => item.type === "link" && item.preview === "Get a quote");
+    const image = content.find((item) => item.type === "image");
+    expect(heading?.id).toBeTruthy();
+    expect(paragraph?.id).toBeTruthy();
+    expect(cta?.id).toBeTruthy();
+    expect(image?.id).toBeTruthy();
+    const originalImage = (await invokeTool(page, "get_content", { id: image!.id })) as {
+      content: string;
+      alt?: string;
+    };
+    const replacementSrc =
+      originalImage.content === "/assets/hero-fallback.jpg"
+        ? "/assets/hero-wide.webp"
+        : "/assets/hero-fallback.jpg";
+
+    const result = (await invokeTool(page, "apply_change_set", {
+      label: "Improve the hero",
+      changes: [
+        { type: "text", id: heading!.id, text: "A clearer heading" },
+        { type: "text", id: paragraph!.id, text: "Clear help from a local plumber, day or night." },
+        { type: "link", id: cta!.id, text: "Start editing", href: "/contact.html" },
+        { type: "asset", id: image!.id, src: replacementSrc, alt: "Updated hero image" },
+      ],
+    })) as { changeSetId: string; label: string; changes: Array<{ changeSetId?: string }> };
+    expect(result.label).toBe("Improve the hero");
+    expect(result.changeSetId).toMatch(/^changeset-\d+$/);
+    expect(result.changes).toHaveLength(6);
+    expect(new Set(result.changes.map((change) => change.changeSetId))).toEqual(
+      new Set([result.changeSetId]),
+    );
+    expect(await opsCount(page)).toBe(6);
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${image!.id}"]`),
+    ).toHaveAttribute("src", replacementSrc);
+
+    await page.locator("#xyle-changes").click();
+    await expect(page.locator("#xyle-changes-drawer")).toContainText("Improve the hero");
+    await expect(page.locator(".xyle-change-set-undo")).toBeVisible();
+
+    await expect(
+      invokeTool(page, "undo_change_set", { changeSetId: result.changeSetId }),
+    ).resolves.toEqual({ changeSetId: result.changeSetId, undone: true });
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${heading!.id}"]`),
+    ).toHaveText(heading!.preview);
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${paragraph!.id}"]`),
+    ).toHaveText(paragraph!.preview);
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${cta!.id}"]`),
+    ).toHaveText(cta!.preview);
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${image!.id}"]`),
+    ).toHaveAttribute("src", originalImage.content);
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${image!.id}"]`),
+    ).toHaveAttribute("alt", originalImage.alt ?? "");
+    expect(await opsCount(page)).toBe(0);
+    await expect(
+      invokeTool(page, "apply_change_set", {
+        label: "Should fail atomically",
+        changes: [
+          { type: "text", id: heading!.id, text: "Not applied" },
+          { type: "text", id: "not-a-current-node", text: "Also not applied" },
+        ],
+      }),
+    ).rejects.toThrow();
+    expect(await opsCount(page)).toBe(0);
+    await expect(invokeTool(page, "get_content", { id: heading!.id })).resolves.toMatchObject({
+      content: heading!.preview,
+    });
   });
 
   test("updates a link and rejects unsafe destinations", async ({ page, browserName }) => {

@@ -4,6 +4,7 @@ import type {
   PageChange,
   PageOperation,
   PreparedPreview,
+  TextFormat,
   PreviewNode,
   XyleDigest,
 } from "./types.ts";
@@ -100,6 +101,8 @@ interface Candidate {
   tag: string;
   startTagStart: number;
   startTagEnd: number;
+  contentStart?: number;
+  contentEnd?: number;
   multiline: boolean;
   textEditable: boolean;
   /** Descendant text nodes (excluding nested link/image candidates), document order. */
@@ -277,6 +280,8 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
           tag,
           startTagStart: loc.startTag!.startOffset,
           startTagEnd: loc.startTag!.endOffset,
+          contentStart: loc.startTag!.endOffset,
+          contentEnd: loc.endTag?.startOffset ?? loc.endOffset,
           multiline: false,
           textEditable: onlyInline && segments.length > 0,
           segments,
@@ -300,6 +305,8 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
           tag,
           startTagStart: loc.startTag!.startOffset,
           startTagEnd: loc.startTag!.endOffset,
+          contentStart: loc.startTag!.endOffset,
+          contentEnd: loc.endTag?.startOffset ?? loc.endOffset,
           multiline: MULTILINE_TAGS.has(tag),
           textEditable: true,
           segments,
@@ -482,6 +489,13 @@ function renderTextMarkup(text: string, multilineAllowed: boolean): string {
   return text.split("\n").map(escapeHtmlText).join("<br>");
 }
 
+function formatTag(format: TextFormat): "strong" | "em" | "u" {
+  if (format === "bold") return "strong";
+  if (format === "italic") return "em";
+  if (format === "underline") return "u";
+  throw new Error("unsupported text format");
+}
+
 export async function patchHtml(
   source: Uint8Array,
   change: PageChange,
@@ -507,6 +521,7 @@ export async function patchHtml(
   >();
   const attrOps: { candidate: Candidate; op: PageOperation & { type: "href" | "src" | "alt" } }[] =
     [];
+  const formatOps: { candidate: Candidate; op: PageOperation & { type: "format" } }[] = [];
 
   for (const op of change.operations) {
     switch (op.type) {
@@ -525,6 +540,25 @@ export async function patchHtml(
           segment,
           markup: renderTextMarkup(op.value, candidate.multiline),
         });
+        break;
+      }
+      case "format": {
+        const candidate = analysis.candidates.get(op.nodeId);
+        if (!candidate || (candidate.kind !== "text" && candidate.kind !== "link")) {
+          throw new Error(`unknown formatting target ${op.nodeId}`);
+        }
+        if (
+          !candidate.textEditable ||
+          candidate.contentStart === undefined ||
+          candidate.contentEnd === undefined
+        ) {
+          throw new Error(`formatting target ${op.nodeId} is not safely editable`);
+        }
+        if (formatOps.some(({ candidate: existing }) => existing.id === candidate.id)) {
+          throw new Error(`duplicate formatting op on ${op.nodeId}`);
+        }
+        formatTag(op.value);
+        formatOps.push({ candidate, op });
         break;
       }
       case "lineBreak": {
@@ -569,7 +603,32 @@ export async function patchHtml(
 
   const patches: SourcePatch[] = [];
 
-  for (const intent of textIntents.values()) {
+  const formattedTextKeys = new Set<string>();
+  for (const { candidate, op } of formatOps) {
+    const contentStart = candidate.contentStart!;
+    const contentEnd = candidate.contentEnd!;
+    let inner = sourceText.slice(contentStart, contentEnd);
+    const nestedIntents = [...textIntents.entries()]
+      .filter(
+        ([, intent]) => intent.segment.start >= contentStart && intent.segment.end <= contentEnd,
+      )
+      .sort(([, left], [, right]) => right.segment.start - left.segment.start);
+    for (const [key, intent] of nestedIntents) {
+      const start = intent.segment.start - contentStart;
+      const end = intent.segment.end - contentStart;
+      inner = inner.slice(0, start) + intent.markup + inner.slice(end);
+      formattedTextKeys.add(key);
+    }
+    const tag = formatTag(op.value);
+    patches.push({
+      start: contentStart,
+      end: contentEnd,
+      replacement: `<${tag}>${inner}</${tag}>`,
+    });
+  }
+
+  for (const [key, intent] of textIntents) {
+    if (formattedTextKeys.has(key)) continue;
     patches.push({
       start: intent.segment.start,
       end: intent.segment.end,
