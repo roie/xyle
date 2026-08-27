@@ -61,5 +61,6 @@ pnpm test:e2e     # Playwright suite (Chromium/Firefox; WebKit needs host deps)
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the design,
-[SECURITY.md](SECURITY.md) for the security model, and
+[SECURITY.md](SECURITY.md) for the security model,
+[docs/webmcp.md](docs/webmcp.md) for the WebMCP interface, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
