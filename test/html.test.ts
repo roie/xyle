@@ -243,6 +243,20 @@ describe("patchHtml text fidelity", () => {
     ).resolves.toBe(`<p><em>Updated</em></p>`);
   });
 
+  it("changes a simple text block to a safe heading level", async () => {
+    const source = `<p>Hello</p>`;
+    const id = firstNodeId(source);
+    await expect(
+      patchAndGetText(source, [{ type: "formatBlock", nodeId: id, value: "h2" }]),
+    ).resolves.toBe(`<h2>Hello</h2>`);
+    await expect(
+      patchAndGetText(source, [
+        { type: "text", nodeId: `${id}#0`, value: "Updated" },
+        { type: "formatBlock", nodeId: id, value: "h3" },
+      ]),
+    ).resolves.toBe(`<h3>Updated</h3>`);
+  });
+
   it("rejects unsupported formatting values", async () => {
     const source = `<p>Hello</p>`;
     await expect(

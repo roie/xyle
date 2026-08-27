@@ -20,10 +20,12 @@ export interface XyleConfig {
 }
 
 export type TextFormat = "bold" | "italic" | "underline";
+export type BlockFormat = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 
 export type PageOperation =
   | { type: "text"; nodeId: string; value: string }
   | { type: "format"; nodeId: string; value: TextFormat }
+  | { type: "formatBlock"; nodeId: string; value: BlockFormat }
   | { type: "lineBreak"; nodeId: string; position: number }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string }

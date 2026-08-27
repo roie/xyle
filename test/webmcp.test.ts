@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { registerWebMcpTools } from "../src/webmcp.ts";
+import { registerWebMcpTools, type Formatting } from "../src/webmcp.ts";
 
 describe("WebMCP tools", () => {
   test("registers the first editor tools and invokes them through the bridge", async () => {
@@ -37,7 +37,7 @@ describe("WebMCP tools", () => {
         src,
         alt: alt ?? "",
       }),
-      updateFormatting: (id: string, format: "bold" | "italic" | "underline") => ({
+      updateFormatting: (id: string, format: Formatting) => ({
         id,
         pagePath: "/index.html",
         format,

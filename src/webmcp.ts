@@ -31,16 +31,28 @@ export interface AssetUpdateResult {
   alt: string;
 }
 
+export type Formatting =
+  | "bold"
+  | "italic"
+  | "underline"
+  | "paragraph"
+  | "heading-1"
+  | "heading-2"
+  | "heading-3"
+  | "heading-4"
+  | "heading-5"
+  | "heading-6";
+
 export interface FormattingUpdateResult {
   id: string;
   pagePath: string;
-  format: "bold" | "italic" | "underline";
+  format: Formatting;
 }
 
 export interface ChangeInfo {
   changeId: string;
   elementId: string;
-  type: "text" | "href" | "src" | "alt" | "format";
+  type: "text" | "href" | "src" | "alt" | "format" | "formatBlock";
   before: string;
   after: string;
   changeSetId?: string;
@@ -56,7 +68,7 @@ export type ChangeSetOperation =
   | { type: "text"; id: string; text: string }
   | { type: "link"; id: string; text?: string; href?: string }
   | { type: "asset"; id: string; src: string; alt?: string }
-  | { type: "formatting"; id: string; format: "bold" | "italic" | "underline" };
+  | { type: "formatting"; id: string; format: Formatting };
 
 export interface ChangeSetResult {
   changeSetId: string;
@@ -77,7 +89,7 @@ export interface WebMcpBridge {
   applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSetResult;
   undoChangeSet(changeSetId: string): ChangeSetUndoResult;
   replaceAsset(id: string, src: string, alt?: string): AssetUpdateResult;
-  updateFormatting(id: string, format: "bold" | "italic" | "underline"): FormattingUpdateResult;
+  updateFormatting(id: string, format: Formatting): FormattingUpdateResult;
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -145,17 +157,26 @@ function parseAssetInput(value: unknown): { id: string; src: string; alt?: strin
   };
 }
 
-function parseFormattingInput(value: unknown): {
-  id: string;
-  format: "bold" | "italic" | "underline";
-} {
+function parseFormattingInput(value: unknown): { id: string; format: Formatting } {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.format !== "string") {
     throw new Error("update_formatting requires string fields id and format");
   }
-  if (value.format !== "bold" && value.format !== "italic" && value.format !== "underline") {
-    throw new Error("update_formatting format must be bold, italic, or underline");
+  const formats: Formatting[] = [
+    "bold",
+    "italic",
+    "underline",
+    "paragraph",
+    "heading-1",
+    "heading-2",
+    "heading-3",
+    "heading-4",
+    "heading-5",
+    "heading-6",
+  ];
+  if (!formats.includes(value.format as Formatting)) {
+    throw new Error("update_formatting format is not supported");
   }
-  return { id: value.id, format: value.format };
+  return { id: value.id, format: value.format as Formatting };
 }
 
 function parseLinkUpdateInput(value: unknown): { id: string; text?: string; href?: string } {
@@ -234,14 +255,26 @@ function parseChangeSetInput(value: unknown): { label: string; changes: ChangeSe
       continue;
     }
     if (rawChange.type === "formatting") {
-      if (
-        rawChange.format !== "bold" &&
-        rawChange.format !== "italic" &&
-        rawChange.format !== "underline"
-      ) {
-        throw new Error("Formatting changes require bold, italic, or underline");
+      const formats: Formatting[] = [
+        "bold",
+        "italic",
+        "underline",
+        "paragraph",
+        "heading-1",
+        "heading-2",
+        "heading-3",
+        "heading-4",
+        "heading-5",
+        "heading-6",
+      ];
+      if (!formats.includes(rawChange.format as Formatting)) {
+        throw new Error("Formatting changes require a supported format");
       }
-      changes.push({ type: "formatting", id: rawChange.id, format: rawChange.format });
+      changes.push({
+        type: "formatting",
+        id: rawChange.id,
+        format: rawChange.format as Formatting,
+      });
       continue;
     }
     throw new Error("Change type must be text, link, asset, or formatting");
@@ -335,7 +368,21 @@ export async function registerWebMcpTools(
                   href: { type: "string", description: "A safe URL or path." },
                   src: { type: "string", description: "A safe image URL or path." },
                   alt: { type: "string", description: "Alternative text for an image." },
-                  format: { type: "string", enum: ["bold", "italic", "underline"] },
+                  format: {
+                    type: "string",
+                    enum: [
+                      "bold",
+                      "italic",
+                      "underline",
+                      "paragraph",
+                      "heading-1",
+                      "heading-2",
+                      "heading-3",
+                      "heading-4",
+                      "heading-5",
+                      "heading-6",
+                    ],
+                  },
                 },
                 required: ["type", "id"],
               },
@@ -448,7 +495,21 @@ export async function registerWebMcpTools(
           type: "object",
           properties: {
             id: { type: "string", description: "The current Xyle text or link id." },
-            format: { type: "string", enum: ["bold", "italic", "underline"] },
+            format: {
+              type: "string",
+              enum: [
+                "bold",
+                "italic",
+                "underline",
+                "paragraph",
+                "heading-1",
+                "heading-2",
+                "heading-3",
+                "heading-4",
+                "heading-5",
+                "heading-6",
+              ],
+            },
           },
           required: ["id", "format"],
         },

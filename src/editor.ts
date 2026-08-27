@@ -9,6 +9,7 @@ import {
   type ChangeSetResult,
   type ChangeSetUndoResult,
   type ContentResult,
+  type Formatting,
   type FormattingUpdateResult,
   type EditableContent,
   type LinkUpdateResult,
@@ -1112,6 +1113,7 @@ interface PageData {
 type Op =
   | { type: "text"; nodeId: string; value: string }
   | { type: "format"; nodeId: string; value: "bold" | "italic" | "underline" }
+  | { type: "formatBlock"; nodeId: string; value: BlockTag }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string; assetName?: string }
   | { type: "alt"; nodeId: string; value: string };
@@ -1836,6 +1838,24 @@ function onKeyDown(event: KeyboardEvent): void {
   if (event.key === "Escape") {
     event.preventDefault();
     revertEdit();
+    return;
+  }
+  if (event.ctrlKey || event.metaKey) {
+    if (!event.altKey && /^[bBuUiI]$/.test(event.key)) {
+      event.preventDefault();
+      const format =
+        event.key.toLowerCase() === "b"
+          ? "bold"
+          : event.key.toLowerCase() === "i"
+            ? "italic"
+            : "underline";
+      updateFormatting(session.meta.id, format);
+      return;
+    }
+    if (event.altKey && /^[1-6]$/.test(event.key)) {
+      event.preventDefault();
+      updateFormatting(session.meta.id, `heading-${event.key}` as BlockFormatting);
+    }
   }
 }
 
@@ -1883,6 +1903,22 @@ function onBeforeInput(event: InputEvent): void {
             ? "italic"
             : "underline";
       updateFormatting(session.meta.id, format);
+      return;
+    }
+    case "formatBlock": {
+      event.preventDefault();
+      const rawFormat = event.data?.replace(/[<>]/g, "").toLowerCase();
+      const format =
+        rawFormat === "p"
+          ? "paragraph"
+          : rawFormat && /^h[1-6]$/.test(rawFormat)
+            ? `heading-${rawFormat.slice(1)}`
+            : null;
+      if (!session || !format) {
+        flash("That heading level is not supported.");
+        return;
+      }
+      updateFormatting(session.meta.id, format as BlockFormatting);
       return;
     }
     case "formatStrikeThrough":
@@ -2727,7 +2763,7 @@ function listChanges(): ChangeInfo[] {
       elementId,
       type: op.type,
       before: originalValue(pagePath, op),
-      after: op.value,
+      after: op.type === "formatBlock" ? blockFormattingFor(op.value) : op.value,
       ...(entry.changeSetId
         ? {
             changeSetId: entry.changeSetId,
@@ -2790,7 +2826,11 @@ function applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSet
       continue;
     }
     if (change.type === "formatting") {
-      if ((meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
+      if (isBlockFormatting(change.format)) {
+        if (meta.kind !== "text" || !meta.textEditable || !isBlockTag(meta.tag)) {
+          throw new Error(`Xyle node ${change.id} does not support block formatting`);
+        }
+      } else if ((meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
         throw new Error(`Xyle node ${change.id} does not support formatting`);
       }
       if (meta.segmentCount !== 1 || !collectSegments(element)[0]) {
@@ -2915,10 +2955,42 @@ function replaceAsset(nodeId: string, src: string, alt?: string): AssetUpdateRes
   };
 }
 
-function updateFormatting(
-  nodeId: string,
-  format: "bold" | "italic" | "underline",
-): FormattingUpdateResult {
+type BlockFormatting =
+  | "paragraph"
+  | "heading-1"
+  | "heading-2"
+  | "heading-3"
+  | "heading-4"
+  | "heading-5"
+  | "heading-6";
+type BlockTag = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+
+function isBlockFormatting(format: Formatting): format is BlockFormatting {
+  return (
+    format === "paragraph" ||
+    format === "heading-1" ||
+    format === "heading-2" ||
+    format === "heading-3" ||
+    format === "heading-4" ||
+    format === "heading-5" ||
+    format === "heading-6"
+  );
+}
+function blockTagFor(format: BlockFormatting): BlockTag {
+  if (format === "paragraph") return "p";
+  const tag = `h${format.slice(-1)}`;
+  if (!isBlockTag(tag)) throw new Error("unsupported block format");
+  return tag;
+}
+function blockFormattingFor(tag: BlockTag): BlockFormatting {
+  return tag === "p" ? "paragraph" : (`heading-${tag.slice(1)}` as BlockFormatting);
+}
+function isBlockTag(tag: string | undefined): tag is BlockTag {
+  return tag === "p" || /^h[1-6]$/.test(tag ?? "");
+}
+
+function updateFormatting(nodeId: string, format: Formatting): FormattingUpdateResult {
+  if (isBlockFormatting(format)) return updateBlockFormatting(nodeId, format);
   if (session) commitEdit();
   const current = state.current;
   if (!current) throw new Error("No page is loaded");
@@ -2945,6 +3017,30 @@ function updateFormatting(
   const operation: Op = { type: "format", nodeId, value: format };
   applyFormatToDom(current.pagePath, operation);
   applyOp(current.pagePath, operation, "Format text");
+  return { id: nodeId, pagePath: current.pagePath, format };
+}
+
+function updateBlockFormatting(nodeId: string, format: BlockFormatting): FormattingUpdateResult {
+  if (session) commitEdit();
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+  if (!meta || meta.kind !== "text" || !meta.textEditable || !isBlockTag(meta.tag)) {
+    throw new Error(`Unknown or non-block-formatting Xyle node ${nodeId}`);
+  }
+  if (meta.segmentCount !== 1) {
+    throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
+  }
+  const element = currentNodeElement(nodeId);
+  if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
+  const tag = blockTagFor(format);
+  if (meta.tag === tag) return { id: nodeId, pagePath: current.pagePath, format };
+
+  const identity = segmentIdentity(current.pagePath, nodeId);
+  if (!originalBlockTags.has(identity)) originalBlockTags.set(identity, meta.tag);
+  const operation: Op = { type: "formatBlock", nodeId, value: tag };
+  applyBlockFormatToDom(current.pagePath, operation);
+  applyOp(current.pagePath, operation, "Change heading level");
   return { id: nodeId, pagePath: current.pagePath, format };
 }
 
@@ -3290,6 +3386,7 @@ function discardAll(): void {
   originalAttrs.clear();
   originalMarkups.clear();
   originalFormats.clear();
+  originalBlockTags.clear();
 }
 
 async function exitEditor(): Promise<void> {
@@ -3415,6 +3512,8 @@ function opLabel(op: Op): string {
       return "Alt text";
     case "format":
       return "Formatting";
+    case "formatBlock":
+      return "Heading level";
   }
 }
 
@@ -3424,6 +3523,10 @@ function originalValue(pagePath: string, op: Op): string {
   }
   if (op.type === "format") {
     return originalFormats.get(segmentIdentity(pagePath, op.nodeId)) ?? "none";
+  }
+  if (op.type === "formatBlock") {
+    const original = originalBlockTags.get(segmentIdentity(pagePath, op.nodeId));
+    return original ? blockFormattingFor(original) : "paragraph";
   }
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
@@ -3694,6 +3797,11 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) applyFormatToElement(el, op.value);
     return;
   }
+  if (op.type === "formatBlock") {
+    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
+    if (el) applyBlockFormatToDom(pagePath, op);
+    return;
+  }
   const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
   if (!el) return;
   const asset = state.assets.get(op.value);
@@ -3717,6 +3825,8 @@ function revertOpInDom(pagePath: string, op: Op): void {
   } else if (op.type === "format") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     if (el) restoreOriginalMarkup(pagePath, op.nodeId);
+  } else if (op.type === "formatBlock") {
+    restoreOriginalBlockFormat(pagePath, op.nodeId);
   } else if (op.type === "href" || op.type === "src" || op.type === "alt") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     const attr = op.type;
@@ -3732,6 +3842,7 @@ const originalSegments = new Map<string, string>();
 const originalAttrs = new Map<string, string>();
 const originalMarkups = new Map<string, string>();
 const originalFormats = new Map<string, "bold" | "italic" | "underline" | "none">();
+const originalBlockTags = new Map<string, BlockTag>();
 
 function segmentIdentity(pagePath: string, id: string): string {
   return `${pagePath}@${id}`;
@@ -3764,6 +3875,29 @@ function applyFormatToDom(pagePath: string, op: Extract<Op, { type: "format" }>)
   if (pagePath !== state.current?.pagePath) return;
   const el = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${op.nodeId}"]`);
   if (el) applyFormatToElement(el, op.value);
+}
+function replaceBlockElement(el: HTMLElement, tag: BlockTag): void {
+  const replacement = el.ownerDocument.createElement(tag);
+  for (const attribute of Array.from(el.attributes)) {
+    replacement.setAttribute(attribute.name, attribute.value);
+  }
+  while (el.firstChild) replacement.append(el.firstChild);
+  el.replaceWith(replacement);
+  const meta = state.current?.nodes.find(
+    (candidate) => candidate.id === replacement.dataset.xyleNode,
+  );
+  if (meta) wireCandidate(replacement, meta);
+}
+function applyBlockFormatToDom(pagePath: string, op: Extract<Op, { type: "formatBlock" }>): void {
+  if (pagePath !== state.current?.pagePath) return;
+  const el = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${op.nodeId}"]`);
+  if (el) replaceBlockElement(el, op.value);
+}
+function restoreOriginalBlockFormat(pagePath: string, nodeId: string): void {
+  if (pagePath !== state.current?.pagePath) return;
+  const tag = originalBlockTags.get(segmentIdentity(pagePath, nodeId));
+  const el = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${nodeId}"]`);
+  if (tag && el && el.tagName.toLowerCase() !== tag) replaceBlockElement(el, tag);
 }
 function restoreOriginalMarkup(pagePath: string, nodeId: string): void {
   if (pagePath !== state.current?.pagePath) return;
@@ -3849,6 +3983,8 @@ function restoreOpsIntoDom(): void {
     } else if (op.type === "format") {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) applyFormatToElement(el, op.value);
+    } else if (op.type === "formatBlock") {
+      applyBlockFormatToDom(pagePath, op);
     } else {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) {
@@ -3937,6 +4073,7 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     originalAttrs.clear();
     originalMarkups.clear();
     originalFormats.clear();
+    originalBlockTags.clear();
     selectedImage = null;
     label.textContent = "Published ✓";
     flash("Published.");

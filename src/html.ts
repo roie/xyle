@@ -103,6 +103,10 @@ interface Candidate {
   startTagEnd: number;
   contentStart?: number;
   contentEnd?: number;
+  tagNameStart?: number;
+  tagNameEnd?: number;
+  endTagNameStart?: number;
+  endTagNameEnd?: number;
   multiline: boolean;
   textEditable: boolean;
   /** Descendant text nodes (excluding nested link/image candidates), document order. */
@@ -282,6 +286,14 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
           startTagEnd: loc.startTag!.endOffset,
           contentStart: loc.startTag!.endOffset,
           contentEnd: loc.endTag?.startOffset ?? loc.endOffset,
+          tagNameStart: loc.startTag!.startOffset + 1,
+          tagNameEnd: loc.startTag!.startOffset + 1 + tag.length,
+          ...(loc.endTag
+            ? {
+                endTagNameStart: loc.endTag.startOffset + 2,
+                endTagNameEnd: loc.endTag.startOffset + 2 + tag.length,
+              }
+            : {}),
           multiline: false,
           textEditable: onlyInline && segments.length > 0,
           segments,
@@ -307,6 +319,14 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
           startTagEnd: loc.startTag!.endOffset,
           contentStart: loc.startTag!.endOffset,
           contentEnd: loc.endTag?.startOffset ?? loc.endOffset,
+          tagNameStart: loc.startTag!.startOffset + 1,
+          tagNameEnd: loc.startTag!.startOffset + 1 + tag.length,
+          ...(loc.endTag
+            ? {
+                endTagNameStart: loc.endTag.startOffset + 2,
+                endTagNameEnd: loc.endTag.startOffset + 2 + tag.length,
+              }
+            : {}),
           multiline: MULTILINE_TAGS.has(tag),
           textEditable: true,
           segments,
@@ -496,6 +516,10 @@ function formatTag(format: TextFormat): "strong" | "em" | "u" {
   throw new Error("unsupported text format");
 }
 
+function isBlockTag(tag: string): tag is "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
+  return tag === "p" || /^h[1-6]$/.test(tag);
+}
+
 export async function patchHtml(
   source: Uint8Array,
   change: PageChange,
@@ -522,6 +546,10 @@ export async function patchHtml(
   const attrOps: { candidate: Candidate; op: PageOperation & { type: "href" | "src" | "alt" } }[] =
     [];
   const formatOps: { candidate: Candidate; op: PageOperation & { type: "format" } }[] = [];
+  const formatBlockOps: {
+    candidate: Candidate;
+    op: PageOperation & { type: "formatBlock" };
+  }[] = [];
 
   for (const op of change.operations) {
     switch (op.type) {
@@ -559,6 +587,28 @@ export async function patchHtml(
         }
         formatTag(op.value);
         formatOps.push({ candidate, op });
+        break;
+      }
+      case "formatBlock": {
+        const candidate = analysis.candidates.get(op.nodeId);
+        if (
+          !candidate ||
+          candidate.kind !== "text" ||
+          !candidate.textEditable ||
+          !isBlockTag(candidate.tag) ||
+          candidate.segments.length !== 1 ||
+          candidate.tagNameStart === undefined ||
+          candidate.tagNameEnd === undefined ||
+          candidate.endTagNameStart === undefined ||
+          candidate.endTagNameEnd === undefined
+        ) {
+          throw new Error(`format block target ${op.nodeId} is not safely editable`);
+        }
+        if (formatBlockOps.some(({ candidate: existing }) => existing.id === candidate.id)) {
+          throw new Error(`duplicate format block op on ${op.nodeId}`);
+        }
+        if (!isBlockTag(op.value)) throw new Error("unsupported block format");
+        formatBlockOps.push({ candidate, op });
         break;
       }
       case "lineBreak": {
@@ -633,6 +683,19 @@ export async function patchHtml(
       start: intent.segment.start,
       end: intent.segment.end,
       replacement: intent.markup,
+    });
+  }
+
+  for (const { candidate, op } of formatBlockOps) {
+    patches.push({
+      start: candidate.tagNameStart!,
+      end: candidate.tagNameEnd!,
+      replacement: op.value,
+    });
+    patches.push({
+      start: candidate.endTagNameStart!,
+      end: candidate.endTagNameEnd!,
+      replacement: op.value,
     });
   }
 

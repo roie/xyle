@@ -132,7 +132,9 @@ test.describe("WebMCP editor tools", () => {
       type: string;
       preview: string;
     }>;
-    const heading = content.find((item) => item.type === "text");
+    const heading = content.find(
+      (item) => item.type === "text" && item.preview === "Plumbing you can depend on",
+    );
     expect(heading?.id).toBeTruthy();
 
     await expect(
@@ -153,6 +155,19 @@ test.describe("WebMCP editor tools", () => {
       undone: true,
     });
     await expect(headingLocator.locator('strong[data-xyle-format="bold"]')).toHaveCount(0);
+
+    await expect(
+      invokeTool(page, "update_formatting", { id: heading!.id, format: "heading-2" }),
+    ).resolves.toMatchObject({ id: heading!.id, format: "heading-2" });
+    await expect(headingLocator).toHaveJSProperty("tagName", "H2");
+    await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
+      { type: "formatBlock", before: "heading-1", after: "heading-2" },
+    ]);
+    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
+      changeId: "change-1",
+      undone: true,
+    });
+    await expect(headingLocator).toHaveJSProperty("tagName", "H1");
 
     await editNode(page, heading!.id);
     await page
