@@ -2253,13 +2253,21 @@ function showFormatTools(): void {
     ["heading-4", "Heading 4"],
     ["heading-5", "Heading 5"],
     ["heading-6", "Heading 6"],
+    ["unordered-list", "Bulleted list"],
+    ["ordered-list", "Numbered list"],
   ] as const) {
     const option = document.createElement("option");
     option.value = value;
     option.textContent = label;
     block.append(option);
   }
-  block.value = isBlockTag(session.meta.tag) ? blockFormattingFor(session.meta.tag) : "paragraph";
+  const currentBlockTag = session.el.tagName.toLowerCase();
+  block.value = isBlockTag(currentBlockTag)
+    ? blockFormattingFor(currentBlockTag)
+    : isListTag(currentBlockTag)
+      ? blockFormattingFor(currentBlockTag)
+      : "paragraph";
+  block.disabled = !isBlockTag(session.meta.tag);
   block.addEventListener("pointerdown", (event) => event.preventDefault());
   block.addEventListener("change", () => {
     if (!session) return;
@@ -2778,24 +2786,32 @@ function applyMediaPatch(
         : {}),
   });
   if (!isSafeUrl(mediaSourcePath(next.source))) throw new Error("Unsafe media source rejected");
-  const previous = state.ops.find(
+  const previousEntry = state.ops.find(
     (entry) =>
       entry.pagePath === pagePath && entry.op.type === "media" && entry.op.nodeId === nodeId,
-  )?.op;
+  );
+  const previous = previousEntry?.op;
+  const changeSet = activeChangeSet
+    ? { id: activeChangeSet.id, label: activeChangeSet.label }
+    : undefined;
+  const previousChangeSet = previousEntry?.changeSetId
+    ? { id: previousEntry.changeSetId, label: previousEntry.changeSetLabel ?? "" }
+    : undefined;
   const op: Op = { type: "media", nodeId, value: next };
   const key = opKey(op);
-  replacePendingOp(pagePath, key, mediaStatesEqual(next, original) ? null : op);
+  replacePendingOp(pagePath, key, mediaStatesEqual(next, original) ? null : op, changeSet);
   applyMediaStateToDom(img, mediaStatesEqual(next, original) ? original : next);
   const entry: HistoryEntry = {
     label,
     assetPaths: assetPathsFor(previous, op),
+    ...(changeSet ? { changeSetId: changeSet.id, changeSetLabel: changeSet.label } : {}),
     undo: () => {
-      replacePendingOp(pagePath, key, previous ?? null);
+      replacePendingOp(pagePath, key, previous ?? null, previousChangeSet);
       applyMediaStateToDom(img, previous?.type === "media" ? previous.value : original);
       updateDirtyUi();
     },
     redo: () => {
-      replacePendingOp(pagePath, key, mediaStatesEqual(next, original) ? null : op);
+      replacePendingOp(pagePath, key, mediaStatesEqual(next, original) ? null : op, changeSet);
       applyMediaStateToDom(img, mediaStatesEqual(next, original) ? original : next);
       updateDirtyUi();
     },
@@ -3784,10 +3800,17 @@ function applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSet
         if (meta.kind !== "text" || !meta.textEditable || !isBlockTag(meta.tag)) {
           throw new Error(`Xyle node ${change.id} does not support block formatting`);
         }
+        if (
+          meta.segmentCount !== 1 &&
+          change.format !== "unordered-list" &&
+          change.format !== "ordered-list"
+        ) {
+          throw new Error(`Xyle node ${change.id} has ambiguous text mapping`);
+        }
       } else if ((meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
         throw new Error(`Xyle node ${change.id} does not support formatting`);
       }
-      if (meta.segmentCount !== 1 || !collectSegments(element)[0]) {
+      if (!collectSegments(element)[0]) {
         throw new Error(`Xyle node ${change.id} has ambiguous text mapping`);
       }
       continue;
@@ -3942,8 +3965,10 @@ type BlockFormatting =
   | "heading-3"
   | "heading-4"
   | "heading-5"
-  | "heading-6";
-type BlockTag = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+  | "heading-6"
+  | "unordered-list"
+  | "ordered-list";
+type BlockTag = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol";
 
 function isBlockFormatting(format: Formatting): format is BlockFormatting {
   return (
@@ -3953,20 +3978,30 @@ function isBlockFormatting(format: Formatting): format is BlockFormatting {
     format === "heading-3" ||
     format === "heading-4" ||
     format === "heading-5" ||
-    format === "heading-6"
+    format === "heading-6" ||
+    format === "unordered-list" ||
+    format === "ordered-list"
   );
 }
 function blockTagFor(format: BlockFormatting): BlockTag {
   if (format === "paragraph") return "p";
+  if (format === "unordered-list") return "ul";
+  if (format === "ordered-list") return "ol";
   const tag = `h${format.slice(-1)}`;
   if (!isBlockTag(tag)) throw new Error("unsupported block format");
   return tag;
 }
 function blockFormattingFor(tag: BlockTag): BlockFormatting {
-  return tag === "p" ? "paragraph" : (`heading-${tag.slice(1)}` as BlockFormatting);
+  if (tag === "p") return "paragraph";
+  if (tag === "ul") return "unordered-list";
+  if (tag === "ol") return "ordered-list";
+  return `heading-${tag.slice(1)}` as BlockFormatting;
 }
 function isBlockTag(tag: string | undefined): tag is BlockTag {
   return tag === "p" || /^h[1-6]$/.test(tag ?? "");
+}
+function isListTag(tag: string | undefined): tag is "ul" | "ol" {
+  return tag === "ul" || tag === "ol";
 }
 
 function reconcileInlineHtml(
@@ -4077,19 +4112,28 @@ function updateBlockFormatting(nodeId: string, format: BlockFormatting): Formatt
   if (!meta || meta.kind !== "text" || !meta.textEditable || !isBlockTag(meta.tag)) {
     throw new Error(`Unknown or non-block-formatting Xyle node ${nodeId}`);
   }
-  if (meta.segmentCount !== 1) {
+  const isListFormat = format === "unordered-list" || format === "ordered-list";
+  if (meta.segmentCount !== 1 && !isListFormat) {
     throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
   }
   const element = currentNodeElement(nodeId);
   if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
+  const currentTag = element.tagName.toLowerCase();
+  if (!isBlockTag(currentTag) && !isListTag(currentTag)) {
+    throw new Error(`Xyle node ${nodeId} is not safely list-formattable`);
+  }
   const tag = blockTagFor(format);
-  if (meta.tag === tag) return { id: nodeId, pagePath: current.pagePath, format };
+  if (currentTag === tag) return { id: nodeId, pagePath: current.pagePath, format };
 
   const identity = segmentIdentity(current.pagePath, nodeId);
   if (!originalBlockTags.has(identity)) originalBlockTags.set(identity, meta.tag);
   const operation: Op = { type: "formatBlock", nodeId, value: tag };
   applyBlockFormatToDom(current.pagePath, operation);
-  applyOp(current.pagePath, operation, "Change heading level");
+  applyOp(
+    current.pagePath,
+    operation,
+    isListTag(tag) || isListTag(currentTag) ? "Change list style" : "Change heading level",
+  );
   return { id: nodeId, pagePath: current.pagePath, format };
 }
 
@@ -4564,7 +4608,7 @@ function opLabel(op: Op): string {
     case "format":
       return "Formatting";
     case "formatBlock":
-      return "Heading level";
+      return isListTag(op.value) ? "List style" : "Heading level";
     case "html":
       return "Formatting";
     case "media":
@@ -5052,11 +5096,24 @@ function applyFormatOperationToElement(
   return true;
 }
 function replaceBlockElement(el: HTMLElement, tag: BlockTag): void {
+  const currentTag = el.tagName.toLowerCase();
   const replacement = el.ownerDocument.createElement(tag);
   for (const attribute of Array.from(el.attributes)) {
     replacement.setAttribute(attribute.name, attribute.value);
   }
-  while (el.firstChild) replacement.append(el.firstChild);
+  if (isListTag(tag) && !isListTag(currentTag)) {
+    const item = el.ownerDocument.createElement("li");
+    while (el.firstChild) item.append(el.firstChild);
+    replacement.append(item);
+  } else if (!isListTag(tag) && isListTag(currentTag)) {
+    const items = Array.from(el.children);
+    if (items.length !== 1 || items[0]?.tagName.toLowerCase() !== "li") {
+      throw new Error("Only a single safe list item can return to a block");
+    }
+    while (items[0].firstChild) replacement.append(items[0].firstChild);
+  } else {
+    while (el.firstChild) replacement.append(el.firstChild);
+  }
   el.replaceWith(replacement);
   const meta = state.current?.nodes.find(
     (candidate) => candidate.id === replacement.dataset.xyleNode,

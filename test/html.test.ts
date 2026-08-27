@@ -410,6 +410,28 @@ describe("patchHtml text fidelity", () => {
     ).resolves.toBe(`<h3>Updated</h3>`);
   });
 
+  it("converts one safely mapped text block into a list item", async () => {
+    const source = `<p class="features">Hello</p>`;
+    const id = firstNodeId(source);
+    await expect(
+      patchAndGetText(source, [{ type: "formatBlock", nodeId: id, value: "ul" }]),
+    ).resolves.toBe(`<ul class="features"><li>Hello</li></ul>`);
+    await expect(
+      patchAndGetText(source, [
+        { type: "text", nodeId: `${id}#0`, value: "Updated" },
+        { type: "formatBlock", nodeId: id, value: "ol" },
+      ]),
+    ).resolves.toBe(`<ol class="features"><li>Updated</li></ol>`);
+  });
+
+  it("rejects list formatting for an existing list item", async () => {
+    const source = `<ul><li>Already a list item</li><li>Another item</li></ul>`;
+    const id = firstNodeId(source);
+    await expect(
+      patchSource(source, [{ type: "formatBlock", nodeId: id, value: "ul" }]),
+    ).rejects.toThrow(/safely editable/);
+  });
+
   it("rejects unsupported formatting values", async () => {
     const source = `<p>Hello</p>`;
     await expect(

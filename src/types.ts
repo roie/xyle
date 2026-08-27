@@ -20,7 +20,7 @@ export interface XyleConfig {
 }
 
 export type TextFormat = "bold" | "italic" | "underline";
-export type BlockFormat = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+export type BlockFormat = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol";
 
 export interface Point {
   x: number;

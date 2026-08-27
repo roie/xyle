@@ -477,12 +477,15 @@ test.describe("WebMCP editor tools", () => {
       id: string;
       type: string;
       preview: string;
+      capabilities?: { replace?: boolean };
     }>;
     const textNodes = content.filter((item) => item.type === "text");
     const heading = textNodes[0];
     const paragraph = textNodes.find((item) => item.id !== heading?.id);
     const cta = content.find((item) => item.type === "link" && item.preview === "Get a quote");
-    const image = content.find((item) => item.type === "image");
+    const image = content.find(
+      (item) => item.type === "image" && item.capabilities?.replace !== false,
+    );
     expect(heading?.id).toBeTruthy();
     expect(paragraph?.id).toBeTruthy();
     expect(cta?.id).toBeTruthy();
@@ -495,7 +498,6 @@ test.describe("WebMCP editor tools", () => {
       originalImage.content === "/assets/hero-fallback.jpg"
         ? "/assets/hero-wide.webp"
         : "/assets/hero-fallback.jpg";
-
     const result = (await invokeTool(page, "apply_change_set", {
       label: "Improve the hero",
       changes: [
@@ -507,11 +509,11 @@ test.describe("WebMCP editor tools", () => {
     })) as { changeSetId: string; label: string; changes: Array<{ changeSetId?: string }> };
     expect(result.label).toBe("Improve the hero");
     expect(result.changeSetId).toMatch(/^changeset-\d+$/);
-    expect(result.changes).toHaveLength(6);
+    expect(result.changes).toHaveLength(5);
     expect(new Set(result.changes.map((change) => change.changeSetId))).toEqual(
       new Set([result.changeSetId]),
     );
-    expect(await opsCount(page)).toBe(6);
+    expect(await opsCount(page)).toBe(5);
     await expect(
       page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${image!.id}"]`),
     ).toHaveAttribute("src", replacementSrc);
@@ -552,6 +554,48 @@ test.describe("WebMCP editor tools", () => {
     await expect(invokeTool(page, "get_content", { id: heading!.id })).resolves.toMatchObject({
       content: heading!.preview,
     });
+  });
+
+  test("formats a safely mapped text block as a list", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const paragraph = content.find(
+      (item) => item.type === "text" && item.preview.includes("Serving Edmonton"),
+    );
+    expect(paragraph?.id).toBeTruthy();
+    const paragraphLocator = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${paragraph!.id}"]`);
+
+    await expect(
+      invokeTool(page, "update_formatting", {
+        id: paragraph!.id,
+        format: "unordered-list",
+      }),
+    ).resolves.toMatchObject({ id: paragraph!.id, format: "unordered-list" });
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "UL");
+    await expect(paragraphLocator.locator(":scope > li")).toHaveText(paragraph!.preview);
+    await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
+      { type: "formatBlock", before: "paragraph", after: "unordered-list" },
+    ]);
+
+    await expect(
+      invokeTool(page, "update_formatting", { id: paragraph!.id, format: "ordered-list" }),
+    ).resolves.toMatchObject({ id: paragraph!.id, format: "ordered-list" });
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "OL");
+    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
+      changeId: "change-1",
+      undone: true,
+    });
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "P");
   });
 
   test("updates a link and rejects unsafe destinations", async ({ page, browserName }) => {

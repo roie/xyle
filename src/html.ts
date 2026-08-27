@@ -630,8 +630,18 @@ function formatTag(format: TextFormat): "strong" | "em" | "u" {
   throw new Error("unsupported text format");
 }
 
-function isBlockTag(tag: string): tag is "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
+function isTextBlockTag(tag: string): tag is "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" {
   return tag === "p" || /^h[1-6]$/.test(tag);
+}
+
+function isListTag(tag: string): tag is "ul" | "ol" {
+  return tag === "ul" || tag === "ol";
+}
+
+function isBlockTag(
+  tag: string,
+): tag is "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" {
+  return isTextBlockTag(tag) || isListTag(tag);
 }
 
 function rawOffsetForVisibleText(source: string, offset: number): number | null {
@@ -859,8 +869,8 @@ export async function patchHtml(
           !candidate ||
           candidate.kind !== "text" ||
           !candidate.textEditable ||
-          !isBlockTag(candidate.tag) ||
-          candidate.segments.length !== 1 ||
+          !isTextBlockTag(candidate.tag) ||
+          (candidate.segments.length !== 1 && !isListTag(op.value)) ||
           candidate.tagNameStart === undefined ||
           candidate.tagNameEnd === undefined ||
           candidate.endTagNameStart === undefined ||
@@ -1088,6 +1098,18 @@ export async function patchHtml(
       end: candidate.endTagNameEnd!,
       replacement: op.value,
     });
+    if (isListTag(op.value)) {
+      patches.push({
+        start: candidate.startTagEnd!,
+        end: candidate.startTagEnd!,
+        replacement: "<li>",
+      });
+      patches.push({
+        start: candidate.endTagNameStart! - 2,
+        end: candidate.endTagNameStart! - 2,
+        replacement: "</li>",
+      });
+    }
   }
 
   for (const { candidate, op } of attrOps) {

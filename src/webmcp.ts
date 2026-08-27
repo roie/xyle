@@ -59,7 +59,9 @@ export type Formatting =
   | "heading-3"
   | "heading-4"
   | "heading-5"
-  | "heading-6";
+  | "heading-6"
+  | "unordered-list"
+  | "ordered-list";
 
 export interface FormattingUpdateResult {
   id: string;
@@ -265,6 +267,8 @@ function parseFormattingInput(value: unknown): { id: string; format: Formatting 
     "heading-4",
     "heading-5",
     "heading-6",
+    "unordered-list",
+    "ordered-list",
   ];
   if (!formats.includes(value.format as Formatting)) {
     throw new Error("update_formatting format is not supported");
@@ -474,6 +478,8 @@ export async function registerWebMcpTools(
                       "heading-4",
                       "heading-5",
                       "heading-6",
+                      "unordered-list",
+                      "ordered-list",
                     ],
                   },
                 },
@@ -626,7 +632,7 @@ export async function registerWebMcpTools(
       {
         name: "update_formatting",
         description:
-          "Apply safe inline formatting or a paragraph/heading block style to one Xyle text region.",
+          "Apply safe inline formatting, paragraph/heading styles, or a safe single-item list style to one Xyle text region.",
         inputSchema: {
           type: "object",
           properties: {
@@ -644,6 +650,8 @@ export async function registerWebMcpTools(
                 "heading-4",
                 "heading-5",
                 "heading-6",
+                "unordered-list",
+                "ordered-list",
               ],
             },
           },
