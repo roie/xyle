@@ -24,6 +24,7 @@ describe("WebMCP tools", () => {
           after: "Hello",
         },
       ],
+      undoChange: (changeId: string) => ({ changeId, undone: true as const }),
       updateText: (id: string, text: string) => ({ id, pagePath: "/index.html", text }),
       updateLink: (id: string, text?: string, href?: string) => ({
         id,
@@ -38,6 +39,7 @@ describe("WebMCP tools", () => {
       "list_editable_content",
       "get_content",
       "list_changes",
+      "undo_change",
       "update_link",
       "update_text",
     ]);
@@ -52,7 +54,10 @@ describe("WebMCP tools", () => {
     await expect(tools[2]!.execute({}, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.listChanges()) }],
     });
-    await expect(tools[3]!.execute({ id: "n1", href: "/about.html" }, { signal })).resolves.toEqual(
+    await expect(tools[3]!.execute({ changeId: "change-1" }, { signal })).resolves.toEqual({
+      content: [{ type: "text", text: JSON.stringify(bridge.undoChange("change-1")) }],
+    });
+    await expect(tools[4]!.execute({ id: "n1", href: "/about.html" }, { signal })).resolves.toEqual(
       {
         content: [
           {
@@ -62,7 +67,7 @@ describe("WebMCP tools", () => {
         ],
       },
     );
-    await expect(tools[4]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
+    await expect(tools[5]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.updateText("n1", "Hello")) }],
     });
 
@@ -75,6 +80,7 @@ describe("WebMCP tools", () => {
         listEditableContent: () => [],
         getContent: (id) => ({ id, type: "text", content: "" }),
         listChanges: () => [],
+        undoChange: (changeId) => ({ changeId, undone: true }),
         updateText: (id, text) => ({ id, pagePath: "/index.html", text }),
         updateLink: (id, text, href) => ({
           id,

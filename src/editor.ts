@@ -8,6 +8,7 @@ import {
   type EditableContent,
   type LinkUpdateResult,
   type TextUpdateResult,
+  type UndoResult,
 } from "./webmcp.ts";
 
 const editorStyles = `
@@ -1159,6 +1160,7 @@ async function boot(): Promise<void> {
     listEditableContent,
     getContent,
     listChanges,
+    undoChange,
     updateText,
     updateLink,
   });
@@ -2620,6 +2622,21 @@ function listChanges(): ChangeInfo[] {
     });
   }
   return changes;
+}
+
+function undoChange(changeId: string): UndoResult {
+  const match = /^change-(\d+)$/.exec(changeId);
+  const number = match?.[1];
+  const index = number ? Number(number) - 1 : -1;
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new Error(`Unknown Xyle change ${changeId}`);
+  }
+  const change = listChanges()[index];
+  if (!change || change.changeId !== changeId) {
+    throw new Error(`Unknown Xyle change ${changeId}`);
+  }
+  undoOp(index);
+  return { changeId, undone: true };
 }
 
 function getContent(nodeId: string): ContentResult {

@@ -65,6 +65,7 @@ test.describe("WebMCP editor tools", () => {
     }
     expect(discovered.tools).toContain("get_content");
     expect(discovered.tools).toContain("list_changes");
+    expect(discovered.tools).toContain("undo_change");
     expect(discovered.tools).toContain("update_text");
     const heading = discovered.content.find((item) => item.type === "text");
     expect(heading?.id).toBeTruthy();
@@ -111,11 +112,72 @@ test.describe("WebMCP editor tools", () => {
     await page.locator("#xyle-changes").click();
     await expect(page.locator("#xyle-changes-drawer")).toBeVisible();
 
-    await page.locator(".xyle-undo-button").click();
+    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
+      changeId: "change-1",
+      undone: true,
+    });
     await expect(
       page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${heading!.id}"]`),
     ).toHaveText(originalText);
     expect(await opsCount(page)).toBe(0);
+  });
+
+  test("combines human and agent edits before human publishing", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const heading = content.find((item) => item.type === "text");
+    const paragraph = content.find(
+      (item) => item.type === "text" && item.preview.includes("Emergency calls"),
+    );
+    const cta = content.find((item) => item.type === "link" && item.preview === "Get a quote");
+    expect(heading?.id).toBeTruthy();
+    expect(paragraph?.id).toBeTruthy();
+    expect(cta?.id).toBeTruthy();
+
+    const humanHeading = "A heading edited by a human";
+    await editNode(page, heading!.id);
+    await setSelection(page, { nodeId: heading!.id, selectAll: true });
+    await page.keyboard.insertText(humanHeading);
+    await clickOutsideToCommit(page);
+
+    const agentParagraph = "Clear help from a local plumber, day or night.";
+    await expect(
+      invokeTool(page, "update_text", { id: paragraph!.id, text: agentParagraph }),
+    ).resolves.toMatchObject({ id: paragraph!.id, text: agentParagraph });
+    await expect(
+      invokeTool(page, "update_link", { id: cta!.id, text: "Start editing" }),
+    ).resolves.toMatchObject({ id: cta!.id, text: "Start editing" });
+
+    const changes = (await invokeTool(page, "list_changes", {})) as Array<{
+      changeId: string;
+      elementId: string;
+      after: string;
+    }>;
+    const ctaChange = changes.find((change) => change.elementId === cta!.id);
+    expect(ctaChange?.changeId).toBeTruthy();
+    expect(ctaChange?.after).toBe("Start editing");
+
+    await invokeTool(page, "undo_change", { changeId: ctaChange!.changeId });
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${cta!.id}"]`),
+    ).toHaveText("Get a quote");
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const published = await (await page.request.get("/index.html")).text();
+    expect(published).toContain(humanHeading);
+    expect(published).toContain(agentParagraph);
+    expect(published).toContain("Get a quote");
+    expect(published).not.toContain("Start editing");
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
 
   test("updates a link and rejects unsafe destinations", async ({ page, browserName }) => {

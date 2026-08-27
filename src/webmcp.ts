@@ -31,10 +31,16 @@ export interface ChangeInfo {
   after: string;
 }
 
+export interface UndoResult {
+  changeId: string;
+  undone: true;
+}
+
 export interface WebMcpBridge {
   listEditableContent(): EditableContent[];
   getContent(id: string): ContentResult;
   listChanges(): ChangeInfo[];
+  undoChange(changeId: string): UndoResult;
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -72,6 +78,13 @@ function parseIdInput(value: unknown, toolName: string): string {
     throw new Error(`${toolName} requires a string id`);
   }
   return value.id;
+}
+
+function parseChangeIdInput(value: unknown): string {
+  if (!isRecord(value) || typeof value.changeId !== "string") {
+    throw new Error("undo_change requires a string changeId");
+  }
+  return value.changeId;
 }
 
 function parseTextUpdateInput(value: unknown): { id: string; text: string } {
@@ -155,6 +168,25 @@ export async function registerWebMcpTools(
             throw new DOMException("Tool execution canceled", "AbortError");
           }
           return textResult(JSON.stringify(bridge.listChanges()));
+        },
+      },
+      { signal: controller.signal },
+    );
+    await context.registerTool(
+      {
+        name: "undo_change",
+        description: "Undo one current unsaved Xyle change.",
+        inputSchema: {
+          type: "object",
+          properties: { changeId: { type: "string", description: "The Xyle change id." } },
+          required: ["changeId"],
+        },
+        annotations: { untrustedContentHint: true },
+        execute: async (input, context) => {
+          if (context?.signal?.aborted) {
+            throw new DOMException("Tool execution canceled", "AbortError");
+          }
+          return textResult(JSON.stringify(bridge.undoChange(parseChangeIdInput(input))));
         },
       },
       { signal: controller.signal },
