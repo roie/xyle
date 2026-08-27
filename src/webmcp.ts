@@ -16,10 +16,18 @@ export interface TextUpdateResult {
   text: string;
 }
 
+export interface LinkUpdateResult {
+  id: string;
+  pagePath: string;
+  text: string;
+  href: string;
+}
+
 export interface WebMcpBridge {
   listEditableContent(): EditableContent[];
   getContent(id: string): ContentResult;
   updateText(id: string, text: string): TextUpdateResult;
+  updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
 
 interface ModelContextTool {
@@ -64,6 +72,26 @@ function parseTextUpdateInput(value: unknown): { id: string; text: string } {
   return { id: value.id, text: value.text };
 }
 
+function parseLinkUpdateInput(value: unknown): { id: string; text?: string; href?: string } {
+  if (!isRecord(value) || typeof value.id !== "string") {
+    throw new Error("update_link requires a string id");
+  }
+  if (value.text !== undefined && typeof value.text !== "string") {
+    throw new Error("update_link text must be a string");
+  }
+  if (value.href !== undefined && typeof value.href !== "string") {
+    throw new Error("update_link href must be a string");
+  }
+  if (value.text === undefined && value.href === undefined) {
+    throw new Error("update_link requires text or href");
+  }
+  return {
+    id: value.id,
+    ...(value.text !== undefined ? { text: value.text } : {}),
+    ...(value.href !== undefined ? { href: value.href } : {}),
+  };
+}
+
 export async function registerWebMcpTools(
   bridge: WebMcpBridge,
   providedContext?: ModelContextLike,
@@ -103,6 +131,30 @@ export async function registerWebMcpTools(
             throw new DOMException("Tool execution canceled", "AbortError");
           }
           return textResult(JSON.stringify(bridge.getContent(parseIdInput(input, "get_content"))));
+        },
+      },
+      { signal: controller.signal },
+    );
+    await context.registerTool(
+      {
+        name: "update_link",
+        description: "Update the text or safe destination of one Xyle link.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "The editable Xyle link id." },
+            text: { type: "string", description: "Optional replacement link text." },
+            href: { type: "string", description: "Optional safe URL or path." },
+          },
+          required: ["id"],
+        },
+        annotations: { untrustedContentHint: true },
+        execute: async (input, context) => {
+          if (context?.signal?.aborted) {
+            throw new DOMException("Tool execution canceled", "AbortError");
+          }
+          const parsed = parseLinkUpdateInput(input);
+          return textResult(JSON.stringify(bridge.updateLink(parsed.id, parsed.text, parsed.href)));
         },
       },
       { signal: controller.signal },

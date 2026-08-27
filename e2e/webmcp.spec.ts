@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import {
   clickOutsideToCommit,
   editNode,
@@ -12,6 +12,25 @@ type ModelContext = {
   getTools(): Promise<Tool[]>;
   executeTool(tool: Tool, input: string): Promise<unknown>;
 };
+
+async function invokeTool(
+  page: Page,
+  name: string,
+  input: Record<string, string>,
+): Promise<unknown> {
+  return page.evaluate(
+    async ({ name, input }) => {
+      const context = (document as Document & { modelContext?: ModelContext }).modelContext!;
+      const tools = await context.getTools();
+      const tool = tools.find((candidate) => candidate.name === name);
+      if (!tool) throw new Error(`${name} was not registered`);
+      const raw = await context.executeTool(tool, JSON.stringify(input));
+      const envelope = JSON.parse(String(raw)) as { content: Array<{ text: string }> };
+      return JSON.parse(envelope.content[0]!.text);
+    },
+    { name, input },
+  );
+}
 
 test.describe("WebMCP editor tools", () => {
   test("discovers and updates an editable heading through Xyle", async ({ page, browserName }) => {
@@ -50,20 +69,6 @@ test.describe("WebMCP editor tools", () => {
     expect(heading?.id).toBeTruthy();
     expect(heading?.preview).toBeTruthy();
 
-    const invoke = async (name: string, input: Record<string, string>): Promise<unknown> =>
-      page.evaluate(
-        async ({ name, input }) => {
-          const context = (document as Document & { modelContext?: ModelContext }).modelContext!;
-          const tools = await context.getTools();
-          const tool = tools.find((candidate) => candidate.name === name);
-          if (!tool) throw new Error(`${name} was not registered`);
-          const raw = await context.executeTool(tool, JSON.stringify(input));
-          const envelope = JSON.parse(String(raw)) as { content: Array<{ text: string }> };
-          return JSON.parse(envelope.content[0]!.text);
-        },
-        { name, input },
-      );
-
     const originalText = heading!.preview;
     const humanText = "Human edit before the agent";
     await editNode(page, heading!.id);
@@ -71,19 +76,19 @@ test.describe("WebMCP editor tools", () => {
     await page.keyboard.insertText(humanText);
     await clickOutsideToCommit(page);
 
-    await expect(invoke("get_content", { id: heading!.id })).resolves.toMatchObject({
+    await expect(invokeTool(page, "get_content", { id: heading!.id })).resolves.toMatchObject({
       id: heading!.id,
       content: humanText,
     });
 
     const updatedText = "Hello from WebMCP";
     await expect(
-      invoke("update_text", { id: heading!.id, text: updatedText }),
+      invokeTool(page, "update_text", { id: heading!.id, text: updatedText }),
     ).resolves.toMatchObject({
       id: heading!.id,
       text: updatedText,
     });
-    await expect(invoke("get_content", { id: heading!.id })).resolves.toMatchObject({
+    await expect(invokeTool(page, "get_content", { id: heading!.id })).resolves.toMatchObject({
       id: heading!.id,
       content: updatedText,
     });
@@ -101,5 +106,53 @@ test.describe("WebMCP editor tools", () => {
       page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${heading!.id}"]`),
     ).toHaveText(originalText);
     expect(await opsCount(page)).toBe(0);
+  });
+
+  test("updates a link and rejects unsafe destinations", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const link = content.find((item) => item.type === "link" && item.preview === "About");
+    expect(link?.id).toBeTruthy();
+
+    const linkLocator = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${link!.id}"]`);
+    const originalHref = await linkLocator.getAttribute("href");
+    const result = await invokeTool(page, "update_link", {
+      id: link!.id,
+      text: "Company",
+      href: "/contact.html",
+    });
+    expect(result).toMatchObject({
+      id: link!.id,
+      text: "Company",
+      href: "/contact.html",
+    });
+    await expect(linkLocator).toHaveText("Company");
+    await expect(linkLocator).toHaveAttribute("href", "/contact.html");
+
+    const unsafeRejected = await page.evaluate(async (id) => {
+      const context = (document as Document & { modelContext?: ModelContext }).modelContext!;
+      const tools = await context.getTools();
+      const tool = tools.find((candidate) => candidate.name === "update_link");
+      if (!tool) throw new Error("update_link was not registered");
+      try {
+        await context.executeTool(tool, JSON.stringify({ id, href: "javascript:alert(1)" }));
+        return false;
+      } catch {
+        return true;
+      }
+    }, link!.id);
+    expect(unsafeRejected).toBe(true);
+    await expect(linkLocator).toHaveAttribute("href", "/contact.html");
+    expect(originalHref).toBe("/about.html");
   });
 });

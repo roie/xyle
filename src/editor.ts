@@ -5,6 +5,7 @@ import {
   registerWebMcpTools,
   type ContentResult,
   type EditableContent,
+  type LinkUpdateResult,
   type TextUpdateResult,
 } from "./webmcp.ts";
 
@@ -1157,6 +1158,7 @@ async function boot(): Promise<void> {
     listEditableContent,
     getContent,
     updateText,
+    updateLink,
   });
 
   window.addEventListener("beforeunload", (event) => {
@@ -2636,6 +2638,52 @@ function updateText(nodeId: string, text: string): TextUpdateResult {
   applyOpToDom(current.pagePath, operation);
   applyOp(current.pagePath, operation, "Edit text");
   return { id: nodeId, pagePath: current.pagePath, text };
+}
+
+function updateLink(nodeId: string, text?: string, href?: string): LinkUpdateResult {
+  if (session) commitEdit();
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+  if (!meta || meta.kind !== "link") throw new Error(`Unknown Xyle link ${nodeId}`);
+  if (text === undefined && href === undefined) {
+    throw new Error("update_link requires text or href");
+  }
+  if (href !== undefined && !isSafeUrl(href)) {
+    throw new Error("Unsafe link destination rejected");
+  }
+
+  const element = currentNodeElement(nodeId) as HTMLAnchorElement | null;
+  if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
+
+  let textPair: SegmentPair | undefined;
+  if (text !== undefined) {
+    if (!meta.textEditable || meta.segmentCount !== 1) {
+      throw new Error(`Xyle link ${nodeId} has ambiguous text mapping`);
+    }
+    [textPair] = collectSegments(element);
+    if (!textPair) throw new Error(`Xyle link ${nodeId} has no editable text`);
+  }
+
+  if (textPair) {
+    const textOperation: Op = { type: "text", nodeId: `${nodeId}#0`, value: text ?? "" };
+    rememberOriginalSegment(current.pagePath, textOperation.nodeId, textPair.value);
+    applyOpToDom(current.pagePath, textOperation);
+    applyOp(current.pagePath, textOperation, "Edit link text");
+  }
+  if (href !== undefined) {
+    const hrefOperation: Op = { type: "href", nodeId, value: href };
+    rememberOriginalAttr(current.pagePath, nodeId, "href", element.getAttribute("href") ?? "");
+    applyOpToDom(current.pagePath, hrefOperation);
+    applyOp(current.pagePath, hrefOperation, "Edit link");
+  }
+
+  return {
+    id: nodeId,
+    pagePath: current.pagePath,
+    text: element.textContent ?? "",
+    href: element.getAttribute("href") ?? "",
+  };
 }
 
 function currentNodeElement(nodeId: string): HTMLElement | null {
