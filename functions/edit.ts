@@ -86,7 +86,7 @@ input.addEventListener("input", () => {
 });
 </script></body></html>`;
 
-const editorPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Xyle Editor</title><style>html,body{margin:0;height:100%}</style></head><body><div id="xyle-root"></div><script type="module" src="/editor.js?v=20260825"></script></body></html>`;
+const editorPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Xyle Editor</title><style>html,body{margin:0;height:100%}</style></head><body><div id="xyle-root"></div><script type="module" src="/editor.js?v=20260828"></script></body></html>`;
 
 export const onRequestGet = async ({
   request,
