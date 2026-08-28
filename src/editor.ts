@@ -451,8 +451,49 @@ const editorStyles = `
     border: 1px solid var(--xyle-line);
     border-radius: var(--xyle-radius-sm);
     background: #0b0e0c;
-    cursor: crosshair;
+    cursor: grab;
     touch-action: none;
+  }
+  .xyle-crop-stage:active {
+    cursor: grabbing;
+  }
+  .xyle-crop-stage img {
+    position: relative;
+    z-index: 0;
+  }
+  .xyle-crop-guide {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    border: 1px solid #fff;
+    box-shadow: 0 0 0 999px #05070580, 0 0 0 1px #101310;
+    pointer-events: none;
+  }
+  .xyle-crop-guide::before,
+  .xyle-crop-guide::after {
+    position: absolute;
+    inset: 0;
+    content: "";
+    pointer-events: none;
+  }
+  .xyle-crop-guide::before {
+    background: linear-gradient(90deg, transparent 33.2%, #fff8 33.2%, #fff8 33.7%, transparent 33.7%, transparent 66.3%, #fff8 66.3%, #fff8 66.8%, transparent 66.8%);
+  }
+  .xyle-crop-guide::after {
+    background: linear-gradient(0deg, transparent 33.2%, #fff8 33.2%, #fff8 33.7%, transparent 33.7%, transparent 66.3%, #fff8 66.3%, #fff8 66.8%, transparent 66.8%);
+  }
+  .xyle-crop-stage[data-mode="focus"] .xyle-crop-guide {
+    border-color: #a1b69a99;
+    box-shadow: none;
+  }
+  .xyle-crop-stage[data-mode="focus"] .xyle-crop-guide::before,
+  .xyle-crop-stage[data-mode="focus"] .xyle-crop-guide::after {
+    display: none;
+  }
+  .xyle-crop-hint {
+    margin: -0.2rem 0 0;
+    color: #849184;
+    font-size: 11px;
   }
   .xyle-crop-stage img {
     display: block;
@@ -465,6 +506,7 @@ const editorStyles = `
   }
   .xyle-focal-target {
     position: absolute;
+    z-index: 2;
     width: 1.25rem;
     height: 1.25rem;
     padding: 0;
@@ -1643,6 +1685,7 @@ type InteractionMode = "idle" | "hover" | "editing" | "popover" | "drawer";
 let interactionMode: InteractionMode = "idle";
 let hoveredCandidate: HTMLElement | null = null;
 let hoverClearTimer = 0;
+let contextToolsCloseTimer = 0;
 let activeTools: HTMLElement | null = null;
 let activeToolsTarget: HTMLElement | null = null;
 let activeToolsReturnFocus: HTMLElement | null = null;
@@ -1657,6 +1700,7 @@ function setInteractionMode(mode: InteractionMode): void {
 
 function beginCandidateHover(el: HTMLElement): void {
   window.clearTimeout(hoverClearTimer);
+  if (activeToolsTarget && activeToolsTarget !== el) closeContextTools(false);
   if (hoveredCandidate && hoveredCandidate !== el) {
     hoveredCandidate.classList.remove("xyle-hover");
   }
@@ -1679,6 +1723,7 @@ function endCandidateHover(el: HTMLElement): void {
 
 function closeContextTools(restoreFocus = true): void {
   window.cancelAnimationFrame(formatToolsFrame);
+  window.clearTimeout(contextToolsCloseTimer);
   formatToolsFrame = 0;
   if (activeTools) activeTools.remove();
   activeTools = null;
@@ -1702,7 +1747,10 @@ function registerContextTools(
   activeToolsReturnFocus = target;
   activeToolsPlacement = placement;
   setInteractionMode("popover");
-  tools.addEventListener("mouseenter", () => window.clearTimeout(hoverClearTimer));
+  tools.addEventListener("mouseenter", () => {
+    window.clearTimeout(hoverClearTimer);
+    window.clearTimeout(contextToolsCloseTimer);
+  });
   tools.addEventListener("mouseleave", () => scheduleContextToolsClose(target));
   tools.addEventListener("focusout", () => {
     window.setTimeout(() => {
@@ -1720,8 +1768,8 @@ function registerContextTools(
 }
 
 function scheduleContextToolsClose(target: HTMLElement): void {
-  window.clearTimeout(hoverClearTimer);
-  hoverClearTimer = window.setTimeout(() => {
+  window.clearTimeout(contextToolsCloseTimer);
+  contextToolsCloseTimer = window.setTimeout(() => {
     if (activeToolsTarget === target && !activeTools?.matches(":hover") && !session) {
       closeContextTools(false);
     }
@@ -3174,12 +3222,14 @@ function openImageCropEditor(
   editor.style.setProperty("--xyle-crop-height", `${height}px`);
   editor.replaceChildren(
     document.createRange().createContextualFragment(`
-    <div class="xyle-crop-stage" role="application" aria-label="Image crop preview">
+    <div class="xyle-crop-stage" role="group" aria-label="Image crop preview">
       <img alt="" src="">
+      <div class="xyle-crop-guide" aria-hidden="true"></div>
       <button type="button" class="xyle-focal-target" aria-label="Focal point. Use arrow keys to move."></button>
     </div>
     <div class="xyle-media-editor-panel">
       <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">${mode === "focus" ? "Image focus" : "Image framing"}</span><strong id="xyle-crop-dialog-title">${mode === "focus" ? "Focus point" : "Crop & focal point"}</strong></div>
+      <p class="xyle-crop-hint">${mode === "focus" ? "Click or drag to place the focus point." : "Drag to reposition · scroll or use the slider to zoom."}</p>
       <label class="xyle-dialog-label" data-frame-control>Frame
         <select class="xyle-dialog-input" name="fit">
           <option value="cover">Crop to fill</option>
@@ -3203,6 +3253,7 @@ function openImageCropEditor(
     </div>`),
   );
   const stage = editor.querySelector(".xyle-crop-stage") as HTMLElement;
+  stage.dataset.mode = mode;
   const preview = stage.querySelector("img") as HTMLImageElement;
   const target = stage.querySelector(".xyle-focal-target") as HTMLButtonElement;
   const fit = editor.querySelector("select[name=fit]") as HTMLSelectElement;
@@ -3340,6 +3391,21 @@ function openImageCropEditor(
   stage.addEventListener("pointerup", () => {
     dragging = false;
   });
+  stage.addEventListener("pointercancel", () => {
+    dragging = false;
+  });
+  stage.addEventListener(
+    "wheel",
+    (event) => {
+      if (mode === "focus") return;
+      event.preventDefault();
+      const currentZoom = Number(zoomInput.value);
+      const nextZoom = Math.min(3, Math.max(1, currentZoom - event.deltaY * 0.002));
+      zoomInput.value = nextZoom.toFixed(2);
+      updatePreview();
+    },
+    { passive: false },
+  );
   function setFocusFromPointer(event: PointerEvent): void {
     const rect = stage.getBoundingClientRect();
     setFocus((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
@@ -4813,8 +4879,11 @@ function currentNodeElement(nodeId: string): HTMLElement | null {
 function updateDirtyUi(): void {
   const count = dirtyCount();
   $("#xyle-dirty").style.display = count > 0 ? "" : "none";
-  $("#xyle-count").textContent = String(count);
-  $("#xyle-changes").setAttribute("aria-label", `Open ${count} change${count === 1 ? "" : "s"}`);
+  $("#xyle-count").textContent = count > 0 ? String(count) : "";
+  $("#xyle-changes").setAttribute(
+    "aria-label",
+    count > 0 ? `Open ${count} change${count === 1 ? "" : "s"}` : "Open changes",
+  );
   const dock = $("#xyle-control-dock");
   const handle = $<HTMLButtonElement>("#xyle-dock-handle");
   dock.toggleAttribute("data-hidden", count === 0);
@@ -5326,7 +5395,8 @@ function openChangesDrawer(): void {
     <button id="xyle-discard" class="xyle-dialog-button xyle-dialog-button--accent"><svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg><span>Discard all changes</span></button>
   </footer>`),
   );
-  $("#xyle-changes-count", drawer).textContent = String(state.ops.length);
+  const changeCount = state.ops.length;
+  $("#xyle-changes-count", drawer).textContent = changeCount > 0 ? String(changeCount) : "";
   document.body.append(drawer);
   const closeButton = $("#xyle-changes-close", drawer);
   closeButton.addEventListener("click", () => closeChangesDrawer());
@@ -5443,10 +5513,7 @@ function openChangesDrawer(): void {
       number.className = "xyle-change-index";
       number.textContent = String(++changeNumber);
       number.setAttribute("aria-hidden", "true");
-      const changeLabel = document.createElement("span");
-      changeLabel.className = "xyle-change-kind";
-      changeLabel.textContent = opLabel(entry.op);
-      heading.append(number, changeLabel);
+      heading.append(number);
       const rowActions = document.createElement("div");
       rowActions.className = "xyle-change-row-actions";
       const locateButton = document.createElement("button");

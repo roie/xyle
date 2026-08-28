@@ -135,6 +135,14 @@ test.describe("editor shell and preview", () => {
     expect(Math.min(below, above)).toBeLessThanOrEqual(8);
   });
 
+  test("context tools dismiss when the pointer leaves a link", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    await page.frameLocator("#xyle-preview").locator("a.cta").hover();
+    await expect(page.locator(".xyle-link-tools")).toBeVisible();
+    await page.frameLocator("#xyle-preview").locator("h1").hover();
+    await expect(page.locator(".xyle-link-tools")).toHaveCount(0);
+  });
+
   test("context tools dismiss when the editor shell or preview is clicked", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     await page.frameLocator("#xyle-preview").locator("a.cta").click();

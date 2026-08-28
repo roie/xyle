@@ -365,7 +365,8 @@ test.describe("media editing", () => {
     const change = page
       .getByRole("dialog", { name: "Changes" })
       .locator(".xyle-change-row")
-      .filter({ hasText: "Media" });
+      .filter({ hasText: originalAlt })
+      .filter({ hasText: altText });
     await expect(change.locator(".xyle-change-before")).toContainText(originalAlt);
     await expect(change.locator(".xyle-change-after")).toContainText(altText);
     await page.getByRole("button", { name: "Close changes drawer" }).click();
