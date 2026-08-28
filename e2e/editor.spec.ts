@@ -652,6 +652,25 @@ test.describe("changes drawer and undo", () => {
     expect(await textOf(page, id!)).toBe(secondEdit);
     expect(await opsCount(page)).toBe(1);
   });
+  test("updates SEO metadata from the human editor", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    await page.locator("#xyle-control-hitbox").hover();
+    await page.locator("#xyle-menu-btn").click();
+    await page.locator('#xyle-menu button[data-action="seo"]').click();
+    const dialog = page.locator('dialog[aria-labelledby="xyle-seo-dialog-title"]');
+    await expect(dialog).toBeVisible();
+    await dialog.locator('[name="title"]').fill("Updated page title");
+    await dialog.getByRole("button", { name: "Save metadata" }).click();
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () =>
+            (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument?.title,
+        ),
+      )
+      .toBe("Updated page title");
+  });
 });
 
 test.describe("exit vs logout semantics", () => {

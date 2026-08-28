@@ -1,4 +1,4 @@
-import type { CropRect, MediaCapabilities, Point } from "./types.ts";
+import type { CropRect, MediaCapabilities, Point, SeoField, SeoState } from "./types.ts";
 
 export interface EditableContent {
   id: string;
@@ -49,6 +49,12 @@ export interface MediaUpdateResult {
   alt: string;
 }
 
+export interface SeoUpdateResult {
+  field: SeoField;
+  pagePath: string;
+  value: string;
+}
+
 export type Formatting =
   | "bold"
   | "italic"
@@ -81,7 +87,8 @@ export interface ChangeInfo {
     | "formatBlock"
     | "html"
     | "imageStyle"
-    | "media";
+    | "media"
+    | "seo";
   before: string;
   after: string;
   changeSetId?: string;
@@ -119,6 +126,8 @@ export interface WebMcpBridge {
   undoChangeSet(changeSetId: string): ChangeSetUndoResult;
   replaceAsset(id: string, src: string, alt?: string): AssetUpdateResult;
   updateMedia?: (id: string, patch: MediaPatchInput) => MediaUpdateResult;
+  getSeo?: () => SeoState;
+  updateSeo?: (field: SeoField, value: string) => SeoUpdateResult;
   updateFormatting(id: string, format: Formatting): FormattingUpdateResult;
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
@@ -150,6 +159,23 @@ function modelContext(): ModelContextLike | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function parseSeoInput(value: unknown): { field: SeoField; value: string } {
+  if (!isRecord(value) || typeof value.field !== "string" || typeof value.value !== "string") {
+    throw new Error("update_seo requires string fields field and value");
+  }
+  const fields: SeoField[] = [
+    "title",
+    "description",
+    "canonical",
+    "ogTitle",
+    "ogDescription",
+    "ogImage",
+  ];
+  if (!fields.includes(value.field as SeoField))
+    throw new Error("update_seo field is not supported");
+  return { field: value.field as SeoField, value: value.value };
 }
 
 function parseIdInput(value: unknown, toolName: string): string {
@@ -628,6 +654,51 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
+    if (bridge.getSeo) {
+      await context.registerTool(
+        {
+          name: "get_seo",
+          description: "Read the current page SEO metadata.",
+          inputSchema: { type: "object", properties: {} },
+          annotations: { readOnlyHint: true, untrustedContentHint: true },
+          execute: async (_input, context) => {
+            if (context?.signal?.aborted) {
+              throw new DOMException("Tool execution canceled", "AbortError");
+            }
+            return textResult(JSON.stringify(bridge.getSeo!()));
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.updateSeo) {
+      await context.registerTool(
+        {
+          name: "update_seo",
+          description: "Update one safe page SEO metadata field for human review.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              field: {
+                type: "string",
+                enum: ["title", "description", "canonical", "ogTitle", "ogDescription", "ogImage"],
+              },
+              value: { type: "string" },
+            },
+            required: ["field", "value"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted) {
+              throw new DOMException("Tool execution canceled", "AbortError");
+            }
+            const parsed = parseSeoInput(input);
+            return textResult(JSON.stringify(bridge.updateSeo!(parsed.field, parsed.value)));
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
     await context.registerTool(
       {
         name: "update_formatting",

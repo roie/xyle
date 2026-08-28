@@ -20,6 +20,21 @@ export interface XyleConfig {
 }
 
 export type TextFormat = "bold" | "italic" | "underline";
+export type SeoField =
+  | "title"
+  | "description"
+  | "canonical"
+  | "ogTitle"
+  | "ogDescription"
+  | "ogImage";
+export interface SeoState {
+  title: string;
+  description: string;
+  canonical: string;
+  ogTitle: string;
+  ogDescription: string;
+  ogImage: string;
+}
 export type BlockFormat = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol";
 
 export interface Point {
@@ -76,6 +91,7 @@ export type PageOperation =
   | { type: "formatBlock"; nodeId: string; value: BlockFormat }
   | { type: "html"; nodeId: string; value: string }
   | { type: "media"; nodeId: string; value: MediaState }
+  | { type: "seo"; nodeId: string; field: SeoField; value: string }
   | { type: "lineBreak"; nodeId: string; position: number }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string }

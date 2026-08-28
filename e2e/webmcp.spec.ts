@@ -464,6 +464,49 @@ test.describe("WebMCP editor tools", () => {
     await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
 
+  test("reads and updates safe SEO metadata", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const original = (await invokeTool(page, "get_seo", {})) as {
+      title: string;
+      description: string;
+      canonical: string;
+    };
+    const nextTitle = `${original.title} — Xyle`;
+    await expect(
+      invokeTool(page, "update_seo", { field: "title", value: nextTitle }),
+    ).resolves.toMatchObject({ field: "title", value: nextTitle, pagePath: "/index.html" });
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () =>
+            (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument?.title,
+        ),
+      )
+      .toBe(nextTitle);
+    await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
+      { type: "seo", before: original.title, after: nextTitle },
+    ]);
+    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
+      changeId: "change-1",
+      undone: true,
+    });
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () =>
+            (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument?.title,
+        ),
+      )
+      .toBe(original.title);
+    await expect(
+      invokeTool(page, "update_seo", { field: "canonical", value: "javascript:bad" }),
+    ).rejects.toThrow();
+  });
+
   test("groups several agent edits and undoes the task as one change", async ({
     page,
     browserName,

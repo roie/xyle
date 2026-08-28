@@ -177,6 +177,24 @@ describe("preparePreview source locations", () => {
     );
   });
 
+  it("patches SEO metadata and safely adds missing fields", async () => {
+    const source = `<!doctype html><html><head><title>Old title</title><meta name="description" content="Old description"><link rel="canonical" href="/old.html"></head><body><p>Content</p></body></html>`;
+    await expect(
+      patchAndGetText(source, [
+        { type: "seo", nodeId: "seo:title", field: "title", value: "New <title>" },
+        { type: "seo", nodeId: "seo:description", field: "description", value: "New description" },
+        { type: "seo", nodeId: "seo:canonical", field: "canonical", value: "/new.html" },
+        { type: "seo", nodeId: "seo:ogTitle", field: "ogTitle", value: "Social title" },
+      ]),
+    ).resolves.toContain(`<title>New &lt;title&gt;</title>`);
+    await expect(
+      patchAndGetText(source, [
+        { type: "seo", nodeId: "seo:description", field: "description", value: "" },
+        { type: "seo", nodeId: "seo:canonical", field: "canonical", value: "javascript:bad" },
+      ]),
+    ).rejects.toThrow(/unsafe SEO URL/);
+  });
+
   it("allows SVG replacement but rejects SVG framing", async () => {
     const source = `<img src="/logo.svg" alt="Logo">`;
     const image = [...analyzePage(source).candidates.values()][0]!;

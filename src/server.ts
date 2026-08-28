@@ -285,6 +285,7 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
             "html",
             "imageStyle",
             "media",
+            "seo",
           ].includes((op as { type?: string }).type ?? ""),
       )
     )

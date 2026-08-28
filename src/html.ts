@@ -269,6 +269,68 @@ function collectAttrRanges(el: P5Element): Map<string, AttrRange> {
   return map;
 }
 
+interface SeoTarget {
+  field: import("./types.ts").SeoField;
+  startTagStart: number;
+  startTagEnd: number;
+  elementEnd: number;
+  contentStart?: number;
+  contentEnd?: number;
+  valueAttr?: AttrRange;
+}
+
+interface SeoAnalysis {
+  targets: Map<import("./types.ts").SeoField, SeoTarget>;
+  headEnd: number | null;
+}
+
+function seoFieldFor(el: P5Element): import("./types.ts").SeoField | null {
+  if (el.tagName === "title") return "title";
+  if (el.tagName === "meta") {
+    const name = (attrValue(el, "name") ?? "").toLowerCase();
+    const property = (attrValue(el, "property") ?? "").toLowerCase();
+    if (name === "description") return "description";
+    if (property === "og:title") return "ogTitle";
+    if (property === "og:description") return "ogDescription";
+    if (property === "og:image") return "ogImage";
+  }
+  if (el.tagName === "link" && /(?:^|\\s)canonical(?:\\s|$)/i.test(attrValue(el, "rel") ?? "")) {
+    return "canonical";
+  }
+  return null;
+}
+
+function findSeoTargets(source: string): SeoAnalysis {
+  const doc = parse(source, { sourceCodeLocationInfo: true }) as P5Document;
+  const targets = new Map<import("./types.ts").SeoField, SeoTarget>();
+  let headEnd: number | null = null;
+  const visit = (node: P5Node): void => {
+    if (!isElement(node)) return;
+    const loc = node.sourceCodeLocation;
+    if (!loc?.startTag) return;
+    if (node.tagName === "head") headEnd = loc.endTag?.startOffset ?? null;
+    const field = seoFieldFor(node);
+    if (field && !targets.has(field)) {
+      const attrs = collectAttrRanges(node);
+      const valueAttr =
+        field === "title" ? undefined : attrs.get(field === "canonical" ? "href" : "content");
+      targets.set(field, {
+        field,
+        startTagStart: loc.startTag.startOffset,
+        startTagEnd: loc.startTag.endOffset,
+        elementEnd: loc.endOffset,
+        ...(node.tagName === "title" && loc.endTag
+          ? { contentStart: loc.startTag.endOffset, contentEnd: loc.endTag.startOffset }
+          : {}),
+        ...(valueAttr ? { valueAttr } : {}),
+      });
+    }
+    for (const child of node.childNodes) visit(child);
+  };
+  for (const node of doc.childNodes) visit(node);
+  return { targets, headEnd };
+}
+
 function matchesIgnoreSelector(el: P5Element, selectors: string[]): boolean {
   const id = attrValue(el, "id");
   const classes = new Set((attrValue(el, "class") ?? "").split(/\s+/).filter(Boolean));
@@ -685,6 +747,7 @@ export async function patchHtml(
   }
   const encoder = new TextEncoder();
   const analysis = analyzePage(sourceText, options.ignoreSelectors ?? []);
+  const seoAnalysis = findSeoTargets(sourceText);
 
   /** key: `${nodeId}#${segmentIndex}` -> pending text/lineBreak intent */
   const textIntents = new Map<
@@ -704,6 +767,7 @@ export async function patchHtml(
     op: PageOperation & { type: "imageStyle" };
   }[] = [];
   const mediaOps: { candidate: Candidate; op: PageOperation & { type: "media" } }[] = [];
+  const seoOps: (PageOperation & { type: "seo" })[] = [];
   const htmlTargets = new Set(
     change.operations
       .filter((op): op is PageOperation & { type: "html" } => op.type === "html")
@@ -799,6 +863,25 @@ export async function patchHtml(
           throw new Error(`formatting HTML cannot add a line break to <${candidate.tag}>`);
         }
         htmlOps.push({ candidate, op: { ...op, value } });
+        break;
+      }
+      case "seo": {
+        if (!/^(title|description|canonical|ogTitle|ogDescription|ogImage)$/.test(op.field)) {
+          throw new Error(`unsupported SEO field ${op.field}`);
+        }
+        if (op.value.length > (op.field === "description" ? 300 : 200)) {
+          throw new Error(`SEO ${op.field} is too long`);
+        }
+        if (["canonical", "ogImage"].includes(op.field) && !isValidSiteUrl(op.value)) {
+          throw new Error(`unsafe SEO URL rejected for ${op.field}`);
+        }
+        if (!op.value.trim() && op.field === "title") {
+          throw new Error("SEO title cannot be empty");
+        }
+        if (seoOps.some((existing) => existing.field === op.field)) {
+          throw new Error(`duplicate SEO operation for ${op.field}`);
+        }
+        seoOps.push(op);
         break;
       }
       case "media": {
@@ -939,6 +1022,54 @@ export async function patchHtml(
       replacement: op.value,
     });
   }
+  for (const op of seoOps) {
+    const target = seoAnalysis.targets.get(op.field);
+    if (!target && !seoAnalysis.headEnd) throw new Error("HTML document has no editable head");
+    if (!target) continue;
+    if (!op.value) {
+      patches.push({ start: target.startTagStart, end: target.elementEnd, replacement: "" });
+      continue;
+    }
+    if (op.field === "title") {
+      if (target.contentStart === undefined || target.contentEnd === undefined) {
+        throw new Error("title metadata has an unsafe source mapping");
+      }
+      patches.push({
+        start: target.contentStart,
+        end: target.contentEnd!,
+        replacement: escapeHtmlText(op.value),
+      });
+      continue;
+    }
+    const attrName = op.field === "canonical" ? "href" : "content";
+    const replacement = `${attrName}="${escapeHtmlAttr(op.value)}"`;
+    if (target.valueAttr) {
+      patches.push({
+        start: target.valueAttr.sliceStart,
+        end: target.valueAttr.sliceEnd,
+        replacement,
+      });
+    } else {
+      patches.push({
+        start: target.startTagEnd - 1,
+        end: target.startTagEnd - 1,
+        replacement: ` ${replacement}`,
+      });
+    }
+  }
+  for (const op of seoOps) {
+    if (seoAnalysis.targets.has(op.field) || !op.value || !seoAnalysis.headEnd) continue;
+    const markup =
+      op.field === "title"
+        ? `<title>${escapeHtmlText(op.value)}</title>`
+        : op.field === "description"
+          ? `<meta name="description" content="${escapeHtmlAttr(op.value)}">`
+          : op.field === "canonical"
+            ? `<link rel="canonical" href="${escapeHtmlAttr(op.value)}">`
+            : `<meta property="${op.field === "ogTitle" ? "og:title" : op.field === "ogDescription" ? "og:description" : "og:image"}" content="${escapeHtmlAttr(op.value)}">`;
+    patches.push({ start: seoAnalysis.headEnd, end: seoAnalysis.headEnd, replacement: markup });
+  }
+
   for (const { candidate, op } of mediaOps) {
     const source = mediaSourcePath(op.value.source);
     const srcAttr = candidate.attrs.get("src");

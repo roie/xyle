@@ -17,6 +17,7 @@ import {
   type UndoResult,
   type MediaPatchInput,
   type MediaUpdateResult,
+  type SeoUpdateResult,
 } from "./webmcp.ts";
 import { cleanInlineHtml, inlineFormatState, toggleInlineFormat } from "./formatting.ts";
 import {
@@ -25,7 +26,14 @@ import {
   mediaStatesEqual,
   normalizeMediaState,
 } from "./media-state.ts";
-import type { MediaCapabilities, MediaState, Point, CropRect } from "./types.ts";
+import type {
+  MediaCapabilities,
+  MediaState,
+  Point,
+  CropRect,
+  SeoField,
+  SeoState,
+} from "./types.ts";
 
 const editorStyles = `
 @layer xyle.tokens {
@@ -1311,6 +1319,7 @@ type Op =
   | { type: "formatBlock"; nodeId: string; value: BlockTag }
   | { type: "html"; nodeId: string; value: string }
   | { type: "media"; nodeId: string; value: MediaState }
+  | { type: "seo"; nodeId: string; field: SeoField; value: string }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string; assetName?: string }
   | {
@@ -1421,6 +1430,8 @@ async function boot(): Promise<void> {
     undoChangeSet,
     replaceAsset,
     updateMedia,
+    getSeo,
+    updateSeo,
     updateFormatting,
     updateText,
     updateLink,
@@ -2595,6 +2606,65 @@ function showLinkTools(link: HTMLAnchorElement, meta: NodeMeta, focusFirst = fal
   if (focusFirst) tools.querySelector("button")?.focus();
 }
 
+function openSeoEditor(): void {
+  const dialog = document.createElement("dialog");
+  dialog.className = "xyle-dialog";
+  dialog.setAttribute("aria-labelledby", "xyle-seo-dialog-title");
+  dialog.replaceChildren(
+    document.createRange().createContextualFragment(`
+    <form method="dialog" class="xyle-dialog-form">
+      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Search and social</span><strong id="xyle-seo-dialog-title">SEO metadata</strong></div>
+      <label class="xyle-dialog-label">Page title
+        <input class="xyle-dialog-input" name="title" autocomplete="off">
+      </label>
+      <label class="xyle-dialog-label">Description
+        <textarea class="xyle-dialog-input" name="description" rows="3"></textarea>
+      </label>
+      <label class="xyle-dialog-label">Canonical URL
+        <input class="xyle-dialog-input" name="canonical" autocomplete="off">
+      </label>
+      <label class="xyle-dialog-label">Social title
+        <input class="xyle-dialog-input" name="ogTitle" autocomplete="off">
+      </label>
+      <label class="xyle-dialog-label">Social description
+        <textarea class="xyle-dialog-input" name="ogDescription" rows="3"></textarea>
+      </label>
+      <label class="xyle-dialog-label">Social image URL
+        <input class="xyle-dialog-input" name="ogImage" autocomplete="off">
+      </label>
+      <div class="xyle-dialog-actions">
+        <button class="xyle-dialog-button" value="cancel">Cancel</button>
+        <button class="xyle-dialog-button xyle-dialog-button--primary" value="save">Save metadata</button>
+      </div>
+    </form>`),
+  );
+  const values = getSeo();
+  for (const field of SEO_FIELDS) {
+    const input = dialog.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${field}"]`);
+    if (input) input.value = values[field];
+  }
+  dialog.addEventListener("close", () => {
+    if (dialog.returnValue === "save") {
+      const updates = SEO_FIELDS.map((field) => ({
+        field,
+        value:
+          dialog.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${field}"]`)
+            ?.value ?? "",
+      }));
+      try {
+        for (const update of updates) validateSeoValue(update.field, update.value);
+        for (const update of updates) updateSeo(update.field, update.value);
+      } catch (error) {
+        flash(error instanceof Error ? error.message : "SEO metadata could not be updated.");
+      }
+    }
+    dialog.remove();
+  });
+  document.body.append(dialog);
+  dialog.showModal();
+  dialog.querySelector<HTMLInputElement>("[name=title]")?.focus();
+}
+
 function openHrefDialog(el: HTMLElement, meta: NodeMeta): void {
   const dialog = document.createElement("dialog");
   dialog.className = "xyle-dialog";
@@ -3691,6 +3761,140 @@ function dirtyCount(): number {
   return state.ops.length;
 }
 
+const SEO_FIELDS: SeoField[] = [
+  "title",
+  "description",
+  "canonical",
+  "ogTitle",
+  "ogDescription",
+  "ogImage",
+];
+
+function seoIdentity(pagePath: string, field: SeoField): string {
+  return `${pagePath}:seo:${field}`;
+}
+
+function readSeoState(): SeoState {
+  const doc = previewDoc();
+  const meta = (selector: string): string =>
+    doc?.querySelector<HTMLMetaElement>(selector)?.content ?? "";
+  return {
+    title: doc?.title ?? "",
+    description: meta('meta[name="description"]'),
+    canonical:
+      doc?.querySelector<HTMLLinkElement>('link[rel~="canonical"]')?.getAttribute("href") ?? "",
+    ogTitle: meta('meta[property="og:title"]'),
+    ogDescription: meta('meta[property="og:description"]'),
+    ogImage: meta('meta[property="og:image"]'),
+  };
+}
+
+function applySeoToDom(field: SeoField, value: string): void {
+  const doc = previewDoc();
+  if (!doc) return;
+  if (field === "title") {
+    if (doc.title !== value) doc.title = value;
+    return;
+  }
+  const selector =
+    field === "description"
+      ? 'meta[name="description"]'
+      : field === "canonical"
+        ? 'link[rel~="canonical"]'
+        : `meta[property="${field === "ogTitle" ? "og:title" : field === "ogDescription" ? "og:description" : "og:image"}"]`;
+  let element = doc.head.querySelector<HTMLElement>(selector);
+  if (!value) {
+    element?.remove();
+    return;
+  }
+  if (!element) {
+    element = doc.createElement(field === "canonical" ? "link" : "meta");
+    if (field === "canonical") element.setAttribute("rel", "canonical");
+    else if (field === "description") element.setAttribute("name", "description");
+    else
+      element.setAttribute(
+        "property",
+        field === "ogTitle"
+          ? "og:title"
+          : field === "ogDescription"
+            ? "og:description"
+            : "og:image",
+      );
+    doc.head.append(element);
+  }
+  element.setAttribute(field === "canonical" ? "href" : "content", value);
+}
+
+function getSeo(): SeoState {
+  return readSeoState();
+}
+
+function validateSeoValue(field: SeoField, value: string): void {
+  if (value.length > (field === "description" ? 300 : 200)) {
+    throw new Error(`SEO ${field} is too long`);
+  }
+  if (field === "title" && !value.trim()) throw new Error("SEO title cannot be empty");
+  if ((field === "canonical" || field === "ogImage") && value && !isSafeUrl(value)) {
+    throw new Error(`Unsafe SEO URL rejected for ${field}`);
+  }
+}
+
+function updateSeo(field: SeoField, value: string): SeoUpdateResult {
+  const current = state.current;
+  if (!current || !SEO_FIELDS.includes(field)) throw new Error("Unsupported SEO field");
+  validateSeoValue(field, value);
+  const before = readSeoState()[field];
+  const identity = seoIdentity(current.pagePath, field);
+  if (!originalSeo.has(identity)) originalSeo.set(identity, before);
+  if (before === value) return { field, pagePath: current.pagePath, value };
+  const nodeId = `seo:${field}`;
+  const operation: Op = { type: "seo", nodeId, field, value };
+  const key = opKey(operation);
+  const previousEntry = state.ops.find(
+    (entry) =>
+      entry.pagePath === current.pagePath && entry.op.type === "seo" && entry.op.field === field,
+  );
+  const changeSet = activeChangeSet
+    ? { id: activeChangeSet.id, label: activeChangeSet.label }
+    : undefined;
+  replacePendingOp(
+    current.pagePath,
+    key,
+    value === originalSeo.get(identity) ? null : operation,
+    changeSet,
+  );
+  applySeoToDom(field, value);
+  const entry: HistoryEntry = {
+    label: "Update SEO metadata",
+    assetPaths: [],
+    ...(changeSet ? { changeSetId: changeSet.id, changeSetLabel: changeSet.label } : {}),
+    undo: () => {
+      replacePendingOp(current.pagePath, key, previousEntry?.op ?? null);
+      applySeoToDom(
+        field,
+        previousEntry?.op.type === "seo"
+          ? previousEntry.op.value
+          : (originalSeo.get(identity) ?? ""),
+      );
+      updateDirtyUi();
+    },
+    redo: () => {
+      replacePendingOp(
+        current.pagePath,
+        key,
+        value === originalSeo.get(identity) ? null : operation,
+        changeSet,
+      );
+      applySeoToDom(field, value);
+      updateDirtyUi();
+    },
+  };
+  if (activeChangeSet) activeChangeSet.entries.push(entry);
+  else pushHistory(entry);
+  updateDirtyUi();
+  return { field, pagePath: current.pagePath, value };
+}
+
 function listEditableContent(): EditableContent[] {
   const current = state.current;
   if (!current) return [];
@@ -4263,6 +4467,7 @@ function buildChrome(): void {
           <div id="xyle-menu" role="menu" aria-label="Xyle menu">
             <button data-action="exit" class="xyle-menu-item" role="menuitem">Exit editor</button>
             <button data-action="live" class="xyle-menu-item" role="menuitem">View live site</button>
+            <button data-action="seo" class="xyle-menu-item" role="menuitem">SEO metadata</button>
             <div class="xyle-menu-separator" role="separator"></div>
             <button data-action="logout" class="xyle-menu-item" role="menuitem">Log out</button>
           </div>
@@ -4431,6 +4636,7 @@ function buildChrome(): void {
 
 function menuAction(action: string): void {
   if (action === "exit") exitEditor();
+  if (action === "seo") openSeoEditor();
   if (action === "live") {
     try {
       const target = new URL(state.current?.pagePath ?? "/", location.origin);
@@ -4479,6 +4685,7 @@ function discardAll(): void {
   originalSegments.clear();
   originalAttrs.clear();
   originalMedia.clear();
+  originalSeo.clear();
   originalMarkups.clear();
   originalFormats.clear();
   originalBlockTags.clear();
@@ -4613,6 +4820,8 @@ function opLabel(op: Op): string {
       return "Formatting";
     case "media":
       return "Media";
+    case "seo":
+      return "SEO metadata";
     case "imageStyle":
       return "Image crop";
   }
@@ -4639,6 +4848,7 @@ function originalValue(pagePath: string, op: Op): string {
     const original = originalMedia.get(segmentIdentity(pagePath, op.nodeId));
     return original ? mediaStateDescription(original) : "";
   }
+  if (op.type === "seo") return originalSeo.get(seoIdentity(pagePath, op.field)) ?? "";
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
 
@@ -4875,7 +5085,9 @@ function openChangesDrawer(): void {
           ? imageStyleDescription(entry.op)
           : entry.op.type === "media"
             ? mediaStateDescription(entry.op.value)
-            : entry.op.value.trim();
+            : entry.op.type === "seo"
+              ? entry.op.value
+              : entry.op.value.trim();
       const diff = changeParts(beforeValue, afterValue);
       appendChangeValue(comparison, "Before", beforeValue, diff.before);
       const arrow = document.createElement("span");
@@ -4929,6 +5141,10 @@ function applyOpToDom(pagePath: string, op: Op): void {
   if (op.type === "media") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
     if (el instanceof HTMLImageElement) applyMediaStateToDom(el, op.value);
+    return;
+  }
+  if (op.type === "seo") {
+    applySeoToDom(op.field, op.value);
     return;
   }
   if (op.type === "formatBlock") {
@@ -4985,6 +5201,8 @@ function revertOpInDom(pagePath: string, op: Op): void {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
     const original = originalMedia.get(segmentIdentity(pagePath, op.nodeId));
     if (el instanceof HTMLImageElement && original) applyMediaStateToDom(el, original);
+  } else if (op.type === "seo") {
+    applySeoToDom(op.field, originalSeo.get(seoIdentity(pagePath, op.field)) ?? "");
   } else if (op.type === "href" || op.type === "src" || op.type === "alt") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     const attr = op.type;
@@ -4999,6 +5217,7 @@ function revertOpInDom(pagePath: string, op: Op): void {
 const originalSegments = new Map<string, string>();
 const originalAttrs = new Map<string, string>();
 const originalMedia = new Map<string, MediaState>();
+const originalSeo = new Map<string, string>();
 const originalMarkups = new Map<string, string>();
 const originalFormats = new Map<string, "bold" | "italic" | "underline" | "none">();
 const originalBlockTags = new Map<string, BlockTag>();
@@ -5233,6 +5452,8 @@ function restoreOpsIntoDom(): void {
     } else if (op.type === "media") {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
       if (el instanceof HTMLImageElement) applyMediaStateToDom(el, op.value);
+    } else if (op.type === "seo") {
+      applySeoToDom(op.field, op.value);
     } else {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) {
@@ -5328,6 +5549,7 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     originalSegments.clear();
     originalAttrs.clear();
     originalMedia.clear();
+    originalSeo.clear();
     originalMarkups.clear();
     originalFormats.clear();
     originalBlockTags.clear();
