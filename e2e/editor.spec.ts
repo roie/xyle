@@ -390,11 +390,11 @@ test.describe("editing affordances", () => {
     const originalLabel = await link.textContent();
     await link.click();
     await page.getByRole("button", { name: "Edit URL" }).click();
-    const dialog = page.getByRole("dialog", { name: "Link destination" });
-    await expect(dialog).toBeVisible();
+    const panel = page.locator(".xyle-link-tools");
+    await expect(panel).toBeVisible();
     const destination = `/about.html?from=${info.project.name}`;
-    await dialog.locator("input[name=href]").fill(destination);
-    await dialog.getByRole("button", { name: "Save link" }).click();
+    await panel.locator("input[name=href]").fill(destination);
+    await panel.getByRole("button", { name: "Save" }).click();
 
     await expect(link).toHaveText(originalLabel ?? "");
     await expect(link).toHaveAttribute("href", destination);
@@ -407,19 +407,22 @@ test.describe("editing affordances", () => {
     expect(ops.map((entry) => entry.op.type)).toEqual(["href"]);
   });
 
-  test("link dialog can cancel after rejecting an invalid destination", async ({ page }) => {
+  test("link panel can cancel after rejecting an invalid destination", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const link = page.frameLocator("#xyle-preview").locator("a.cta");
     await link.click();
     await page.getByRole("button", { name: "Edit URL" }).click();
-    const dialog = page.getByRole("dialog", { name: "Link destination" });
-    const input = dialog.locator("input[name=href]");
+    const panel = page.locator(".xyle-link-tools");
+    const input = panel.locator("input[name=href]");
     await input.fill("javascript:alert(1)");
-    await dialog.getByRole("button", { name: "Save link" }).click();
-    await expect(dialog).toBeVisible();
+    await panel.getByRole("button", { name: "Save" }).click();
+    await expect(panel).toBeVisible();
     await expect(input).toHaveAttribute("aria-invalid", "true");
-    await dialog.getByRole("button", { name: "Cancel" }).click();
-    await expect(dialog).toHaveCount(0);
+    await panel.getByRole("button", { name: "Cancel" }).click();
+    await expect(
+      page.locator(".xyle-link-tools").getByRole("button", { name: "Edit URL" }),
+    ).toBeVisible();
+    await expect(page.locator(".xyle-link-tools input[name=href]")).toHaveCount(0);
   });
 
   test("changed marker appears after an edit and disappears after publish", async ({
@@ -494,9 +497,9 @@ test.describe("changes drawer and undo", () => {
     await clickOutsideCommit(page);
     await link.click();
     await page.getByRole("button", { name: "Edit URL" }).click();
-    const dialog = page.getByRole("dialog", { name: "Link destination" });
-    await dialog.locator("input[name=href]").fill(updatedHref);
-    await dialog.getByRole("button", { name: "Save link" }).click();
+    const panel = page.locator(".xyle-link-tools");
+    await panel.locator("input[name=href]").fill(updatedHref);
+    await panel.getByRole("button", { name: "Save" }).click();
 
     await page.frameLocator("#xyle-preview").locator('nav a[href="/about.html"]').click();
     await page.getByRole("button", { name: "Follow" }).click();
@@ -605,8 +608,8 @@ test.describe("changes drawer and undo", () => {
     await clickOutsideCommit(page);
 
     await page.click("#xyle-changes");
-    page.once("dialog", (dialog) => dialog.accept());
     await page.click("#xyle-discard");
+    await page.click("#xyle-discard-confirmation [data-discard]");
     await expect(page.locator("#xyle-dirty")).toBeHidden();
     await page.waitForFunction(
       ({ nodeId, expected }) => {
@@ -678,12 +681,9 @@ test.describe("changes drawer and undo", () => {
       selection.addRange(range);
       doc.dispatchEvent(new Event("selectionchange"));
     }, firstId);
-    const groupButton = page.getByRole("button", { name: "Group blocks into a list" });
-    await expect(groupButton).toBeVisible();
-    await groupButton.click();
-    const dialog = page.locator('dialog[aria-labelledby="xyle-list-dialog-title"]');
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole("button", { name: "Group blocks" }).click();
+    const blockStyle = page.locator('.xyle-format-tools select[aria-label="Block style"]');
+    await expect(blockStyle).toBeVisible();
+    await blockStyle.selectOption("unordered-list");
     await expect
       .poll(async () =>
         page
@@ -716,10 +716,10 @@ test.describe("changes drawer and undo", () => {
     await page.locator("#xyle-control-hitbox").hover();
     await page.locator("#xyle-menu-btn").click();
     await page.locator('#xyle-menu button[data-action="seo"]').click();
-    const dialog = page.locator('dialog[aria-labelledby="xyle-seo-dialog-title"]');
-    await expect(dialog).toBeVisible();
-    await dialog.locator('[name="title"]').fill("Updated page title");
-    await dialog.getByRole("button", { name: "Save metadata" }).click();
+    const panel = page.getByRole("dialog", { name: "SEO metadata" });
+    await expect(panel).toBeVisible();
+    await panel.locator('[name="title"]').fill("Updated page title");
+    await panel.getByRole("button", { name: "Save metadata" }).click();
     await expect.poll(async () => opsCount(page)).toBe(1);
     await expect
       .poll(async () =>
@@ -763,11 +763,8 @@ test.describe("exit vs logout semantics", () => {
 
     await page.locator("#xyle-control-hitbox").hover();
     await page.click("#xyle-menu-btn");
-    page.once("dialog", (dialog) => {
-      expect(dialog.message()).toMatch(/Discard/i);
-      dialog.dismiss(); // keep editing
-    });
     await page.click("#xyle-menu button[data-action='exit']");
+    await page.click("#xyle-discard-confirmation [data-keep]");
     await page.waitForTimeout(200);
     expect(page.url()).toContain("/edit"); // dismissed → still editing
     expect(await opsCount(page)).toBe(1);

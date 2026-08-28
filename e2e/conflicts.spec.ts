@@ -198,11 +198,11 @@ test.describe("conflicts and recovery", () => {
     await clickOutsideCommit(page);
     expect(await opsCount(page)).toBe(1);
 
-    // discard through menu exit with accepted confirm
+    // discard through menu exit with the inline confirmation
     await page.locator("#xyle-control-hitbox").hover();
     await page.click("#xyle-menu-btn");
-    page.once("dialog", (dialog) => dialog.accept());
     await page.click("#xyle-menu button[data-action='exit']");
+    await page.click("#xyle-discard-confirmation [data-discard]");
     await page.waitForURL((u) => !u.pathname.includes("/edit"), { timeout: 5000 });
 
     const after = await (await page.request.get("/about.html")).text();

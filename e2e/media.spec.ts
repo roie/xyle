@@ -275,8 +275,8 @@ test.describe("media editing", () => {
     await expect(page.getByRole("dialog", { name: "Media" })).toBeVisible();
     await page.click("#xyle-changes");
     await expect(page.getByRole("dialog", { name: "Changes" })).toBeVisible();
-    page.once("dialog", (dialog) => dialog.accept());
     await page.click("#xyle-discard");
+    await page.click("#xyle-discard-confirmation [data-discard]");
 
     await expect(page.locator("#xyle-media-drawer,#xyle-changes-drawer")).toHaveCount(0);
     await expect.poll(async () => opsCount(page)).toBe(0);
@@ -395,10 +395,11 @@ test.describe("media editing", () => {
     const altButton = page.locator(".xyle-img-tools").getByRole("button", { name: "Alt" });
     await expect(altButton).toBeVisible();
     await altButton.click();
-    await expect(page.locator("dialog input[name=alt]")).toBeVisible();
+    const toolbar = page.locator(".xyle-img-tools");
+    await expect(toolbar.locator("input[name=alt]")).toBeVisible();
     const altText = `Crew photo, spring cleanup ${info.project.name}`;
-    await page.fill("dialog input[name=alt]", altText);
-    await page.click("dialog button[value='save']");
+    await toolbar.locator("input[name=alt]").fill(altText);
+    await toolbar.getByRole("button", { name: "Save" }).click();
     await expect.poll(async () => opsCount(page)).toBe(1);
     const ops = await currentOps(page);
     expect(ops[0]?.op.type).toBe("media");

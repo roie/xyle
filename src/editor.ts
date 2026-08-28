@@ -674,7 +674,8 @@ const editorStyles = `
     letter-spacing: -0.02em;
   }
   #xyle-media-drawer .xyle-icon-button,
-  #xyle-changes-drawer .xyle-icon-button {
+  #xyle-changes-drawer .xyle-icon-button,
+  #xyle-seo-drawer .xyle-icon-button {
     width: 2.25rem;
     height: 2.25rem;
     border: 0;
@@ -686,7 +687,9 @@ const editorStyles = `
   #xyle-media-drawer .xyle-icon-button:hover,
   #xyle-media-drawer .xyle-icon-button:focus-visible,
   #xyle-changes-drawer .xyle-icon-button:hover,
-  #xyle-changes-drawer .xyle-icon-button:focus-visible {
+  #xyle-changes-drawer .xyle-icon-button:focus-visible,
+  #xyle-seo-drawer .xyle-icon-button:hover,
+  #xyle-seo-drawer .xyle-icon-button:focus-visible {
     background: var(--xyle-accent-soft);
     color: var(--xyle-accent-hover);
   }
@@ -861,6 +864,30 @@ const editorStyles = `
     color: var(--xyle-muted);
     font-size: 13px;
     line-height: 1.45;
+  }
+  .xyle-inline-confirmation {
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 2147483647;
+    display: grid;
+    gap: 0.6rem;
+    width: min(24rem, calc(100vw - 2rem));
+    padding: 0.85rem;
+    border: 1px solid #d26d6d66;
+    border-radius: var(--xyle-radius-md);
+    background: #171b18f5;
+    box-shadow: 0 14px 36px #000b;
+    color: var(--xyle-ink);
+    font-size: 12px;
+  }
+  .xyle-inline-confirmation p {
+    margin: 0;
+  }
+  .xyle-inline-confirmation-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
   }
   .xyle-sr-only {
     position: absolute;
@@ -1070,6 +1097,61 @@ const editorStyles = `
     color: #eef3ec !important;
   }
 
+  #xyle-overlay-root .xyle-inline-tool-form {
+    display: grid !important;
+    grid-template-columns: minmax(9rem, 1fr) auto auto;
+    align-items: end;
+    gap: 0.35rem 0.5rem;
+    min-width: min(18rem, calc(100vw - 1rem));
+    padding: 0.25rem;
+    color: #eef3ec;
+    font: 500 11px / 1.2 var(--xyle-font-ui);
+  }
+  #xyle-overlay-root .xyle-inline-tool-label {
+    display: grid;
+    gap: 0.25rem;
+    color: #aab6aa;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  #xyle-overlay-root .xyle-inline-tool-input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid #435047;
+    border-radius: 5px;
+    background: #10130f;
+    color: #eef3ec;
+    font: 500 11px / 1.2 var(--xyle-font-ui);
+  }
+  #xyle-overlay-root .xyle-inline-tool-input:focus {
+    border-color: #a1b69a;
+    outline: 2px solid var(--xyle-accent-soft);
+    outline-offset: 1px;
+  }
+  #xyle-overlay-root .xyle-inline-tool-check {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-height: 28px;
+    color: #aab6aa;
+    white-space: nowrap;
+  }
+  #xyle-overlay-root .xyle-inline-tool-error {
+    display: block;
+    grid-column: 1 / -1;
+    margin: 0;
+    color: #ffb0a8;
+    font-size: 10px;
+  }
+  #xyle-overlay-root .xyle-inline-tool-error:empty {
+    display: none;
+  }
+  #xyle-overlay-root .xyle-inline-tool-actions {
+    display: flex;
+    gap: 2px;
+  }
   #xyle-overlay-root .xyle-img-tools button,
   #xyle-overlay-root .xyle-link-tools button,
   #xyle-overlay-root .xyle-format-tools button {
@@ -1217,6 +1299,17 @@ const editorStyles = `
 
   .xyle-drawer-header {
     border-bottom: 1px solid var(--xyle-line);
+  }
+  .xyle-seo-drawer .xyle-dialog-form {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.55rem;
+    padding: 0;
+    overflow: auto;
+  }
+  .xyle-seo-drawer .xyle-drawer-actions {
+    margin-top: auto;
   }
 
   .xyle-drawer-header strong,
@@ -1774,6 +1867,7 @@ function registerContextTools(
 }
 
 function scheduleContextToolsClose(target: HTMLElement): void {
+  if (activeTools?.matches("[data-xyle-editing-alt], [data-xyle-editing-url]")) return;
   window.clearTimeout(contextToolsCloseTimer);
   contextToolsCloseTimer = window.setTimeout(() => {
     if (activeToolsTarget === target && !activeTools?.matches(":hover") && !session) {
@@ -2352,61 +2446,6 @@ function listBlockRun(element: HTMLElement): string[] {
   return children.slice(start, end + 1).map((child) => isEligible(child)!);
 }
 
-function openListGroupEditor(): void {
-  const current = state.current;
-  const element = session?.el;
-  if (!current || !element) return;
-  const ids = listBlockRun(element);
-  if (ids.length < 2) {
-    flash("Select at least two contiguous text blocks to group into a list.");
-    return;
-  }
-  const dialog = document.createElement("dialog");
-  dialog.className = "xyle-dialog";
-  dialog.setAttribute("aria-labelledby", "xyle-list-dialog-title");
-  dialog.replaceChildren(
-    document.createRange().createContextualFragment(`
-    <form method="dialog" class="xyle-dialog-form">
-      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Block structure</span><strong id="xyle-list-dialog-title">Group blocks into a list</strong></div>
-      <label class="xyle-dialog-label">Blocks
-        <select class="xyle-dialog-input" name="ids" multiple size="${Math.min(ids.length, 8)}"></select>
-      </label>
-      <label class="xyle-dialog-label">List style
-        <select class="xyle-dialog-input" name="format"><option value="unordered-list">Bulleted list</option><option value="ordered-list">Numbered list</option></select>
-      </label>
-      <div class="xyle-dialog-actions">
-        <button class="xyle-dialog-button" value="cancel">Cancel</button>
-        <button class="xyle-dialog-button xyle-dialog-button--primary" value="save">Group blocks</button>
-      </div>
-    </form>`),
-  );
-  const select = dialog.querySelector<HTMLSelectElement>("[name=ids]");
-  for (const id of ids) {
-    const option = document.createElement("option");
-    option.value = id;
-    option.textContent = currentNodeElement(id)?.textContent?.trim() || id;
-    option.selected = true;
-    select?.append(option);
-  }
-  dialog.addEventListener("close", () => {
-    if (dialog.returnValue === "save" && select) {
-      const selectedIds = [...select.selectedOptions].map((option) => option.value);
-      const format = dialog.querySelector<HTMLSelectElement>("[name=format]")?.value;
-      try {
-        if (format !== "unordered-list" && format !== "ordered-list")
-          throw new Error("Unsupported list style");
-        toggleListFormatting(selectedIds, format);
-      } catch (error) {
-        flash(error instanceof Error ? error.message : "The list could not be created.");
-      }
-    }
-    dialog.remove();
-  });
-  document.body.append(dialog);
-  dialog.showModal();
-  select?.focus();
-}
-
 function showFormatTools(): void {
   if (!session) return;
   const target = session.el;
@@ -2433,6 +2472,7 @@ function showFormatTools(): void {
   tools.setAttribute("role", "toolbar");
   tools.setAttribute("aria-label", "Text formatting");
   const currentSelectionForInline = currentSelection;
+  const blockRunIds = listBlockRun(target);
 
   const addInlineButton = (format: "bold" | "italic" | "underline", label: string): void => {
     const button = document.createElement("button");
@@ -2522,24 +2562,14 @@ function showFormatTools(): void {
     if (!session) return;
     const format = block.value as Formatting;
     if (format === "unordered-list" || format === "ordered-list") {
-      toggleListFormatting(getSelectedListGroup()?.ids ?? [session.meta.id], format);
+      const ids = getSelectedListGroup()?.ids ?? blockRunIds;
+      toggleListFormatting(ids.length > 0 ? ids : [session.meta.id], format);
     } else {
       updateFormatting(session.meta.id, format);
     }
     closeContextTools(false);
   });
   tools.append(block);
-  if (session.meta.kind === "text" && listBlockRun(target).length >= 2) {
-    const groupButton = document.createElement("button");
-    groupButton.type = "button";
-    groupButton.textContent = "Group list…";
-    groupButton.setAttribute("aria-label", "Group blocks into a list");
-    groupButton.setAttribute("title", "Group blocks into a list");
-    groupButton.addEventListener("pointerdown", (event) => event.preventDefault());
-    groupButton.addEventListener("click", () => openListGroupEditor());
-    tools.append(groupButton);
-  }
-
   registerContextTools(tools, target, "above");
   overlay.append(tools);
   positionContextTools(tools, selected.rect, "above", previewElementRect(target));
@@ -2820,6 +2850,27 @@ function positionContextTools(
   tools.style.top = `${top}px`;
 }
 
+function positionInlineToolEditor(
+  tools: HTMLElement,
+  target: HTMLElement,
+  fallback: ContextToolPlacement,
+): void {
+  const targetRect = previewElementRect(target);
+  const toolRect = tools.getBoundingClientRect();
+  const viewportWidth = document.documentElement.clientWidth;
+  const viewportHeight = document.documentElement.clientHeight;
+  const sideLeft = targetRect.right + 8;
+  if (sideLeft + toolRect.width <= viewportWidth - 8) {
+    tools.style.left = `${sideLeft}px`;
+    tools.style.top = `${Math.min(
+      Math.max(targetRect.top, 8),
+      Math.max(8, viewportHeight - toolRect.height - 8),
+    )}px`;
+    return;
+  }
+  positionContextTools(tools, targetRect, fallback);
+}
+
 function showLinkTools(link: HTMLAnchorElement, meta: NodeMeta, focusFirst = false): void {
   const overlay = shellOverlay();
   if (!overlay) return;
@@ -2844,8 +2895,7 @@ function showLinkTools(link: HTMLAnchorElement, meta: NodeMeta, focusFirst = fal
   editUrl.textContent = "Edit URL";
   editUrl.addEventListener("click", (event) => {
     event.stopPropagation();
-    closeContextTools(false);
-    openHrefDialog(link, meta);
+    openHrefEditor(link, meta, tools);
   });
   tools.append(editUrl);
 
@@ -2873,19 +2923,40 @@ function showLinkTools(link: HTMLAnchorElement, meta: NodeMeta, focusFirst = fal
   if (focusFirst) tools.querySelector("button")?.focus();
 }
 
+let seoDrawerTrigger: HTMLElement | null = null;
+
+function closeSeoDrawer(restoreFocus = true): void {
+  const trigger = seoDrawerTrigger;
+  $("#xyle-seo-drawer")?.remove();
+  seoDrawerTrigger = null;
+  if (restoreFocus && trigger?.isConnected) trigger.focus();
+  if (!session && !drawerOpen && !activeTools && !$("#xyle-changes-drawer"))
+    setInteractionMode(hoveredCandidate ? "hover" : "idle");
+}
+
 function openSeoEditor(): void {
-  const dialog = document.createElement("dialog");
-  dialog.className = "xyle-dialog";
-  dialog.setAttribute("aria-labelledby", "xyle-seo-dialog-title");
-  dialog.replaceChildren(
-    document.createRange().createContextualFragment(`
-    <form method="dialog" class="xyle-dialog-form">
-      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Search and social</span><strong id="xyle-seo-dialog-title">SEO metadata</strong></div>
+  closeSeoDrawer(false);
+  closeMediaDrawer(false);
+  closeChangesDrawer(false);
+  seoDrawerTrigger = document.activeElement as HTMLElement | null;
+  setInteractionMode("drawer");
+  const drawer = document.createElement("aside");
+  drawer.id = "xyle-seo-drawer";
+  drawer.className = "xyle-drawer xyle-seo-drawer";
+  drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("aria-modal", "true");
+  drawer.setAttribute("aria-labelledby", "xyle-seo-title");
+  drawer.innerHTML = `
+    <header class="xyle-drawer-header">
+      <strong id="xyle-seo-title"><svg class="xyle-drawer-title-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"/><circle cx="17" cy="15" r="3"/><path d="m19.2 17.2 1.8 1.8"/></svg><span>SEO metadata</span></strong>
+      <button class="xyle-icon-button" type="button" data-close aria-label="Close SEO metadata">×</button>
+    </header>
+    <form class="xyle-dialog-form" novalidate>
       <label class="xyle-dialog-label">Page title
         <input class="xyle-dialog-input" name="title" autocomplete="off">
       </label>
       <label class="xyle-dialog-label">Description
-        <textarea class="xyle-dialog-input" name="description" rows="3"></textarea>
+        <textarea class="xyle-dialog-input" name="description" rows="2"></textarea>
       </label>
       <label class="xyle-dialog-label">Canonical URL
         <input class="xyle-dialog-input" name="canonical" autocomplete="off">
@@ -2894,109 +2965,115 @@ function openSeoEditor(): void {
         <input class="xyle-dialog-input" name="ogTitle" autocomplete="off">
       </label>
       <label class="xyle-dialog-label">Social description
-        <textarea class="xyle-dialog-input" name="ogDescription" rows="3"></textarea>
+        <textarea class="xyle-dialog-input" name="ogDescription" rows="2"></textarea>
       </label>
       <label class="xyle-dialog-label">Social image URL
         <input class="xyle-dialog-input" name="ogImage" autocomplete="off">
       </label>
-      <div class="xyle-dialog-actions">
-        <button class="xyle-dialog-button" value="cancel">Cancel</button>
-        <button class="xyle-dialog-button xyle-dialog-button--primary" value="save">Save metadata</button>
+      <div class="xyle-drawer-actions">
+        <button class="xyle-dialog-button" type="button" data-cancel>Cancel</button>
+        <button class="xyle-dialog-button xyle-dialog-button--primary" type="submit">Save metadata</button>
       </div>
-    </form>`),
-  );
+    </form>`;
   const values = getSeo();
   for (const field of SEO_FIELDS) {
-    const input = dialog.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${field}"]`);
+    const input = drawer.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${field}"]`);
     if (input) input.value = values[field];
   }
-  dialog.addEventListener("close", () => {
-    if (dialog.returnValue === "save") {
-      const updates = SEO_FIELDS.map((field) => ({
-        field,
-        value:
-          dialog.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${field}"]`)
-            ?.value ?? "",
-      }));
-      try {
-        for (const update of updates) validateSeoValue(update.field, update.value);
-        for (const update of updates) updateSeo(update.field, update.value);
-      } catch (error) {
-        flash(error instanceof Error ? error.message : "SEO metadata could not be updated.");
-      }
+  const close = (): void => closeSeoDrawer();
+  drawer.querySelector<HTMLButtonElement>("[data-close]")?.addEventListener("click", close);
+  drawer.querySelector<HTMLButtonElement>("[data-cancel]")?.addEventListener("click", close);
+  drawer.querySelector("form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const updates = SEO_FIELDS.map((field) => ({
+      field,
+      value:
+        drawer.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${field}"]`)?.value ??
+        "",
+    }));
+    try {
+      for (const update of updates) validateSeoValue(update.field, update.value);
+      for (const update of updates) updateSeo(update.field, update.value);
+      close();
+    } catch (error) {
+      flash(error instanceof Error ? error.message : "SEO metadata could not be updated.");
     }
-    dialog.remove();
   });
-  document.body.append(dialog);
-  dialog.showModal();
-  dialog.querySelector<HTMLInputElement>("[name=title]")?.focus();
+  drawer.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    }
+  });
+  document.body.append(drawer);
+  drawer.querySelector<HTMLInputElement>("[name=title]")?.focus();
 }
 
-function openHrefDialog(el: HTMLElement, meta: NodeMeta): void {
-  const dialog = document.createElement("dialog");
-  dialog.className = "xyle-dialog";
-  dialog.setAttribute("data-xyle-editing-url", "1");
-  dialog.setAttribute("aria-labelledby", "xyle-link-dialog-title");
+function openHrefEditor(el: HTMLElement, meta: NodeMeta, tools: HTMLElement): void {
   const currentHref = el.getAttribute("href") ?? "";
   rememberOriginalAttr(meta.pagePath, meta.id, "href", currentHref);
   const internalTarget = resolveInternalPath(currentHref);
-  dialog.replaceChildren(
+  tools.dataset.xyleEditingUrl = "1";
+  tools.replaceChildren(
     document.createRange().createContextualFragment(`
-    <form method="dialog" class="xyle-dialog-form">
-      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Edit link</span><strong id="xyle-link-dialog-title">Link destination</strong></div>
-      <label class="xyle-dialog-label">URL or path
-        <input class="xyle-dialog-input" name="href" value="" autocomplete="off" aria-describedby="xyle-link-dialog-error">
+    <form class="xyle-inline-tool-form" novalidate>
+      <label class="xyle-inline-tool-label">URL or path
+        <input class="xyle-inline-tool-input" name="href" value="" autocomplete="off" aria-describedby="xyle-link-edit-error">
       </label>
-      <p id="xyle-link-dialog-error" class="xyle-dialog-error err" role="status" aria-live="polite"></p>
-      <div class="xyle-dialog-actions">
-        ${internalTarget ? `<button class="xyle-dialog-button" value="follow">Follow link</button>` : ""}
-        <button class="xyle-dialog-button" value="cancel">Cancel</button>
-        <button class="xyle-dialog-button xyle-dialog-button--primary" value="save">Save link</button>
+      <p id="xyle-link-edit-error" class="xyle-inline-tool-error" role="status" aria-live="polite"></p>
+      <div class="xyle-inline-tool-actions">
+        ${internalTarget ? `<button type="submit" value="follow">Follow</button>` : ""}
+        <button type="button" data-cancel>Cancel</button>
+        <button type="submit" value="save">Save</button>
       </div>
     </form>`),
   );
-  const hrefInput = dialog.querySelector("input") as HTMLInputElement;
+  const hrefInput = tools.querySelector("input") as HTMLInputElement;
   hrefInput.value = currentHref;
-  document.body.append(dialog);
-  dialog.addEventListener("close", () => {
+  const restore = (): void => {
+    delete tools.dataset.xyleEditingUrl;
+    closeContextTools(false);
+    showLinkTools(el as HTMLAnchorElement, meta, true);
+    el.focus();
+  };
+  tools.querySelector<HTMLButtonElement>("[data-cancel]")?.addEventListener("click", restore);
+  tools.querySelector("form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const action = ((event as SubmitEvent).submitter as HTMLButtonElement | null)?.value;
     const value = hrefInput.value;
-    if (dialog.returnValue === "save") {
-      if (isSafeUrl(value)) {
-        applyOp(meta.pagePath, { type: "href", nodeId: meta.id, value }, "Edit link");
-        el.setAttribute("href", value);
-      } else {
-        flash("That destination is not allowed.");
+    if (action === "save") {
+      if (!isSafeUrl(value)) {
+        tools.querySelector<HTMLElement>(".xyle-inline-tool-error")!.textContent =
+          "Use a relative path, https:, http:, mailto: or tel:";
+        hrefInput.setAttribute("aria-invalid", "true");
+        hrefInput.focus();
+        return;
       }
-    } else if (dialog.returnValue === "follow") {
+      applyOp(meta.pagePath, { type: "href", nodeId: meta.id, value }, "Edit link");
+      el.setAttribute("href", value);
+      restore();
+    } else if (action === "follow") {
       const target = resolveInternalPath(value) ?? internalTarget;
       if (target) {
+        restore();
         loadPage(target, { pushHistory: true }).then(() => restoreOpsIntoDom());
       } else {
         flash("Only internal pages can be followed in edit mode.");
       }
     }
-    dialog.remove();
-    closeContextTools(false);
-    shellOverlay()
-      ?.querySelectorAll(".xyle-img-tools")
-      .forEach((tools) => {
-        tools.remove();
-      });
-    el.focus();
   });
-  dialog.querySelector("form")!.addEventListener("submit", (event) => {
-    const input = dialog.querySelector("input") as HTMLInputElement;
-    const action = ((event as SubmitEvent).submitter as HTMLButtonElement | null)?.value;
-    if (action !== "cancel" && !isSafeUrl(input.value)) {
+  tools.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && tools.dataset.xyleEditingUrl) {
       event.preventDefault();
-      (dialog.querySelector(".err") as HTMLElement).textContent =
-        "Use a relative path, https:, http:, mailto: or tel:";
-      input.setAttribute("aria-invalid", "true");
-      input.focus();
+      restore();
     }
   });
-  dialog.showModal();
+  hrefInput.focus();
   hrefInput.select();
+  window.requestAnimationFrame(() => {
+    if (tools.isConnected && tools.dataset.xyleEditingUrl)
+      positionInlineToolEditor(tools, el, "above");
+  });
 }
 
 /** Site-internal page path for a link, or null for external/asset targets. */
@@ -3506,9 +3583,8 @@ function showImageTools(img: HTMLImageElement, meta: NodeMeta, focusFirst = fals
   alt.textContent = "Alt";
   alt.addEventListener("click", (event) => {
     event.stopPropagation();
-    closeContextTools(false);
     selectImage(img, meta);
-    openAltEditor(img, meta);
+    openAltEditor(img, meta, tools);
   });
   tools.append(replace, media, crop, focus, alt);
   tools.addEventListener("keydown", (event) => {
@@ -3695,35 +3771,27 @@ function selectImage(img: HTMLImageElement, meta: NodeMeta): void {
   selectedImage = { el: img, meta };
 }
 
-function openAltEditor(img: HTMLImageElement, meta: NodeMeta): void {
+function openAltEditor(img: HTMLImageElement, meta: NodeMeta, tools: HTMLElement): void {
   activeMediaEditor?.();
   const existing = img.getAttribute("alt") ?? "";
-  const dialog = document.createElement("dialog");
-  dialog.className = "xyle-dialog xyle-alt-popover";
-  dialog.setAttribute("aria-labelledby", "xyle-alt-dialog-title");
-  dialog.replaceChildren(
+  tools.dataset.xyleEditingAlt = "1";
+  tools.replaceChildren(
     document.createRange().createContextualFragment(`
-    <form method="dialog" class="xyle-dialog-form">
-      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Accessibility</span><strong id="xyle-alt-dialog-title">Image description</strong></div>
-      <label class="xyle-dialog-label">Alt text
-        <input class="xyle-dialog-input" name="alt" value="" autocomplete="off">
+    <form class="xyle-inline-tool-form" novalidate>
+      <label class="xyle-inline-tool-label">Alt text
+        <input class="xyle-inline-tool-input" name="alt" value="" autocomplete="off">
       </label>
-      <label class="xyle-dialog-check"><input type="checkbox" name="decorative"> Decorative image</label>
-      <div class="xyle-dialog-actions">
-        <button class="xyle-dialog-button" value="cancel">Cancel</button>
-        <button class="xyle-dialog-button xyle-dialog-button--primary" value="save">Save alt text</button>
+      <label class="xyle-inline-tool-check"><input type="checkbox" name="decorative"> Decorative</label>
+      <div class="xyle-inline-tool-actions">
+        <button type="button" data-cancel>Cancel</button>
+        <button type="submit">Save</button>
       </div>
     </form>`),
   );
-  const altInput = dialog.querySelector("input[name=alt]") as HTMLInputElement;
-  const decorative = dialog.querySelector("input[name=decorative]") as HTMLInputElement;
+  const altInput = tools.querySelector("input[name=alt]") as HTMLInputElement;
+  const decorative = tools.querySelector("input[name=decorative]") as HTMLInputElement;
   altInput.value = existing;
-  const rect = previewElementRect(img);
-  dialog.style.position = "fixed";
-  dialog.style.margin = "0";
-  dialog.style.left = `${Math.max(12, Math.min(window.innerWidth - 320, rect.left))}px`;
-  dialog.style.top = `${Math.max(12, Math.min(window.innerHeight - 190, rect.bottom + 8))}px`;
-  const close = (save: boolean): void => {
+  const restore = (save: boolean): void => {
     if (save) {
       applyMediaPatch(
         meta.pagePath,
@@ -3734,37 +3802,30 @@ function openAltEditor(img: HTMLImageElement, meta: NodeMeta): void {
       );
     }
     if (activeMediaEditor === cancel) activeMediaEditor = null;
-    dialog.close();
-  };
-  const cancel = (): void => close(false);
-  activeMediaEditor = cancel;
-  dialog.addEventListener("close", () => {
-    if (activeMediaEditor === cancel) activeMediaEditor = null;
-    dialog.remove();
+    delete tools.dataset.xyleEditingAlt;
+    closeContextTools(false);
+    showImageTools(img, meta, true);
     img.focus();
+  };
+  const cancel = (): void => restore(false);
+  activeMediaEditor = cancel;
+  tools.querySelector<HTMLButtonElement>("[data-cancel]")?.addEventListener("click", cancel);
+  tools.querySelector("form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    restore(true);
   });
-  dialog
-    .querySelector<HTMLButtonElement>("button[value=save]")
-    ?.addEventListener("click", (event) => {
-      event.preventDefault();
-      close(true);
-    });
-  dialog
-    .querySelector<HTMLButtonElement>("button[value=cancel]")
-    ?.addEventListener("click", (event) => {
-      event.preventDefault();
-      cancel();
-    });
-  dialog.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
+  tools.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && tools.dataset.xyleEditingAlt) {
       event.preventDefault();
       cancel();
     }
   });
-  document.body.append(dialog);
-  dialog.show();
   altInput.focus();
   altInput.select();
+  window.requestAnimationFrame(() => {
+    if (tools.isConnected && tools.dataset.xyleEditingAlt)
+      positionInlineToolEditor(tools, img, "above");
+  });
 }
 
 /* ---------- media drawer ---------- */
@@ -3863,7 +3924,8 @@ function renderMediaDrawer(items: MediaItem[]): void {
   drawer.className = "xyle-drawer xyle-media-drawer";
   drawer.setAttribute("role", "dialog");
   drawer.setAttribute("aria-labelledby", "xyle-media-title");
-  drawer.innerHTML = `
+  drawer.replaceChildren(
+    document.createRange().createContextualFragment(`
     <header class="xyle-drawer-header">
       <strong id="xyle-media-title"><svg class="xyle-drawer-title-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="1"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4-4 3 3 2-2 5 4"/></svg><span>Media</span></strong>
       <button id="xyle-media-close" class="xyle-icon-button" aria-label="Close media drawer">×</button>
@@ -3878,7 +3940,8 @@ function renderMediaDrawer(items: MediaItem[]): void {
     <p class="xyle-media-help">${selectedImage ? "Choose a thumbnail to use it on the selected image." : "Upload images here. Select an image on the page to use one."}</p>
     <div id="xyle-media-grid" class="xyle-media-grid"></div>
     <button id="xyle-media-upload" class="xyle-media-upload">Upload to library</button>
-  `;
+  `),
+  );
   document.body.append(drawer);
 
   const grid = $<HTMLElement>("#xyle-media-grid", drawer);
@@ -5174,11 +5237,35 @@ function menuAction(action: string): void {
   if (action === "logout") logout();
 }
 
-function confirmDiscard(action: string): boolean {
+function confirmDiscard(action: string, onConfirm: () => void): boolean {
   const count = dirtyCount();
   if (count === 0) return true;
+  $("#xyle-discard-confirmation")?.remove();
   const noun = count === 1 ? "change" : "changes";
-  return confirm(`Discard ${count} unpublished ${noun} and ${action}?`);
+  const prompt = document.createElement("aside");
+  prompt.id = "xyle-discard-confirmation";
+  prompt.className = "xyle-inline-confirmation";
+  prompt.setAttribute("role", "alert");
+  prompt.setAttribute("aria-label", "Confirm discard");
+  prompt.replaceChildren(
+    document.createRange().createContextualFragment(`
+    <p>Discard ${count} unpublished ${noun} and ${action}?</p>
+    <div class="xyle-inline-confirmation-actions">
+      <button class="xyle-dialog-button" type="button" data-keep>Keep editing</button>
+      <button class="xyle-dialog-button xyle-dialog-button--accent" type="button" data-discard>Discard</button>
+    </div>`),
+  );
+  prompt.querySelector<HTMLButtonElement>("[data-keep]")?.addEventListener("click", () => {
+    prompt.remove();
+    $("#xyle-menu-btn")?.focus();
+  });
+  prompt.querySelector<HTMLButtonElement>("[data-discard]")?.addEventListener("click", () => {
+    prompt.remove();
+    onConfirm();
+  });
+  document.body.append(prompt);
+  prompt.querySelector<HTMLButtonElement>("[data-keep]")?.focus();
+  return false;
 }
 
 function discardAll(): void {
@@ -5213,15 +5300,23 @@ function discardAll(): void {
 }
 
 async function exitEditor(): Promise<void> {
-  if (!confirmDiscard("exit")) return;
+  if (
+    !confirmDiscard("exit", () => {
+      unregisterWebMcp?.();
+      unregisterWebMcp = null;
+      discardAll();
+      location.assign(state.current?.pagePath ?? "/");
+    })
+  )
+    return;
   unregisterWebMcp?.();
   unregisterWebMcp = null;
   discardAll();
   location.assign(state.current?.pagePath ?? "/");
 }
 
-async function logout(): Promise<void> {
-  if (!confirmDiscard("log out")) return;
+async function logout(skipDiscardPrompt = false): Promise<void> {
+  if (!skipDiscardPrompt && !confirmDiscard("log out", () => void logout(true))) return;
   try {
     const response = await api("/__xyle/api/logout", {
       method: "POST",
@@ -5233,6 +5328,7 @@ async function logout(): Promise<void> {
     });
     if (!response.ok) {
       flash("Could not log out. Your draft is still open.");
+      $("#xyle-menu-btn")?.focus();
       return;
     }
     discardAll();
@@ -5485,7 +5581,16 @@ function openChangesDrawer(): void {
     }
   });
   $("#xyle-discard", drawer).addEventListener("click", () => {
-    if (!confirmDiscard("reload the published page")) return;
+    if (
+      !confirmDiscard("reload the published page", () => {
+        if (session) revertEdit();
+        discardAll();
+        drawer.remove();
+        updateDirtyUi();
+        void loadPage(state.current?.pagePath ?? "/index.html", { pushHistory: false });
+      })
+    )
+      return;
     if (session) revertEdit();
     discardAll();
     drawer.remove();

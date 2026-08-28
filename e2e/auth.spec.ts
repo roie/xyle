@@ -69,8 +69,8 @@ test.describe("logout", () => {
       await route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
     });
     await page.click("#xyle-menu-btn");
-    page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("menuitem", { name: "Log out" }).click();
+    await page.click("#xyle-discard-confirmation [data-discard]");
 
     await expect(page.locator("#xyle-flash")).toContainText(
       "Could not log out. Your draft is still open.",
@@ -99,11 +99,8 @@ test.describe("logout", () => {
     await expect.poll(async () => opsCount(page)).toBe(1);
 
     await page.click("#xyle-menu-btn");
-    page.once("dialog", async (dialog) => {
-      expect(dialog.message()).toBe("Discard 1 unpublished change and log out?");
-      await dialog.dismiss();
-    });
     await page.getByRole("menuitem", { name: "Log out" }).click();
+    await page.click("#xyle-discard-confirmation [data-keep]");
 
     await expect(page.locator("#xyle-menu-btn")).toBeFocused();
     await expect.poll(async () => opsCount(page)).toBe(1);
