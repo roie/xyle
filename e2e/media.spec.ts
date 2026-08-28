@@ -61,6 +61,48 @@ test.describe("media editing", () => {
     await expect(page.locator(".xyle-img-tools")).toHaveCount(0);
   });
 
+  test("uploads to the media library before applying an image", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    await page.locator("#xyle-control-hitbox").hover();
+    await page.locator("#xyle-menu-btn").click();
+    await page.getByRole("menuitem", { name: "Media library" }).click();
+    const drawer = page.locator("#xyle-media-drawer");
+    await expect(drawer).toBeVisible();
+
+    const chooserPromise = page.waitForEvent("filechooser");
+    await drawer.getByRole("button", { name: "Upload to library" }).click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles({
+      name: "library-upload.png",
+      mimeType: "image/png",
+      buffer: PNG_BYTES,
+    });
+    await expect(drawer.locator(".xyle-media-tab[data-tab=uploads]")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const uploaded = drawer.locator('button[aria-label^="Choose /__media/"]');
+    await expect(uploaded).toHaveCount(1);
+    expect(await opsCount(page)).toBe(0);
+
+    await drawer.getByRole("button", { name: "Close media drawer" }).click();
+    const image = page.frameLocator("#xyle-preview").locator('img[src="/assets/hero-wide.webp"]');
+    const imageId = await image.getAttribute("data-xyle-node");
+    expect(imageId).toBeTruthy();
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Media" }).click();
+    await page.locator('#xyle-media-drawer button[aria-label^="Choose /__media/"]').click();
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    await expect
+      .poll(async () =>
+        page
+          .frameLocator("#xyle-preview")
+          .locator(`[data-xyle-node="${imageId}"]`)
+          .getAttribute("src"),
+      )
+      .toMatch(/^blob:/);
+  });
+
   test("replacing an image previews via blob and records a media change", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const id = await page.evaluate(() => {

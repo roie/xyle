@@ -890,6 +890,12 @@ const editorStyles = `
     gap: 0.35rem;
     margin-bottom: 0.8rem;
   }
+  .xyle-media-help {
+    margin: -0.2rem 0 0.8rem;
+    color: var(--xyle-muted);
+    font-size: 11px;
+    line-height: 1.4;
+  }
   .xyle-media-tab {
     flex: 1;
     min-height: 2rem;
@@ -3531,6 +3537,51 @@ function hideImageTools(img: HTMLImageElement): void {
     });
 }
 
+interface StagedMedia {
+  path: string;
+  objectUrl: string;
+  contentType: string;
+  width: number;
+  height: number;
+}
+
+async function stageMediaFile(file: File): Promise<StagedMedia | null> {
+  if (mediaManagementUnavailable) {
+    flash("Media management is unavailable for this deployment.");
+    return null;
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    flash("Images must be 20 MB or smaller.");
+    return null;
+  }
+  const mutationGeneration = mediaMutationGeneration;
+  const buffer = await file.arrayBuffer();
+  if (mutationGeneration !== mediaMutationGeneration) return null;
+  const bytes = new Uint8Array(buffer);
+  const detectedContentType = detectRasterContentType(bytes);
+  if (!detectedContentType) {
+    flash("Only JPEG, PNG, WebP and AVIF uploads are supported.");
+    return null;
+  }
+  const digestHex = await sha256Hex(bytes);
+  if (mutationGeneration !== mediaMutationGeneration) return null;
+  const path = `/__media/${digestHex}.${extFor(detectedContentType)}`;
+  const existingAsset = state.assets.get(path);
+  const objectUrl = existingAsset?.objectUrl ?? URL.createObjectURL(file);
+  if (!existingAsset) state.assets.set(path, { file, objectUrl });
+  let width = 1;
+  let height = 1;
+  try {
+    const bitmap = await createImageBitmap(file);
+    width = bitmap.width;
+    height = bitmap.height;
+    bitmap.close();
+  } catch {
+    // The image element will still validate and display the staged asset.
+  }
+  return { path, objectUrl, contentType: detectedContentType, width, height };
+}
+
 function pickLocalFile(img: HTMLImageElement, meta: NodeMeta): void {
   const input = document.createElement("input");
   input.type = "file";
@@ -3544,53 +3595,24 @@ function pickLocalFile(img: HTMLImageElement, meta: NodeMeta): void {
 }
 
 async function useFileForImage(img: HTMLImageElement, meta: NodeMeta, file: File): Promise<void> {
-  if (mediaManagementUnavailable) {
-    flash("Media management is unavailable for this deployment.");
-    return;
-  }
-  if (file.size > 20 * 1024 * 1024) {
-    flash("Images must be 20 MB or smaller.");
-    return;
-  }
-  const mutationGeneration = mediaMutationGeneration;
-  const buffer = await file.arrayBuffer();
-  if (mutationGeneration !== mediaMutationGeneration) return;
-  const bytes = new Uint8Array(buffer);
-  const detectedContentType = detectRasterContentType(bytes);
-  if (!detectedContentType) {
-    flash("Only JPEG, PNG, WebP and AVIF uploads are supported.");
-    return;
-  }
-  const digestHex = await sha256Hex(bytes);
-  if (mutationGeneration !== mediaMutationGeneration) return;
-  const ext = extFor(detectedContentType);
-  const assetPath = `/__media/${digestHex}.${ext}`;
-  const existingAsset = state.assets.get(assetPath);
-  const objectUrl = existingAsset?.objectUrl ?? URL.createObjectURL(file);
-  if (!existingAsset) state.assets.set(assetPath, { file, objectUrl });
-  let width = img.naturalWidth || 1;
-  let height = img.naturalHeight || 1;
-  try {
-    const bitmap = await createImageBitmap(file);
-    width = bitmap.width;
-    height = bitmap.height;
-    bitmap.close();
-  } catch {
-    // The image element will still validate and display the staged asset.
-  }
-  const source = {
-    kind: "staged" as const,
-    assetId: assetPath,
-    previewUrl: objectUrl,
-    mime: detectedContentType,
-    width,
-    height,
-  };
+  const staged = await stageMediaFile(file);
+  if (!staged) return;
   applyMediaPatch(
     meta.pagePath,
     meta.id,
     img,
-    { source, crop: null, focus: null },
+    {
+      source: {
+        kind: "staged",
+        assetId: staged.path,
+        previewUrl: staged.objectUrl,
+        mime: staged.contentType,
+        width: staged.width || img.naturalWidth || 1,
+        height: staged.height || img.naturalHeight || 1,
+      },
+      crop: null,
+      focus: null,
+    },
     "Replace image",
   );
 }
@@ -3752,12 +3774,16 @@ interface MediaItem {
   contentType: string;
   source: "site" | "xyle-upload";
   usedBySimpleImg: boolean;
+  previewUrl?: string;
+  width?: number;
+  height?: number;
 }
 
 let drawerOpen = false;
 let mediaManagementUnavailable = false;
 let mediaRequestGeneration = 0;
 let mediaDrawerTrigger: HTMLElement | null = null;
+const stagedMediaLibrary = new Map<string, MediaItem>();
 
 async function detectMediaSupport(): Promise<void> {
   try {
@@ -3798,7 +3824,10 @@ async function openMediaDrawer(trigger?: HTMLElement): Promise<void> {
     flash("Media management is unavailable for this deployment.");
     return;
   }
-  renderMediaDrawer(body);
+  renderMediaDrawer([
+    ...stagedMediaLibrary.values(),
+    ...body.filter((item) => !stagedMediaLibrary.has(item.path)),
+  ]);
 }
 
 function focusPreviewElement(element: HTMLElement | null): void {
@@ -3846,8 +3875,9 @@ function renderMediaDrawer(items: MediaItem[]): void {
       <button data-tab="used" class="xyle-media-tab" aria-pressed="false">Used</button>
       <button data-tab="uploads" class="xyle-media-tab" aria-pressed="false">Uploads</button>
     </nav>
+    <p class="xyle-media-help">${selectedImage ? "Choose a thumbnail to use it on the selected image." : "Upload images here. Select an image on the page to use one."}</p>
     <div id="xyle-media-grid" class="xyle-media-grid"></div>
-    <button id="xyle-media-upload" class="xyle-media-upload">Upload image</button>
+    <button id="xyle-media-upload" class="xyle-media-upload">Upload to library</button>
   `;
   document.body.append(drawer);
 
@@ -3872,13 +3902,13 @@ function renderMediaDrawer(items: MediaItem[]): void {
       cell.className = "xyle-media-cell";
       cell.setAttribute("aria-label", `Choose ${item.path}`);
       const thumb = document.createElement("img");
-      thumb.src = item.path;
+      thumb.src = item.previewUrl ?? item.path;
       thumb.alt = item.path.split("/").pop() ?? "";
       thumb.loading = "lazy";
       thumb.className = "xyle-media-thumb";
       cell.append(thumb);
       cell.title = item.path;
-      cell.addEventListener("click", () => chooseExistingMedia(item.path));
+      cell.addEventListener("click", () => chooseMedia(item));
       grid.append(cell);
     }
   };
@@ -3899,12 +3929,28 @@ function renderMediaDrawer(items: MediaItem[]): void {
     input.accept = "image/jpeg,image/png,image/webp,image/avif";
     input.addEventListener("change", async () => {
       const file = input.files?.[0];
-      if (!file || !selectedImage) {
-        if (file) flash("Select an image in the page first.");
-        return;
+      if (!file) return;
+      const staged = await stageMediaFile(file);
+      if (!staged) return;
+      const item: MediaItem = {
+        path: staged.path,
+        contentType: staged.contentType,
+        source: "xyle-upload",
+        usedBySimpleImg: false,
+        previewUrl: staged.objectUrl,
+        width: staged.width,
+        height: staged.height,
+      };
+      stagedMediaLibrary.set(item.path, item);
+      const existingIndex = items.findIndex((candidate) => candidate.path === item.path);
+      if (existingIndex >= 0) items.splice(existingIndex, 1);
+      items.unshift(item);
+      tab = "uploads";
+      for (const peer of drawer.querySelectorAll<HTMLButtonElement>(".xyle-media-tab")) {
+        peer.setAttribute("aria-pressed", String(peer.dataset.tab === tab));
       }
-      await useFileForImage(selectedImage.el, selectedImage.meta, file);
-      flash("Image updated.");
+      drawGrid();
+      flash("Uploaded to the library. Choose the thumbnail to use it.");
     });
     input.click();
   });
@@ -3912,16 +3958,25 @@ function renderMediaDrawer(items: MediaItem[]): void {
   search.focus();
 }
 
-function chooseExistingMedia(path: string): void {
-  if (!selectedImage) return;
+function chooseMedia(item: MediaItem): void {
+  if (!selectedImage) {
+    flash("Select an image on the page first, then choose it from the library.");
+    return;
+  }
   const { el, meta } = selectedImage;
-  applyMediaPatch(
-    meta.pagePath,
-    meta.id,
-    el,
-    { source: { kind: "existing", src: path }, crop: null, focus: null },
-    "Replace image",
-  );
+  if (item.source === "xyle-upload") item.usedBySimpleImg = true;
+  const source =
+    item.source === "xyle-upload" && item.previewUrl
+      ? {
+          kind: "staged" as const,
+          assetId: item.path,
+          previewUrl: item.previewUrl,
+          mime: item.contentType,
+          width: item.width ?? 1,
+          height: item.height ?? 1,
+        }
+      : { kind: "existing" as const, src: item.path };
+  applyMediaPatch(meta.pagePath, meta.id, el, { source, crop: null, focus: null }, "Replace image");
   closeMediaDrawer();
   flash("Image updated.");
 }
@@ -3943,7 +3998,10 @@ function assetPathsFor(...ops: Array<Op | undefined>): string[] {
 }
 
 function cleanupUnreachableAssets(includeHistory = true): void {
-  const reachable = new Set(state.ops.flatMap(({ op }) => (op.type === "src" ? [op.value] : [])));
+  const reachable = new Set([
+    ...state.ops.flatMap(({ op }) => (op.type === "src" ? [op.value] : [])),
+    ...stagedMediaLibrary.keys(),
+  ]);
   if (includeHistory) {
     for (const entry of state.history) {
       for (const path of entry.assetPaths) reachable.add(path);
@@ -4925,6 +4983,7 @@ function buildChrome(): void {
           <div id="xyle-menu" role="menu" aria-label="Xyle menu">
             <button data-action="exit" class="xyle-menu-item" role="menuitem">Exit editor</button>
             <button data-action="live" class="xyle-menu-item" role="menuitem">View live site</button>
+            <button data-action="media" class="xyle-menu-item" role="menuitem">Media library</button>
             <button data-action="seo" class="xyle-menu-item" role="menuitem">SEO metadata</button>
             <div class="xyle-menu-separator" role="separator"></div>
             <button data-action="logout" class="xyle-menu-item" role="menuitem">Log out</button>
@@ -5094,6 +5153,7 @@ function buildChrome(): void {
 
 function menuAction(action: string): void {
   if (action === "exit") exitEditor();
+  if (action === "media") void openMediaDrawer();
   if (action === "seo") openSeoEditor();
   if (action === "live") {
     try {
@@ -5134,6 +5194,7 @@ function discardAll(): void {
     });
   for (const { objectUrl } of state.assets.values()) URL.revokeObjectURL(objectUrl);
   state.assets.clear();
+  stagedMediaLibrary.clear();
   state.ops = [];
   state.history = [];
   state.historyIndex = 0;
@@ -6105,7 +6166,12 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
   );
   for (const path of referencedAssets) {
     const asset = state.assets.get(path);
-    if (asset) form.set(path, asset.file, `asset-${asset.file.name}`);
+    if (!asset) continue;
+    // Browsers may preserve a local clipboard path as File.name. Send only a
+    // harmless basename as the multipart filename; the content-addressed path
+    // remains the actual upload destination.
+    const filename = asset.file.name.split(/[\\/]/).at(-1) || "upload";
+    form.set(path, asset.file, `asset-${filename}`);
   }
 
   try {
@@ -6133,6 +6199,7 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     state.publishedSnapshotDigest = body.snapshotDigest;
     for (const { objectUrl } of state.assets.values()) URL.revokeObjectURL(objectUrl);
     state.assets.clear();
+    stagedMediaLibrary.clear();
     state.ops = [];
     state.history = [];
     state.historyIndex = 0;
