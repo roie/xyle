@@ -457,6 +457,7 @@ test.describe("media editing", () => {
       return {
         id: image?.getAttribute("data-xyle-node"),
         src: image?.getAttribute("src") ?? "",
+        style: image?.getAttribute("style") ?? "",
       };
     });
     expect(selected.id).toBeTruthy();
@@ -473,9 +474,15 @@ test.describe("media editing", () => {
     await page.click("#xyle-publish");
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     const html = await (await page.request.get("/index.html")).text();
-    expect(html).toMatch(/src="\/__media\/[0-9a-f]{64}\.webp"/);
-    expect(html).toContain("object-fit: cover");
-    expect(html).toContain("object-position: 70% 30%");
-    expect(html).not.toContain(`src="${selected.src}"`);
+    const targetTag =
+      html.match(/<img\b(?=[^>]*alt="Plumber repairing pipes beneath a sink")[^>]*>/i)?.[0] ?? "";
+    expect(targetTag).toMatch(/src="\/__media\/[0-9a-f]{64}\.webp"/);
+    if (/object-fit\s*:\s*cover/i.test(selected.style)) {
+      expect(targetTag).toContain("object-fit: cover");
+    } else {
+      expect(targetTag).not.toContain("object-fit: cover");
+    }
+    expect(targetTag).toContain("object-position: 70% 30%");
+    expect(targetTag).not.toContain(`src="${selected.src}"`);
   });
 });

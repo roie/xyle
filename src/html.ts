@@ -10,6 +10,7 @@ import type {
   MediaState,
 } from "./types.ts";
 import { digestBytes } from "./digest.ts";
+import { sourceTargetIdentity } from "./identity.ts";
 import { mediaSourcePath, normalizeMediaState } from "./media-state.ts";
 
 type P5Document = DefaultTreeAdapterTypes.Document;
@@ -53,6 +54,7 @@ const TEXT_CONTAINER_TAGS = new Set([
 ]);
 
 const MULTILINE_TAGS = new Set(["p", "blockquote", "figcaption", "li"]);
+const STRUCTURAL_UNSAFE_TAGS = new Set(["canvas", "form", "iframe", "script", "section", "video"]);
 
 const INLINE_TAGS = new Set([
   "a",
@@ -132,6 +134,15 @@ interface AttrRange {
   name: string;
   sliceStart: number;
   sliceEnd: number;
+}
+
+function hasUnsafeStructuralDescendant(el: P5Element): boolean {
+  const visit = (node: P5Node): boolean => {
+    if (!isElement(node)) return false;
+    if (STRUCTURAL_UNSAFE_TAGS.has(node.tagName)) return true;
+    return node.childNodes.some(visit);
+  };
+  return el.childNodes.some(visit);
 }
 
 interface Candidate {
@@ -265,21 +276,6 @@ function sourceAttrValue(source: string, attr: AttrRange): string {
   return value;
 }
 
-function imageStyleValue(
-  existing: string,
-  fit: "cover" | "contain",
-  focalX: number,
-  focalY: number,
-): string {
-  return mediaStyleValue(existing, {
-    source: { kind: "existing", src: "" },
-    alt: { present: true, value: "" },
-    crop: null,
-    focus: { x: focalX / 100, y: focalY / 100 },
-    framing: { fit },
-  });
-}
-
 function mediaStyleValue(existing: string, media: MediaState): string {
   let retained = existing;
   if (media.framing) retained = retained.replace(/(?:^|;)\s*object-fit\s*:[^;]*/gi, "");
@@ -390,6 +386,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
   const removals: PageAnalysis["removals"] = [];
   let baseTagNeeded = true;
   let counter = 0;
+  let sectionCounter = 0;
 
   const isNestedCandidateStop = (el: P5Element): boolean =>
     el.tagName === "a" || el.tagName === "img";
@@ -400,6 +397,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
     insideTextContainer: boolean,
     insideIgnored: boolean,
     parent: P5Element | null,
+    insideSection: boolean,
   ): void => {
     if (!isElement(node)) return;
 
@@ -411,7 +409,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
       return;
     }
     if (EXCLUDED_TAGS.has(tag)) return;
-    if (node.attrs.some((a) => a.name === "hidden")) return;
+    if (node.attrs.some((a) => a.name === "hidden") && tag !== "section") return;
 
     if (tag === "meta") {
       const httpEquiv = attrValue(node, "http-equiv");
@@ -427,7 +425,36 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
 
     let becameCandidate = false;
 
-    if (tag === "img") {
+    if (
+      tag === "section" &&
+      !insideSection &&
+      node.sourceCodeLocation?.startTag &&
+      node.sourceCodeLocation.endTag &&
+      !hasUnsafeStructuralDescendant(node)
+    ) {
+      sectionCounter += 1;
+      const id = `s${sectionCounter}`;
+      const loc = node.sourceCodeLocation;
+      const startTag = loc.startTag;
+      const endTag = loc.endTag;
+      if (!startTag || !endTag) return;
+      candidates.set(id, {
+        id,
+        kind: "section",
+        ...parentRange(parent),
+        tag,
+        startTagStart: loc.startOffset,
+        startTagEnd: startTag.endOffset,
+        contentStart: startTag.endOffset,
+        contentEnd: endTag.startOffset,
+        elementEnd: loc.endOffset,
+        multiline: false,
+        textEditable: false,
+        segments: [],
+        attrs: collectAttrRanges(node),
+      });
+      becameCandidate = true;
+    } else if (tag === "img") {
       const src = attrValue(node, "src");
       const hidden = node.attrs.some((a) => a.name === "hidden");
       if (src !== null && !hidden) {
@@ -460,6 +487,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
           tag,
           startTagStart: loc.startTag!.startOffset,
           startTagEnd: loc.startTag!.endOffset,
+          elementEnd: loc.endOffset,
           multiline: false,
           textEditable: false,
           segments: [],
@@ -484,6 +512,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
           startTagEnd: loc.startTag!.endOffset,
           contentStart: loc.startTag!.endOffset,
           contentEnd: loc.endTag?.startOffset ?? loc.endOffset,
+          elementEnd: loc.endOffset,
           tagNameStart: loc.startTag!.startOffset + 1,
           tagNameEnd: loc.startTag!.startOffset + 1 + tag.length,
           ...(loc.endTag
@@ -557,7 +586,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
     // A candidate owns its own subtree's text; nested text containers stay
     // suppressed only when this candidate actually formed. Links and images
     // remain discoverable inside candidates either way.
-    const suppressesChildren = becameCandidate;
+    const suppressesChildren = becameCandidate && tag !== "section";
 
     for (const child of node.childNodes) {
       visit(
@@ -566,13 +595,14 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
         insideTextContainer || suppressesChildren,
         ignored,
         node,
+        insideSection || tag === "section",
       );
     }
   };
 
   const htmlEl = doc.childNodes.find((n) => isElement(n) && n.tagName === "html");
   const roots = htmlEl && isElement(htmlEl) ? htmlEl.childNodes : doc.childNodes;
-  for (const child of roots) visit(child, false, false, false, null);
+  for (const child of roots) visit(child, false, false, false, null, false);
 
   return { candidates, injections, removals, baseTagNeeded };
 }
@@ -640,7 +670,19 @@ export function preparePreview(
       pagePath,
       kind: c.kind,
       sourceStart: c.startTagStart,
-      sourceEnd: c.segments.at(-1)?.end ?? c.startTagEnd,
+      sourceEnd:
+        c.kind === "section"
+          ? (c.elementEnd ?? c.startTagEnd)
+          : (c.segments.at(-1)?.end ?? c.startTagEnd),
+      elementStart: c.startTagStart,
+      ...(c.elementEnd !== undefined ? { elementEnd: c.elementEnd } : {}),
+      stableTargetId: sourceTargetIdentity(
+        pagePath,
+        c.kind,
+        c.startTagStart,
+        c.elementEnd ?? c.startTagEnd,
+        c.tag,
+      ),
       segments: c.segments.map((segment) => ({
         sourceStart: segment.start,
         sourceEnd: segment.end,
@@ -804,11 +846,15 @@ export async function patchHtml(
     op: PageOperation & { type: "formatBlock" };
   }[] = [];
   const htmlOps: { candidate: Candidate; op: PageOperation & { type: "html" } }[] = [];
-  const imageStyleOps: {
-    candidate: Candidate;
-    op: PageOperation & { type: "imageStyle" };
-  }[] = [];
   const mediaOps: { candidate: Candidate; op: PageOperation & { type: "media" } }[] = [];
+  const sectionVisibilityOps: {
+    candidate: Candidate;
+    op: PageOperation & { type: "sectionVisibility" };
+  }[] = [];
+  const moveSectionOps: {
+    candidate: Candidate;
+    op: PageOperation & { type: "moveSection" };
+  }[] = [];
   const seoOps: (PageOperation & { type: "seo" })[] = [];
   const patches: SourcePatch[] = [];
   const htmlTargets = new Set(
@@ -908,6 +954,73 @@ export async function patchHtml(
         htmlOps.push({ candidate, op: { ...op, value } });
         break;
       }
+      case "sectionVisibility": {
+        const candidate = analysis.candidates.get(op.nodeId);
+        if (!candidate || candidate.kind !== "section") {
+          throw new Error(`section visibility target ${op.nodeId} is not a safe section`);
+        }
+        if (typeof op.visible !== "boolean" || typeof op.before !== "boolean") {
+          throw new Error(`invalid section visibility for ${op.nodeId}`);
+        }
+        const beforeVisible = !candidate.attrs.has("hidden");
+        if (op.before !== beforeVisible)
+          throw new Error("section visibility changed before this edit");
+        if (sectionVisibilityOps.some(({ candidate: existing }) => existing.id === candidate.id)) {
+          throw new Error(`duplicate section visibility op on ${candidate.id}`);
+        }
+        sectionVisibilityOps.push({ candidate, op });
+        break;
+      }
+      case "moveSection": {
+        const candidate = analysis.candidates.get(op.nodeId);
+        const target = analysis.candidates.get(op.targetId);
+        if (
+          !candidate ||
+          candidate.kind !== "section" ||
+          !target ||
+          target.kind !== "section" ||
+          candidate.id === target.id ||
+          candidate.parentStart === undefined ||
+          candidate.parentEnd === undefined ||
+          candidate.parentStart !== target.parentStart ||
+          candidate.parentEnd !== target.parentEnd
+        ) {
+          throw new Error("sections must be safe siblings in one parent");
+        }
+        if (typeof op.before !== "boolean")
+          throw new Error(`invalid section move for ${candidate.id}`);
+        if (moveSectionOps.length > 0) throw new Error("only one section move is allowed per task");
+        const parent = elementAtSourceRange(
+          sourceDocument,
+          candidate.parentStart,
+          candidate.parentEnd,
+        );
+        const children = parent?.childNodes.filter(isElement) ?? [];
+        const sectionChildren = children.filter((child) => {
+          const childStart = child.sourceCodeLocation?.startOffset;
+          return [...analysis.candidates.values()].some(
+            (item) => item.kind === "section" && item.startTagStart === childStart,
+          );
+        });
+        if (sectionChildren.length !== children.length) {
+          throw new Error("section parent contains unsupported sibling content");
+        }
+        if (
+          !sectionChildren.some(
+            (child) => child.sourceCodeLocation?.startOffset === candidate.startTagStart,
+          ) ||
+          !sectionChildren.some(
+            (child) => child.sourceCodeLocation?.startOffset === target.startTagStart,
+          )
+        ) {
+          throw new Error("section sibling source mapping is ambiguous");
+        }
+        const originalIndex = sectionChildren.findIndex(
+          (child) => child.sourceCodeLocation?.startOffset === candidate.startTagStart,
+        );
+        moveSectionOps.push({ candidate, op: { ...op, originalIndex } });
+        break;
+      }
       case "seo": {
         if (!/^(title|description|canonical|ogTitle|ogDescription|ogImage)$/.test(op.field)) {
           throw new Error(`unsupported SEO field ${op.field}`);
@@ -960,33 +1073,6 @@ export async function patchHtml(
           throw new Error(`duplicate media op on ${candidate.id}`);
         }
         mediaOps.push({ candidate, op: { ...op, value } });
-        break;
-      }
-      case "imageStyle": {
-        const candidate = analysis.candidates.get(op.nodeId);
-        if (!candidate || candidate.kind !== "image") {
-          throw new Error(`image style target ${op.nodeId} is not an image`);
-        }
-        if (
-          candidate.mediaCapabilities?.crop === false ||
-          candidate.mediaCapabilities?.focus === false
-        ) {
-          throw new Error(
-            candidate.mediaCapabilities.cropReason ?? "image framing is not supported",
-          );
-        }
-        if (
-          (op.fit !== "cover" && op.fit !== "contain") ||
-          !Number.isFinite(op.focalX) ||
-          !Number.isFinite(op.focalY) ||
-          op.focalX < 0 ||
-          op.focalX > 100 ||
-          op.focalY < 0 ||
-          op.focalY > 100
-        ) {
-          throw new Error(`invalid image style for ${op.nodeId}`);
-        }
-        imageStyleOps.push({ candidate, op });
         break;
       }
       case "formatBlock": {
@@ -1258,28 +1344,8 @@ export async function patchHtml(
         });
         break;
       }
-      case "lineBreak": {
-        const ref = parseSegmentRef(op.nodeId);
-        const candidate = analysis.candidates.get(ref.nodeId);
-        if (!candidate) throw new Error(`unknown text target ${ref.nodeId}`);
-        if (!candidate.multiline) {
-          throw new Error(`<${candidate.tag}> rejects line breaks`);
-        }
-        const segment = candidate.segments[ref.segmentIndex];
-        if (!segment) throw new Error(`segment ${ref.segmentIndex} missing on ${ref.nodeId}`);
-        const pos = op.position;
-        if (!Number.isInteger(pos) || pos < 0 || pos > segment.text.length) {
-          throw new Error(`lineBreak position ${pos} out of bounds`);
-        }
-        const key = `${ref.nodeId}#${ref.segmentIndex}`;
-        if (textIntents.has(key)) throw new Error(`duplicate text op on ${key}`);
-        textIntents.set(key, {
-          candidate,
-          segment,
-          markup: `${escapeHtmlText(segment.text.slice(0, pos))}<br>${escapeHtmlText(segment.text.slice(pos))}`,
-        });
-        break;
-      }
+      case "lineBreak":
+        throw new Error("Line-break editing is deferred.");
       case "href":
       case "src":
       case "alt": {
@@ -1359,6 +1425,70 @@ export async function patchHtml(
     patches.push({ start: seoAnalysis.headEnd, end: seoAnalysis.headEnd, replacement: markup });
   }
 
+  for (const { candidate, op } of sectionVisibilityOps) {
+    const hidden = candidate.attrs.get("hidden");
+    if (op.visible) {
+      if (hidden) {
+        const hasPreviousAttribute = [...candidate.attrs.values()].some(
+          (attribute) => attribute.sliceEnd < hidden.sliceStart,
+        );
+        const start =
+          hasPreviousAttribute && /\s/.test(sourceText[hidden.sliceStart - 1] ?? "")
+            ? hidden.sliceStart - 1
+            : hidden.sliceStart;
+        patches.push({ start, end: hidden.sliceEnd, replacement: "" });
+      }
+    } else if (!hidden) {
+      patches.push({
+        start: candidate.startTagEnd - 1,
+        end: candidate.startTagEnd - 1,
+        replacement: " hidden",
+      });
+    }
+  }
+  for (const { candidate, op } of moveSectionOps) {
+    const parent =
+      candidate.parentStart !== undefined && candidate.parentEnd !== undefined
+        ? elementAtSourceRange(sourceDocument, candidate.parentStart, candidate.parentEnd)
+        : null;
+    const target = analysis.candidates.get(op.targetId);
+    if (
+      !parent ||
+      !target ||
+      !parent.sourceCodeLocation?.startTag ||
+      !parent.sourceCodeLocation.endTag
+    ) {
+      throw new Error("section parent source mapping is ambiguous");
+    }
+    const children = parent.childNodes.filter(isElement);
+    const sourceChild = children.find(
+      (child) => child.sourceCodeLocation?.startOffset === candidate.startTagStart,
+    );
+    const targetChild = children.find(
+      (child) => child.sourceCodeLocation?.startOffset === target.startTagStart,
+    );
+    if (!sourceChild || !targetChild)
+      throw new Error("section sibling source mapping is ambiguous");
+    const sourceIndex = children.indexOf(sourceChild);
+    const targetIndex = children.indexOf(targetChild);
+    const order = [...children];
+    order.splice(sourceIndex, 1);
+    let insertAt = targetIndex + (op.before ? 0 : 1);
+    if (sourceIndex < insertAt) insertAt -= 1;
+    order.splice(insertAt, 0, sourceChild);
+    const contentStart = parent.sourceCodeLocation.startTag.endOffset;
+    const contentEnd = parent.sourceCodeLocation.endTag.startOffset;
+    const blocks = children.map((child, index) => {
+      const location = child.sourceCodeLocation;
+      if (!location) throw new Error("section sibling source mapping is ambiguous");
+      const blockStart =
+        index === 0 ? contentStart : children[index - 1]!.sourceCodeLocation!.endOffset;
+      return sourceText.slice(blockStart, location.endOffset);
+    });
+    const trailing = sourceText.slice(children.at(-1)!.sourceCodeLocation!.endOffset, contentEnd);
+    const replacement = order.map((child) => blocks[children.indexOf(child)]).join("") + trailing;
+    patches.push({ start: contentStart, end: contentEnd, replacement });
+  }
   for (const { candidate, op } of mediaOps) {
     const source = mediaSourcePath(op.value.source);
     const srcAttr = candidate.attrs.get("src");
@@ -1385,41 +1515,15 @@ export async function patchHtml(
       const style = mediaStyleValue(existing, op.value);
       const styleAttr = candidate.attrs.get("style");
       const replacement = `style="${escapeHtmlAttr(style)}"`;
+      let insertAt = candidate.startTagEnd - 1;
+      if (sourceText.slice(insertAt - 1, insertAt + 1) === "/>") insertAt -= 1;
       patches.push({
-        start: styleAttr?.sliceStart ?? candidate.startTagEnd - 1,
-        end: styleAttr?.sliceEnd ?? candidate.startTagEnd - 1,
+        start: styleAttr?.sliceStart ?? insertAt,
+        end: styleAttr?.sliceEnd ?? insertAt,
         replacement: styleAttr ? replacement : ` ${replacement}`,
       });
     }
   }
-  for (const { candidate, op } of imageStyleOps) {
-    if (imageStyleOps.filter((item) => item.candidate.id === candidate.id).length > 1) {
-      throw new Error(`duplicate image style op on ${candidate.id}`);
-    }
-    const style = imageStyleValue(
-      candidate.attrs.has("style")
-        ? sourceAttrValue(sourceText, candidate.attrs.get("style")!)
-        : "",
-      op.fit,
-      op.focalX,
-      op.focalY,
-    );
-    const attr = candidate.attrs.get("style");
-    if (attr) {
-      patches.push({
-        start: attr.sliceStart,
-        end: attr.sliceEnd,
-        replacement: `style="${escapeHtmlAttr(style)}"`,
-      });
-    } else {
-      patches.push({
-        start: candidate.startTagEnd - 1,
-        end: candidate.startTagEnd - 1,
-        replacement: ` style="${escapeHtmlAttr(style)}"`,
-      });
-    }
-  }
-
   const formattedTextKeys = new Set<string>();
   const formatGroups = new Map<
     string,

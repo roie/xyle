@@ -29,6 +29,16 @@ async function invokeTool(page: Page, name: string, input: unknown): Promise<unk
   );
 }
 
+async function firstChangeId(page: Page, type?: string): Promise<string> {
+  const changes = (await invokeTool(page, "list_changes", {})) as Array<{
+    changeId: string;
+    type: string;
+  }>;
+  const change = changes.find((candidate) => !type || candidate.type === type);
+  if (!change) throw new Error("No matching Xyle Change");
+  return change.changeId;
+}
+
 test.describe("WebMCP editor tools", () => {
   test("discovers and updates an editable heading through Xyle", async ({ page, browserName }) => {
     test.skip(
@@ -62,7 +72,7 @@ test.describe("WebMCP editor tools", () => {
     }
     expect(discovered.tools).toContain("get_content");
     expect(discovered.tools).toContain("list_changes");
-    expect(discovered.tools).toContain("undo_change");
+    expect(discovered.tools).toContain("revert_change");
     expect(discovered.tools).toContain("update_text");
     const heading = discovered.content.find((item) => item.type === "text");
     expect(heading?.id).toBeTruthy();
@@ -91,13 +101,14 @@ test.describe("WebMCP editor tools", () => {
       id: heading!.id,
       content: updatedText,
     });
+    const headingChangeId = await firstChangeId(page);
     await expect(invokeTool(page, "list_changes", {})).resolves.toEqual([
       {
-        changeId: "change-1",
+        changeId: headingChangeId,
         elementId: heading!.id,
-        type: "text",
-        before: originalText,
-        after: updatedText,
+        type: "html",
+        before: expect.stringContaining(originalText),
+        after: expect.stringContaining(updatedText),
       },
     ]);
 
@@ -109,8 +120,10 @@ test.describe("WebMCP editor tools", () => {
     await page.locator("#xyle-changes").click();
     await expect(page.locator("#xyle-changes-drawer")).toBeVisible();
 
-    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
-      changeId: "change-1",
+    await expect(
+      invokeTool(page, "revert_change", { changeId: headingChangeId }),
+    ).resolves.toMatchObject({
+      changeId: headingChangeId,
       undone: true,
     });
     await expect(
@@ -154,8 +167,8 @@ test.describe("WebMCP editor tools", () => {
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
       {
         type: "html",
-        before: "Plumbing you can depend on",
-        after: "<strong>Plumbing you can depend on</strong>",
+        before: expect.stringContaining("Plumbing you can depend on"),
+        after: expect.stringContaining("<strong>Plumbing you can depend on</strong>"),
       },
     ]);
     await expect(
@@ -166,10 +179,29 @@ test.describe("WebMCP editor tools", () => {
     await expect(
       invokeTool(page, "update_formatting", { id: heading!.id, format: "bold" }),
     ).resolves.toMatchObject({ id: heading!.id, format: "bold" });
-    await expect(invokeTool(page, "list_changes", {})).resolves.toHaveLength(1);
+    const boldChangeId = await firstChangeId(page);
+    await expect(
+      invokeTool(page, "update_formatting", { id: heading!.id, format: "heading-2" }),
+    ).resolves.toMatchObject({ id: heading!.id, format: "heading-2" });
+    await expect(headingLocator).toHaveJSProperty("tagName", "H2");
+    await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
+      {
+        changeId: boldChangeId,
+        type: "html",
+        after: expect.stringContaining("<h2"),
+      },
+    ]);
+    await page.keyboard.press("Control+z");
+    await expect(headingLocator).toHaveJSProperty("tagName", "H1");
+    await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
+      { type: "html", after: expect.stringContaining("<h1") },
+    ]);
 
-    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
-      changeId: "change-1",
+    const richChangeId = await firstChangeId(page);
+    await expect(
+      invokeTool(page, "revert_change", { changeId: richChangeId }),
+    ).resolves.toMatchObject({
+      changeId: richChangeId,
       undone: true,
     });
     await expect(headingLocator.locator('strong[data-xyle-format="bold"]')).toHaveCount(0);
@@ -179,10 +211,17 @@ test.describe("WebMCP editor tools", () => {
     ).resolves.toMatchObject({ id: heading!.id, format: "heading-2" });
     await expect(headingLocator).toHaveJSProperty("tagName", "H2");
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
-      { type: "formatBlock", before: "heading-1", after: "heading-2" },
+      {
+        type: "html",
+        before: expect.stringContaining("<h1"),
+        after: expect.stringContaining("<h2"),
+      },
     ]);
-    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
-      changeId: "change-1",
+    const headingChangeId = await firstChangeId(page);
+    await expect(
+      invokeTool(page, "revert_change", { changeId: headingChangeId }),
+    ).resolves.toMatchObject({
+      changeId: headingChangeId,
       undone: true,
     });
     await expect(headingLocator).toHaveJSProperty("tagName", "H1");
@@ -355,7 +394,7 @@ test.describe("WebMCP editor tools", () => {
     await clickOutsideToCommit(page);
     await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toHaveCount(0);
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
-      { type: "text", after: "Plumbing you can depend on?" },
+      { type: "html", after: expect.stringContaining("Plumbing you can depend on?") },
     ]);
   });
 
@@ -443,13 +482,15 @@ test.describe("WebMCP editor tools", () => {
     const changes = (await invokeTool(page, "list_changes", {})) as Array<{
       changeId: string;
       elementId: string;
+      type: string;
       after: string;
     }>;
     const ctaChange = changes.find((change) => change.elementId === cta!.id);
     expect(ctaChange?.changeId).toBeTruthy();
-    expect(ctaChange?.after).toBe("Start editing");
+    expect(ctaChange?.type).toBe("html");
+    expect(ctaChange?.after).toContain("Start editing");
 
-    await invokeTool(page, "undo_change", { changeId: ctaChange!.changeId });
+    await invokeTool(page, "revert_change", { changeId: ctaChange!.changeId });
     await expect(
       page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${cta!.id}"]`),
     ).toHaveText("Get a quote");
@@ -490,8 +531,11 @@ test.describe("WebMCP editor tools", () => {
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
       { type: "seo", before: original.title, after: nextTitle },
     ]);
-    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
-      changeId: "change-1",
+    const seoChangeId = await firstChangeId(page, "seo");
+    await expect(
+      invokeTool(page, "revert_change", { changeId: seoChangeId }),
+    ).resolves.toMatchObject({
+      changeId: seoChangeId,
       undone: true,
     });
     await expect
@@ -624,10 +668,17 @@ test.describe("WebMCP editor tools", () => {
     await expect(first.locator("..")).toHaveJSProperty("tagName", "UL");
     await expect(first.locator("..").locator(":scope > li")).toHaveCount(2);
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
-      { type: "toggleList", before: "paragraphs", after: "ul" },
+      {
+        type: "html",
+        before: expect.stringContaining("<p"),
+        after: expect.stringContaining("<ul>"),
+      },
     ]);
-    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
-      changeId: "change-1",
+    const groupedListChangeId = await firstChangeId(page, "html");
+    await expect(
+      invokeTool(page, "revert_change", { changeId: groupedListChangeId }),
+    ).resolves.toMatchObject({
+      changeId: groupedListChangeId,
       undone: true,
     });
     await expect(first).toHaveJSProperty("tagName", "P");
@@ -663,7 +714,11 @@ test.describe("WebMCP editor tools", () => {
     await expect(paragraphLocator.locator("..")).toHaveJSProperty("tagName", "UL");
     await expect(paragraphLocator).toHaveText(paragraph!.preview);
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
-      { type: "toggleList", before: "paragraphs", after: "ul" },
+      {
+        type: "html",
+        before: expect.stringContaining("<p"),
+        after: expect.stringContaining("<ul>"),
+      },
     ]);
     await expect(
       invokeTool(page, "update_formatting", { id: paragraph!.id, format: "unordered-list" }),
@@ -676,8 +731,11 @@ test.describe("WebMCP editor tools", () => {
       invokeTool(page, "update_formatting", { id: paragraph!.id, format: "ordered-list" }),
     ).resolves.toMatchObject({ id: paragraph!.id, format: "ordered-list" });
     await expect(paragraphLocator.locator("..")).toHaveJSProperty("tagName", "OL");
-    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
-      changeId: "change-1",
+    const orderedListChangeId = await firstChangeId(page, "html");
+    await expect(
+      invokeTool(page, "revert_change", { changeId: orderedListChangeId }),
+    ).resolves.toMatchObject({
+      changeId: orderedListChangeId,
       undone: true,
     });
     await expect(paragraphLocator).toHaveJSProperty("tagName", "P");
@@ -729,5 +787,54 @@ test.describe("WebMCP editor tools", () => {
     expect(unsafeRejected).toBe(true);
     await expect(linkLocator).toHaveAttribute("href", "/contact.html");
     expect(originalHref).toBe("/about.html");
+  });
+
+  test("hides and reorders safe sections through WebMCP", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const sections = content.filter((item) => item.type === "section");
+    expect(sections.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = sections;
+    const firstLocator = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${first!.id}"]`);
+    const sectionOrder = () =>
+      page.evaluate(() => {
+        const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+        return [...doc.querySelectorAll("main > section")].map((section) =>
+          section.getAttribute("data-xyle-node"),
+        );
+      });
+    const originalOrder = await sectionOrder();
+
+    await invokeTool(page, "set_section_visibility", { id: first!.id, visible: false });
+    await expect(firstLocator).toHaveJSProperty("hidden", true);
+    const hiddenChange = (await invokeTool(page, "list_changes", {})) as Array<{
+      changeId: string;
+      type: string;
+    }>;
+    const hiddenEntry = hiddenChange.find((change) => change.type === "sectionVisibility");
+    expect(hiddenEntry?.changeId).toBeTruthy();
+    await invokeTool(page, "revert_change", { changeId: hiddenEntry!.changeId });
+    await expect(firstLocator).toHaveJSProperty("hidden", false);
+
+    await invokeTool(page, "move_section", { id: second!.id, targetId: first!.id, before: true });
+    await expect.poll(sectionOrder).toEqual([second!.id, first!.id, ...originalOrder.slice(2)]);
+    const moveChanges = (await invokeTool(page, "list_changes", {})) as Array<{
+      changeId: string;
+      type: string;
+    }>;
+    const moveEntry = moveChanges.find((change) => change.type === "moveSection");
+    expect(moveEntry?.changeId).toBeTruthy();
+    await invokeTool(page, "revert_change", { changeId: moveEntry!.changeId });
+    await expect.poll(sectionOrder).toEqual(originalOrder);
   });
 });

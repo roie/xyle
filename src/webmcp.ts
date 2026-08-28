@@ -2,14 +2,14 @@ import type { CropRect, MediaCapabilities, Point, SeoField, SeoState } from "./t
 
 export interface EditableContent {
   id: string;
-  type: "text" | "link" | "image";
+  type: "text" | "link" | "image" | "section";
   preview: string;
   capabilities?: MediaCapabilities;
 }
 
 export interface ContentResult {
   id: string;
-  type: "text" | "link" | "image";
+  type: "text" | "link" | "image" | "section";
   content: string;
   alt?: string;
 }
@@ -92,10 +92,11 @@ export interface ChangeInfo {
     | "format"
     | "formatBlock"
     | "html"
-    | "imageStyle"
     | "media"
     | "seo"
-    | "toggleList";
+    | "toggleList"
+    | "sectionVisibility"
+    | "moveSection";
   before: string;
   after: string;
   changeSetId?: string;
@@ -111,7 +112,9 @@ export type ChangeSetOperation =
   | { type: "text"; id: string; text: string }
   | { type: "link"; id: string; text?: string; href?: string }
   | { type: "asset"; id: string; src: string; alt?: string }
-  | { type: "formatting"; id: string; format: Formatting };
+  | { type: "formatting"; id: string; format: Formatting }
+  | { type: "sectionVisibility"; id: string; visible: boolean }
+  | { type: "moveSection"; id: string; targetId: string; before: boolean };
 
 export interface ChangeSetResult {
   changeSetId: string;
@@ -128,7 +131,7 @@ export interface WebMcpBridge {
   listEditableContent(): EditableContent[];
   getContent(id: string): ContentResult;
   listChanges(): ChangeInfo[];
-  undoChange(changeId: string): UndoResult;
+  revertChange(changeId: string): UndoResult;
   applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSetResult;
   undoChangeSet(changeSetId: string): ChangeSetUndoResult;
   replaceAsset(id: string, src: string, alt?: string): AssetUpdateResult;
@@ -140,6 +143,12 @@ export interface WebMcpBridge {
     ids: string[],
     format: "unordered-list" | "ordered-list",
   ) => ListFormattingUpdateResult;
+  updateSectionVisibility?: (id: string, visible: boolean) => { id: string; visible: boolean };
+  moveSection?: (
+    id: string,
+    targetId: string,
+    before: boolean,
+  ) => { id: string; targetId: string; before: boolean };
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -198,9 +207,28 @@ function parseIdInput(value: unknown, toolName: string): string {
 
 function parseChangeIdInput(value: unknown): string {
   if (!isRecord(value) || typeof value.changeId !== "string") {
-    throw new Error("undo_change requires a string changeId");
+    throw new Error("revert_change requires a string changeId");
   }
   return value.changeId;
+}
+
+function parseSectionVisibilityInput(value: unknown): { id: string; visible: boolean } {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.visible !== "boolean") {
+    throw new Error("section visibility requires a string id and boolean visible");
+  }
+  return { id: value.id, visible: value.visible };
+}
+
+function parseMoveSectionInput(value: unknown): { id: string; targetId: string; before: boolean } {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.targetId !== "string" ||
+    typeof value.before !== "boolean"
+  ) {
+    throw new Error("move_section requires string id, targetId, and boolean before");
+  }
+  return { id: value.id, targetId: value.targetId, before: value.before };
 }
 
 function parseTextUpdateInput(value: unknown): { id: string; text: string } {
@@ -407,6 +435,25 @@ function parseChangeSetInput(value: unknown): { label: string; changes: ChangeSe
       });
       continue;
     }
+    if (rawChange.type === "sectionVisibility") {
+      if (typeof rawChange.visible !== "boolean") {
+        throw new Error("Section visibility changes require a boolean visible");
+      }
+      changes.push({ type: "sectionVisibility", id: rawChange.id, visible: rawChange.visible });
+      continue;
+    }
+    if (rawChange.type === "moveSection") {
+      if (typeof rawChange.targetId !== "string" || typeof rawChange.before !== "boolean") {
+        throw new Error("Section move changes require targetId and before");
+      }
+      changes.push({
+        type: "moveSection",
+        id: rawChange.id,
+        targetId: rawChange.targetId,
+        before: rawChange.before,
+      });
+      continue;
+    }
     if (rawChange.type === "formatting") {
       const formats: Formatting[] = [
         "bold",
@@ -430,7 +477,9 @@ function parseChangeSetInput(value: unknown): { label: string; changes: ChangeSe
       });
       continue;
     }
-    throw new Error("Change type must be text, link, asset, or formatting");
+    throw new Error(
+      "Change type must be text, link, asset, formatting, sectionVisibility, or moveSection",
+    );
   }
   return { label, changes };
 }
@@ -515,8 +564,21 @@ export async function registerWebMcpTools(
               items: {
                 type: "object",
                 properties: {
-                  type: { type: "string", enum: ["text", "link", "asset", "formatting"] },
+                  type: {
+                    type: "string",
+                    enum: [
+                      "text",
+                      "link",
+                      "asset",
+                      "formatting",
+                      "sectionVisibility",
+                      "moveSection",
+                    ],
+                  },
                   id: { type: "string", description: "The current Xyle node id." },
+                  targetId: { type: "string", description: "The sibling section target id." },
+                  before: { type: "boolean", description: "Move before the target when true." },
+                  visible: { type: "boolean", description: "Whether the section should be shown." },
                   text: { type: "string", description: "Replacement text." },
                   href: { type: "string", description: "A safe URL or path." },
                   src: { type: "string", description: "A safe image URL or path." },
@@ -577,8 +639,8 @@ export async function registerWebMcpTools(
     );
     await context.registerTool(
       {
-        name: "undo_change",
-        description: "Undo one current unsaved Xyle change.",
+        name: "revert_change",
+        description: "Revert one current unsaved Xyle Change to its original state.",
         inputSchema: {
           type: "object",
           properties: { changeId: { type: "string", description: "The Xyle change id." } },
@@ -589,7 +651,7 @@ export async function registerWebMcpTools(
           if (context?.signal?.aborted) {
             throw new DOMException("Tool execution canceled", "AbortError");
           }
-          return textResult(JSON.stringify(bridge.undoChange(parseChangeIdInput(input))));
+          return textResult(JSON.stringify(bridge.revertChange(parseChangeIdInput(input))));
         },
       },
       { signal: controller.signal },
@@ -796,6 +858,62 @@ export async function registerWebMcpTools(
             }
             const parsed = parseListFormattingInput(input);
             return textResult(JSON.stringify(bridge.updateList!(parsed.ids, parsed.format)));
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.updateSectionVisibility) {
+      await context.registerTool(
+        {
+          name: "set_section_visibility",
+          description: "Show or hide one safe Xyle section for human review.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "The current Xyle section id." },
+              visible: { type: "boolean", description: "Whether the section should be shown." },
+            },
+            required: ["id", "visible"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseSectionVisibilityInput(input);
+            return textResult(
+              JSON.stringify(bridge.updateSectionVisibility!(parsed.id, parsed.visible)),
+            );
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.moveSection) {
+      await context.registerTool(
+        {
+          name: "move_section",
+          description: "Move one safe Xyle section before or after a sibling section.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "The section to move." },
+              targetId: { type: "string", description: "The sibling section to move relative to." },
+              before: {
+                type: "boolean",
+                description: "Move before the target when true; after when false.",
+              },
+            },
+            required: ["id", "targetId", "before"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseMoveSectionInput(input);
+            return textResult(
+              JSON.stringify(bridge.moveSection!(parsed.id, parsed.targetId, parsed.before)),
+            );
           },
         },
         { signal: controller.signal },

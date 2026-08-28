@@ -283,10 +283,11 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
             "format",
             "formatBlock",
             "html",
-            "imageStyle",
             "media",
             "seo",
             "toggleList",
+            "sectionVisibility",
+            "moveSection",
           ].includes((op as { type?: string }).type ?? ""),
       )
     )

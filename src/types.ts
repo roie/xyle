@@ -102,14 +102,15 @@ export type PageOperation =
   | { type: "lineBreak"; nodeId: string; position: number }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string }
+  | { type: "alt"; nodeId: string; value: string }
+  | { type: "sectionVisibility"; nodeId: string; visible: boolean; before: boolean }
   | {
-      type: "imageStyle";
+      type: "moveSection";
       nodeId: string;
-      fit: "cover" | "contain";
-      focalX: number;
-      focalY: number;
-    }
-  | { type: "alt"; nodeId: string; value: string };
+      targetId: string;
+      before: boolean;
+      originalIndex: number;
+    };
 
 export interface PageChange {
   pagePath: string;
@@ -184,9 +185,12 @@ export interface PreviewSegment {
 export interface PreviewNode {
   id: string;
   pagePath: string;
-  kind: "text" | "link" | "image";
+  kind: "text" | "link" | "image" | "section";
   sourceStart: number;
   sourceEnd: number;
+  elementStart?: number;
+  elementEnd?: number;
+  stableTargetId?: string;
   segments?: PreviewSegment[];
   tag?: string;
   multiline?: boolean;

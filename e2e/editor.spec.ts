@@ -798,6 +798,56 @@ async function visibleMarkerCount(page: import("@playwright/test").Page): Promis
   });
 }
 
+test("hides and reorders safe sibling sections", async ({ page }) => {
+  await loginAndOpenEditor(page, "/index.html");
+  const sectionIds = await page.evaluate(() => {
+    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+    return [...doc.querySelectorAll("section[data-xyle-node]")].map((section) =>
+      section.getAttribute("data-xyle-node"),
+    );
+  });
+  expect(sectionIds.length).toBeGreaterThanOrEqual(2);
+  const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${sectionIds[0]}"]`);
+  await first.click({ position: { x: 2, y: 2 } });
+  await expect(page.locator(".xyle-section-tools")).toBeVisible();
+  await page.getByRole("button", { name: "Move down" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+        return [...doc.querySelectorAll("main > section")].map((section) =>
+          section.getAttribute("data-xyle-node"),
+        );
+      }),
+    )
+    .toEqual([sectionIds[1], sectionIds[0], ...sectionIds.slice(2)]);
+
+  await page.locator("#xyle-changes").click();
+  await page.locator("#xyle-changes-drawer .xyle-undo-button").first().click();
+  await page.locator("#xyle-changes-close").click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+        return [...doc.querySelectorAll("main > section")].map((section) =>
+          section.getAttribute("data-xyle-node"),
+        );
+      }),
+    )
+    .toEqual(sectionIds);
+
+  await first.click({ position: { x: 2, y: 2 } });
+  await page.getByRole("button", { name: "Hide section" }).click();
+  await expect(first).toHaveJSProperty("hidden", true);
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-menu-btn").click();
+  await page.getByRole("menuitem", { name: "Sections" }).click();
+  const sectionsDrawer = page.getByRole("dialog", { name: "Sections" });
+  await expect(sectionsDrawer).toBeVisible();
+  await sectionsDrawer.getByRole("button", { name: "Show" }).first().click();
+  await expect(first).toHaveJSProperty("hidden", false);
+});
+
 async function markerGeometry(
   page: import("@playwright/test").Page,
   nodeId: string,

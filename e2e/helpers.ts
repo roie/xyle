@@ -45,10 +45,18 @@ export async function currentOps(
 export async function findNodeByText(page: Page, needle: string): Promise<string | null> {
   return page.evaluate((text) => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-    for (const el of doc.querySelectorAll("[data-xyle-node]")) {
-      if ((el.textContent ?? "").includes(text)) return el.getAttribute("data-xyle-node");
-    }
-    return null;
+    const matches = [...doc.querySelectorAll("[data-xyle-node]")].filter((el) =>
+      (el.textContent ?? "").includes(text),
+    );
+    matches.sort((left, right) => {
+      const depth = (element: Element): number => {
+        let value = 0;
+        for (let parent = element.parentElement; parent; parent = parent.parentElement) value++;
+        return value;
+      };
+      return depth(right) - depth(left);
+    });
+    return matches[0]?.getAttribute("data-xyle-node") ?? null;
   }, needle);
 }
 

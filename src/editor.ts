@@ -21,6 +21,8 @@ import {
   type SeoUpdateResult,
 } from "./webmcp.ts";
 import { cleanInlineHtml, inlineFormatState, toggleInlineFormat } from "./formatting.ts";
+import { stableIdentity } from "./identity.ts";
+import { cropRectForFrame } from "./media-crop.ts";
 import {
   clampUnit,
   mediaSourcePath,
@@ -504,6 +506,16 @@ const editorStyles = `
     user-select: none;
     pointer-events: none;
   }
+  .xyle-crop-stage[data-preview-crop] img {
+    position: absolute !important;
+    left: var(--xyle-preview-left);
+    top: var(--xyle-preview-top);
+    width: var(--xyle-preview-width) !important;
+    height: var(--xyle-preview-height) !important;
+    max-width: none !important;
+    object-fit: fill !important;
+    transform: none !important;
+  }
   .xyle-focal-target {
     position: absolute;
     z-index: 2;
@@ -675,7 +687,8 @@ const editorStyles = `
   }
   #xyle-media-drawer .xyle-icon-button,
   #xyle-changes-drawer .xyle-icon-button,
-  #xyle-seo-drawer .xyle-icon-button {
+  #xyle-seo-drawer .xyle-icon-button,
+  #xyle-sections-drawer .xyle-icon-button {
     width: 2.25rem;
     height: 2.25rem;
     border: 0;
@@ -689,7 +702,9 @@ const editorStyles = `
   #xyle-changes-drawer .xyle-icon-button:hover,
   #xyle-changes-drawer .xyle-icon-button:focus-visible,
   #xyle-seo-drawer .xyle-icon-button:hover,
-  #xyle-seo-drawer .xyle-icon-button:focus-visible {
+  #xyle-seo-drawer .xyle-icon-button:focus-visible,
+  #xyle-sections-drawer .xyle-icon-button:hover,
+  #xyle-sections-drawer .xyle-icon-button:focus-visible {
     background: var(--xyle-accent-soft);
     color: var(--xyle-accent-hover);
   }
@@ -1056,7 +1071,8 @@ const editorStyles = `
 
   #xyle-overlay-root .xyle-img-tools,
   #xyle-overlay-root .xyle-link-tools,
-  #xyle-overlay-root .xyle-format-tools {
+  #xyle-overlay-root .xyle-format-tools,
+  #xyle-overlay-root .xyle-section-tools {
     all: initial;
     position: fixed !important;
     display: flex !important;
@@ -1154,7 +1170,8 @@ const editorStyles = `
   }
   #xyle-overlay-root .xyle-img-tools button,
   #xyle-overlay-root .xyle-link-tools button,
-  #xyle-overlay-root .xyle-format-tools button {
+  #xyle-overlay-root .xyle-format-tools button,
+  #xyle-overlay-root .xyle-section-tools button {
     all: initial !important;
     min-height: 28px !important;
     padding: 0 9px !important;
@@ -1171,9 +1188,11 @@ const editorStyles = `
   #xyle-overlay-root .xyle-img-tools button:hover,
   #xyle-overlay-root .xyle-link-tools button:hover,
   #xyle-overlay-root .xyle-format-tools button:hover,
+  #xyle-overlay-root .xyle-section-tools button:hover,
   #xyle-overlay-root .xyle-img-tools button:focus-visible,
   #xyle-overlay-root .xyle-link-tools button:focus-visible,
-  #xyle-overlay-root .xyle-format-tools button:focus-visible {
+  #xyle-overlay-root .xyle-format-tools button:focus-visible,
+  #xyle-overlay-root .xyle-section-tools button:focus-visible {
     background: #ffffff1f !important;
   }
 
@@ -1430,9 +1449,14 @@ interface NodeSegmentMeta {
 interface NodeMeta {
   id: string;
   pagePath: string;
-  kind: "text" | "link" | "image";
+  kind: "text" | "link" | "image" | "section";
   segments?: NodeSegmentMeta[];
+  sourceStart?: number;
+  sourceEnd?: number;
+  elementStart?: number;
+  elementEnd?: number;
   contentStart?: number;
+  stableTargetId?: string;
   tag?: string;
   multiline?: boolean;
   textEditable?: boolean;
@@ -1472,14 +1496,15 @@ type Op =
   | { type: "seo"; nodeId: string; field: SeoField; value: string }
   | { type: "href"; nodeId: string; value: string }
   | { type: "src"; nodeId: string; value: string; assetName?: string }
+  | { type: "alt"; nodeId: string; value: string }
+  | { type: "sectionVisibility"; nodeId: string; visible: boolean; before: boolean }
   | {
-      type: "imageStyle";
+      type: "moveSection";
       nodeId: string;
-      fit: "cover" | "contain";
-      focalX: number;
-      focalY: number;
-    }
-  | { type: "alt"; nodeId: string; value: string };
+      targetId: string;
+      before: boolean;
+      originalIndex: number;
+    };
 
 interface PageOps {
   pagePath: string;
@@ -1508,6 +1533,38 @@ interface ChangeSetRecord {
   entries: HistoryEntry[];
   history?: HistoryEntry;
   undone: boolean;
+}
+
+interface RichContentMember {
+  nodeId: string;
+  targetId: string;
+  elementStart: number;
+  elementEnd: number;
+}
+
+interface RichContentRegion {
+  id: string;
+  pagePath: string;
+  anchorId: string;
+  targetIds: string[];
+  nodeIds: string[];
+  members: RichContentMember[];
+  originalHtml: string;
+  currentHtml: string;
+}
+
+interface RichContentRegionAlias {
+  pagePath: string;
+  targetIds: string[];
+  regionId: string;
+}
+
+interface UserChange {
+  info: ChangeInfo;
+  pagePath: string;
+  opIndex?: number;
+  region?: RichContentRegion;
+  label: string;
 }
 
 const MAX_HISTORY = 100;
@@ -1575,7 +1632,7 @@ async function boot(): Promise<void> {
     listEditableContent,
     getContent,
     listChanges,
-    undoChange,
+    revertChange,
     applyChangeSet,
     undoChangeSet,
     replaceAsset,
@@ -1584,6 +1641,8 @@ async function boot(): Promise<void> {
     updateSeo,
     updateFormatting,
     updateList: toggleListFormatting,
+    updateSectionVisibility,
+    moveSection,
     updateText,
     updateLink,
   });
@@ -1607,6 +1666,7 @@ async function loadPage(pagePath: string, opts: { pushHistory: boolean }): Promi
   const data = (await res.json()) as PageData & { baseDigest: string };
   closeMediaDrawer(false);
   closeChangesDrawer(false);
+  closeSectionDrawer(false);
   closeContextTools(false);
   hoveredCandidate = null;
   window.clearTimeout(hoverClearTimer);
@@ -1771,11 +1831,16 @@ function wirePreview(): void {
   });
 
   restoreOpsIntoDom();
+  reconcileRichContent(state.current.pagePath);
   applyShowEditables();
   refreshEditabilityOverlay();
 }
 
 const metaById = new Map<string, NodeMeta>();
+const richContentRegions = new Map<string, RichContentRegion>();
+const richContentRegionAliases = new Map<string, RichContentRegionAlias>();
+const stableTargetIds = new Map<string, string>();
+const changeIdAliases = new Map<string, string>();
 const controlledBreaks = new WeakSet<HTMLBRElement>();
 let showEditables = false;
 
@@ -1912,6 +1977,58 @@ function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
   if (meta.kind === "text" && meta.textEditable) wireText(el, meta);
   if (meta.kind === "link") wireLink(el, meta);
   if (meta.kind === "image") wireImage(el, meta);
+  if (meta.kind === "section") wireSection(el, meta);
+}
+
+function wireSection(el: HTMLElement, meta: NodeMeta): void {
+  el.addEventListener("pointerdown", (event) => {
+    if (event.target === el) showSectionTools(el, meta);
+  });
+  el.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    showSectionTools(el, meta, true);
+  });
+}
+
+function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = false): void {
+  if (!session) {
+    const overlay = shellOverlay();
+    if (!overlay) return;
+    const tools = document.createElement("div");
+    tools.className = "xyle-link-tools xyle-section-tools";
+    tools.setAttribute("role", "toolbar");
+    tools.setAttribute("aria-label", "Section actions");
+
+    const visibility = document.createElement("button");
+    visibility.type = "button";
+    visibility.textContent = section.hidden ? "Show section" : "Hide section";
+    visibility.addEventListener("click", () => {
+      updateSectionVisibility(meta.id, Boolean(section.hidden));
+      closeContextTools(false);
+    });
+    tools.append(visibility);
+
+    const siblings = sectionChildren(section.parentElement!);
+    const index = siblings.indexOf(section);
+    const addMove = (label: string, target: HTMLElement | undefined, before: boolean): void => {
+      if (!target) return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.addEventListener("click", () => {
+        moveSection(meta.id, target.getAttribute("data-xyle-node")!, before);
+        closeContextTools(false);
+      });
+      tools.append(button);
+    };
+    addMove("Move up", siblings[index - 1], true);
+    addMove("Move down", siblings[index + 1], false);
+    registerContextTools(tools, section, "above");
+    overlay.append(tools);
+    positionContextTools(tools, previewElementRect(section), "above");
+    if (focusFirst) tools.querySelector("button")?.focus();
+  }
 }
 
 let overlayRefreshFrame = 0;
@@ -2234,8 +2351,8 @@ function onPaste(event: ClipboardEvent): void {
     flash("Formatted paste is not supported here.");
     return;
   }
-  if (text.includes("\n") && !allowedMultiline()) {
-    flash("Line breaks are not supported here.");
+  if (text.includes("\n")) {
+    flash("Line-break editing is deferred.");
     return;
   }
   const win = iframe.contentWindow!;
@@ -2247,6 +2364,11 @@ function onKeyDown(event: KeyboardEvent): void {
   if (event.key === "Escape") {
     event.preventDefault();
     revertEdit();
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    flash("Line-break editing is deferred.");
     return;
   }
   if (event.ctrlKey || event.metaKey) {
@@ -2274,10 +2396,6 @@ function onKeyDown(event: KeyboardEvent): void {
   }
 }
 
-function allowedMultiline(): boolean {
-  return session?.meta.multiline === true;
-}
-
 /** Selection lives in the preview window, not the shell. */
 function previewSelection(): Selection | null {
   return iframe?.contentWindow?.getSelection() ?? null;
@@ -2292,12 +2410,6 @@ interface FormatSelection {
   sourceEnd?: number;
   range: Range;
   rect: ViewportRect;
-}
-
-function selectionInsideEditable(): boolean {
-  const selection = previewSelection();
-  if (!selection || selection.rangeCount === 0 || !session) return false;
-  return session.el.contains(selection.anchorNode) && session.el.contains(selection.focusNode);
 }
 
 function formattingTextNodes(root: HTMLElement): Text[] {
@@ -2587,16 +2699,10 @@ function onBeforeInput(event: InputEvent): void {
   if (!session) return;
   switch (event.inputType) {
     case "insertParagraph":
-    case "insertLineBreak": {
+    case "insertLineBreak":
       event.preventDefault();
-      if (!allowedMultiline() || !selectionInsideEditable()) {
-        flash("Line breaks are not supported here.");
-        return;
-      }
-      insertManualBr();
-      dispatchSyntheticInput(session.el);
+      flash("Line-break editing is deferred.");
       return;
-    }
     case "formatBold":
     case "formatItalic":
     case "formatUnderline": {
@@ -2673,25 +2779,6 @@ function onBeforeInput(event: InputEvent): void {
   }
 }
 
-function insertManualBr(): void {
-  const selection = previewSelection();
-  if (!selection || selection.rangeCount === 0) return;
-  const range = selection.getRangeAt(0);
-  const doc = previewDoc()!;
-  range.deleteContents();
-  const br = doc.createElement("br");
-  markControlledBreak(br);
-  range.insertNode(br);
-  range.setStartAfter(br);
-  range.collapse(true);
-  selection.removeAllRanges();
-  selection.addRange(range);
-}
-
-function dispatchSyntheticInput(el: HTMLElement): void {
-  el.dispatchEvent(new InputEvent("input", { bubbles: true, data: "\n" }));
-}
-
 function onInput(_event: Event): void {
   if (!session) return;
   validateStructure();
@@ -2706,12 +2793,9 @@ function validateStructure(): void {
   }
 }
 
-/** Only text mutations plus multiline <br> changes may pass. */
+/** Only text mutations that preserve the existing inline structure may pass. */
 function structureAllowed(current: string, baseline: string): boolean {
-  if (current === baseline) return true;
-  const strip = (s: string) => s.replaceAll("<BR>", "");
-  const allowed = session?.meta.multiline === true && strip(current) === strip(baseline);
-  return allowed;
+  return current === baseline;
 }
 
 function restoreBaseline(): void {
@@ -2938,6 +3022,7 @@ function openSeoEditor(): void {
   closeSeoDrawer(false);
   closeMediaDrawer(false);
   closeChangesDrawer(false);
+  closeSectionDrawer(false);
   seoDrawerTrigger = document.activeElement as HTMLElement | null;
   setInteractionMode("drawer");
   const drawer = document.createElement("aside");
@@ -3235,30 +3320,6 @@ function applyMediaPatch(
   updateDirtyUi();
 }
 
-function cropRectForFrame(
-  img: HTMLImageElement,
-  stage: HTMLElement,
-  zoom: number,
-  focus: Point,
-): CropRect {
-  const sourceAspect =
-    img.naturalWidth > 0 && img.naturalHeight > 0 ? img.naturalWidth / img.naturalHeight : 1;
-  const frameAspect =
-    stage.clientWidth > 0 && stage.clientHeight > 0
-      ? stage.clientWidth / stage.clientHeight
-      : sourceAspect;
-  const baseWidth = sourceAspect > frameAspect ? frameAspect / sourceAspect : 1;
-  const baseHeight = sourceAspect > frameAspect ? 1 : sourceAspect / frameAspect;
-  const width = Math.min(1, baseWidth / Math.max(1, zoom));
-  const height = Math.min(1, baseHeight / Math.max(1, zoom));
-  return {
-    x: Math.min(1 - width, Math.max(0, focus.x - width / 2)),
-    y: Math.min(1 - height, Math.max(0, focus.y - height / 2)),
-    width,
-    height,
-  };
-}
-
 function openImageCropEditor(
   img: HTMLImageElement,
   meta: NodeMeta,
@@ -3352,7 +3413,7 @@ function openImageCropEditor(
   const yOutput = editor.querySelector("output[for=xyle-focal-y]") as HTMLOutputElement;
   preview.src =
     media.source.kind === "staged" ? media.source.previewUrl : img.currentSrc || img.src;
-  if (inline) preview.remove();
+  if (inline) img.style.visibility = "hidden";
   fit.value = currentFit;
   xInput.value = String(Math.round(currentFocus.x * 100));
   yInput.value = String(Math.round(currentFocus.y * 100));
@@ -3366,19 +3427,36 @@ function openImageCropEditor(
     const y = clampUnit(clampPercent(Number(yInput.value)) / 100);
     const zoom = Math.max(1, Number(zoomInput.value));
     const objectFit = fit.value as "cover" | "contain";
-    const objectPosition = `${x * 100}% ${y * 100}%`;
-    if (inline) {
-      img.style.width = `${imageRect.width}px`;
-      img.style.height = `${imageRect.height}px`;
-      img.style.objectFit = objectFit;
-      img.style.objectPosition = objectPosition;
-      img.style.transform = `scale(${zoom})`;
-      img.style.transformOrigin = objectPosition;
-      img.style.clipPath = "inset(0)";
+    const crop = cropRectForFrame(
+      img.naturalWidth,
+      img.naturalHeight,
+      stage.clientWidth,
+      stage.clientHeight,
+      zoom,
+      { x, y },
+    );
+    stage.dataset.cropRect = [crop.x, crop.y, crop.width, crop.height]
+      .map((value) => value.toFixed(6))
+      .join(",");
+    if (objectFit === "cover") {
+      stage.dataset.previewCrop = "true";
+      stage.style.setProperty("--xyle-preview-left", `${(-crop.x / crop.width) * 100}%`);
+      stage.style.setProperty("--xyle-preview-top", `${(-crop.y / crop.height) * 100}%`);
+      stage.style.setProperty("--xyle-preview-width", `${(1 / crop.width) * 100}%`);
+      stage.style.setProperty("--xyle-preview-height", `${(1 / crop.height) * 100}%`);
+      preview.style.objectFit = "fill";
+      preview.style.objectPosition = "0 0";
+      preview.style.transform = "none";
     } else {
-      preview.style.objectFit = objectFit;
-      preview.style.objectPosition = objectPosition;
-      preview.style.transform = `scale(${zoom})`;
+      delete stage.dataset.previewCrop;
+      preview.style.removeProperty("position");
+      preview.style.removeProperty("left");
+      preview.style.removeProperty("top");
+      preview.style.removeProperty("width");
+      preview.style.removeProperty("height");
+      preview.style.removeProperty("objectFit");
+      preview.style.removeProperty("objectPosition");
+      preview.style.removeProperty("transform");
     }
     target.style.left = `${x * 100}%`;
     target.style.top = `${y * 100}%`;
@@ -3386,12 +3464,25 @@ function openImageCropEditor(
     xOutput.value = `${Math.round(x * 100)}%`;
     yOutput.value = `${Math.round(y * 100)}%`;
   };
+  let fitChanged = false;
   let editorClosed = false;
+  const restoreImageStyles = (): void => {
+    img.style.height = originalImageStyles.height;
+    img.style.objectFit = originalImageStyles.objectFit;
+    img.style.objectPosition = originalImageStyles.objectPosition;
+    img.style.transform = originalImageStyles.transform;
+    img.style.transformOrigin = originalImageStyles.transformOrigin;
+    img.style.clipPath = originalImageStyles.clipPath;
+    img.style.visibility = originalImageStyles.visibility;
+    img.style.width = originalImageStyles.width;
+  };
   const close = (save: boolean): void => {
     if (editorClosed) return;
     editorClosed = true;
     if (activeMediaEditor === close) activeMediaEditor = null;
     if (save) {
+      // Do not let the temporary preview styles become the current authored state.
+      restoreImageStyles();
       const focus = {
         x: clampUnit(clampPercent(Number(xInput.value)) / 100),
         y: clampUnit(clampPercent(Number(yInput.value)) / 100),
@@ -3399,7 +3490,14 @@ function openImageCropEditor(
       const crop =
         mode === "crop"
           ? fit.value === "cover"
-            ? cropRectForFrame(img, stage, Number(zoomInput.value), focus)
+            ? cropRectForFrame(
+                img.naturalWidth,
+                img.naturalHeight,
+                stage.clientWidth,
+                stage.clientHeight,
+                Number(zoomInput.value),
+                focus,
+              )
             : null
           : media.crop;
       applyMediaPatch(
@@ -3408,28 +3506,29 @@ function openImageCropEditor(
         img,
         mode === "focus"
           ? { focus }
-          : { crop, focus, framing: { fit: fit.value as "cover" | "contain" } },
+          : {
+              crop,
+              focus,
+              ...(fitChanged || media.framing
+                ? { framing: { fit: fit.value as "cover" | "contain" } }
+                : {}),
+            },
         mode === "focus" ? "Adjust image focus" : "Adjust image framing",
       );
     }
-    img.style.height = originalImageStyles.height;
-    if (!save) {
-      img.style.objectFit = originalImageStyles.objectFit;
-      img.style.objectPosition = originalImageStyles.objectPosition;
-    }
-    img.style.transform = originalImageStyles.transform;
-    img.style.transformOrigin = originalImageStyles.transformOrigin;
-    img.style.clipPath = originalImageStyles.clipPath;
-    img.style.visibility = originalImageStyles.visibility;
-    img.style.width = originalImageStyles.width;
+    if (!save) restoreImageStyles();
     editor.remove();
     img.focus();
   };
-  fit.addEventListener("input", updatePreview);
+  fit.addEventListener("input", () => {
+    fitChanged = true;
+    updatePreview();
+  });
   zoomInput.addEventListener("input", updatePreview);
   xInput.addEventListener("input", updatePreview);
   yInput.addEventListener("input", updatePreview);
   editor.querySelector<HTMLButtonElement>("[data-reset]")?.addEventListener("click", () => {
+    fitChanged = true;
     fit.value = "cover";
     zoomInput.value = "1";
     setFocus(0.5, 0.5);
@@ -3728,10 +3827,6 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function imageStyleDescription(op: Extract<Op, { type: "imageStyle" }>): string {
-  return `${op.fit}; focal point ${Math.round(op.focalX)}% ${Math.round(op.focalY)}%`;
-}
-
 function mediaStateDescription(state: MediaState): string {
   const source = mediaSourcePath(state.source);
   const alt = state.alt.present ? `; alt ${state.alt.value}` : "; alt missing";
@@ -3743,11 +3838,6 @@ function mediaStateDescription(state: MediaState): string {
     ? `; crop ${Math.round(state.crop.x * 100)}% ${Math.round(state.crop.y * 100)}% ${Math.round(state.crop.width * 100)}% ${Math.round(state.crop.height * 100)}%`
     : "";
   return `${source}${alt}${framing}${focus}${crop}`;
-}
-
-function applyImageStyle(img: HTMLImageElement, op: Extract<Op, { type: "imageStyle" }>): void {
-  img.style.objectFit = op.fit;
-  img.style.objectPosition = `${op.focalX}% ${op.focalY}%`;
 }
 
 function applyMediaStateToDom(img: HTMLImageElement, media: MediaState): void {
@@ -3841,6 +3931,92 @@ interface MediaItem {
 }
 
 let drawerOpen = false;
+let sectionDrawerTrigger: HTMLElement | null = null;
+
+function closeSectionDrawer(restoreFocus = true): void {
+  $("#xyle-sections-drawer")?.remove();
+  const trigger = sectionDrawerTrigger;
+  sectionDrawerTrigger = null;
+  drawerOpen = false;
+  if (restoreFocus && trigger?.isConnected) trigger.focus();
+  if (!session && !activeTools) setInteractionMode(hoveredCandidate ? "hover" : "idle");
+}
+
+function openSectionDrawer(): void {
+  closeSectionDrawer(false);
+  closeMediaDrawer(false);
+  closeChangesDrawer(false);
+  closeSeoDrawer(false);
+  closeContextTools(false);
+  sectionDrawerTrigger = document.activeElement as HTMLElement | null;
+  drawerOpen = true;
+  setInteractionMode("drawer");
+  const drawer = document.createElement("aside");
+  drawer.id = "xyle-sections-drawer";
+  drawer.className = "xyle-drawer xyle-sections-drawer";
+  drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("aria-modal", "true");
+  drawer.setAttribute("aria-labelledby", "xyle-sections-title");
+  drawer.innerHTML = `<header class="xyle-drawer-header">
+    <strong id="xyle-sections-title"><span>Sections</span></strong>
+    <button class="xyle-icon-button" type="button" data-close aria-label="Close sections">×</button>
+  </header>
+  <p class="xyle-media-help">Hide or reorder safe sibling sections. Xyle refuses ambiguous structures.</p>
+  <div class="xyle-changes-list" data-section-list></div>`;
+  const closeButton = drawer.querySelector<HTMLButtonElement>("[data-close]")!;
+  closeButton.addEventListener("click", () => closeSectionDrawer());
+  const list = drawer.querySelector<HTMLElement>("[data-section-list]")!;
+  const sections = state.current?.nodes.filter((node) => node.kind === "section") ?? [];
+  if (sections.length === 0) {
+    list.innerHTML = `<p class="xyle-empty-state">No safe sections found.</p>`;
+  }
+  for (const meta of sections) {
+    const element = currentNodeElement(meta.id);
+    if (!element) continue;
+    const row = document.createElement("div");
+    row.className = "xyle-change-row";
+    const heading = document.createElement("strong");
+    heading.className = "xyle-change-label";
+    heading.textContent = sectionPreview(element);
+    const actions = document.createElement("div");
+    actions.className = "xyle-change-row-actions";
+    const visibility = document.createElement("button");
+    visibility.type = "button";
+    visibility.className = "xyle-undo-button";
+    visibility.textContent = element.hidden ? "Show" : "Hide";
+    visibility.addEventListener("click", () => {
+      updateSectionVisibility(meta.id, Boolean(element.hidden));
+      openSectionDrawer();
+    });
+    actions.append(visibility);
+    const siblings = sectionChildren(element.parentElement!);
+    const index = siblings.indexOf(element);
+    const addMove = (label: string, target: HTMLElement | undefined, before: boolean): void => {
+      if (!target) return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "xyle-undo-button";
+      button.textContent = label;
+      button.addEventListener("click", () => {
+        moveSection(meta.id, target.getAttribute("data-xyle-node")!, before);
+        openSectionDrawer();
+      });
+      actions.append(button);
+    };
+    addMove("Up", siblings[index - 1], true);
+    addMove("Down", siblings[index + 1], false);
+    row.append(heading, actions);
+    list.append(row);
+  }
+  document.body.append(drawer);
+  closeButton.focus();
+}
+
+function sectionPreview(element: HTMLElement): string {
+  const heading = element.querySelector("h1,h2,h3,h4,h5,h6");
+  return heading?.textContent?.trim() || element.getAttribute("aria-label") || "Section";
+}
+
 let mediaManagementUnavailable = false;
 let mediaRequestGeneration = 0;
 let mediaDrawerTrigger: HTMLElement | null = null;
@@ -3863,6 +4039,7 @@ async function openMediaDrawer(trigger?: HTMLElement): Promise<void> {
     return;
   }
   closeChangesDrawer(false);
+  closeSectionDrawer(false);
   if (drawerOpen) return;
   drawerOpen = true;
   setInteractionMode("drawer");
@@ -4104,6 +4281,7 @@ function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null =
     pendingRevisions.set(key, previous ? (opRevisions.get(previous.op) ?? revision) : revision);
     if (previous) applyOpToDom(pagePath, previous.op);
     else revertOpInDom(pagePath, op);
+    reconcileRichContent(pagePath);
     updateDirtyUi();
   };
   const redo = (): void => {
@@ -4117,6 +4295,10 @@ function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null =
     replacePendingOp(pagePath, key, pendingOp, changeSet);
     pendingRevisions.set(key, revision);
     applyOpToDom(pagePath, op);
+    if (isRichContentOp(op)) {
+      ensureRichContentRegion(pagePath, op);
+      reconcileRichContent(pagePath);
+    }
     updateDirtyUi();
   };
   const entry: HistoryEntry = {
@@ -4128,8 +4310,224 @@ function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null =
   };
   if (activeChangeSet) activeChangeSet.entries.push(entry);
   else pushHistory(entry);
+  if (isRichContentOp(op)) {
+    ensureRichContentRegion(pagePath, op);
+    reconcileRichContent(pagePath);
+  }
   updateDirtyUi();
   return entry;
+}
+
+function isRichContentOp(
+  op: Op,
+): op is Extract<Op, { type: "text" | "format" | "formatBlock" | "toggleList" | "html" }> {
+  return (
+    op.type === "text" ||
+    op.type === "format" ||
+    op.type === "formatBlock" ||
+    op.type === "toggleList" ||
+    op.type === "html"
+  );
+}
+
+function richNodeIds(
+  op: Extract<Op, { type: "text" | "format" | "formatBlock" | "toggleList" | "html" }>,
+): string[] {
+  return op.type === "toggleList"
+    ? op.nodeIds.map((id) => id.split("#")[0]!)
+    : [op.nodeId.split("#")[0]!];
+}
+
+function stableTargetIdForNode(pagePath: string, nodeId: string): string {
+  const key = `${pagePath}@${nodeId}`;
+  const known = stableTargetIds.get(key);
+  if (known) return known;
+  const meta = state.current?.nodes.find((node) => node.id === nodeId);
+  const stableTargetId =
+    meta?.stableTargetId ??
+    stableIdentity([
+      "target",
+      pagePath,
+      meta?.kind ?? "unknown",
+      meta?.tag ?? "unknown",
+      String(meta?.sourceStart ?? -1),
+      String(meta?.sourceEnd ?? -1),
+    ]);
+  stableTargetIds.set(key, stableTargetId);
+  return stableTargetId;
+}
+
+function stableChangeId(pagePath: string, domain: string, targetId: string): string {
+  return `change:${stableIdentity([pagePath, domain, targetId])}`;
+}
+
+function richRegionKey(pagePath: string, targetIds: string[]): string {
+  return `region:${stableIdentity(["rich", pagePath, ...[...targetIds].sort()])}`;
+}
+
+function resolveRichRegionId(id: string): string {
+  let resolved = id;
+  const seen = new Set<string>();
+  while (!seen.has(resolved)) {
+    seen.add(resolved);
+    const alias = richContentRegionAliases.get(resolved);
+    if (!alias) break;
+    resolved = alias.regionId;
+  }
+  return resolved;
+}
+
+function richRegionById(id: string): RichContentRegion | undefined {
+  return richContentRegions.get(resolveRichRegionId(id));
+}
+
+function stripEditorMarkup(root: Element): void {
+  root.removeAttribute("data-xyle-node");
+  root.removeAttribute("data-xyle-format");
+  root.removeAttribute("data-xyle-controlled-break");
+  root.removeAttribute("tabindex");
+  for (const element of root.querySelectorAll(
+    "[data-xyle-node], [data-xyle-format], [data-xyle-controlled-break]",
+  )) {
+    element.removeAttribute("data-xyle-node");
+    element.removeAttribute("data-xyle-format");
+    element.removeAttribute("data-xyle-controlled-break");
+    element.removeAttribute("tabindex");
+  }
+}
+
+function cleanRichFragment(elements: Element[]): string {
+  const wrapper = document.createElement("div");
+  for (const element of elements) {
+    const clone = element.cloneNode(true) as Element;
+    stripEditorMarkup(clone);
+    wrapper.append(clone);
+  }
+  return cleanInlineHtml(wrapper);
+}
+
+function serializeSelectedList(list: Element, nodeIds: string[]): string {
+  const selected = new Set(nodeIds);
+  const clone = list.cloneNode(true) as Element;
+  for (const child of [...clone.children]) {
+    if (!selected.has(child.getAttribute("data-xyle-node") ?? "")) child.remove();
+  }
+  stripEditorMarkup(clone);
+  return clone.outerHTML;
+}
+
+function serializeRichRegion(doc: Document, nodeIds: string[]): string {
+  const elements = nodeIds
+    .map((id) => doc.querySelector<HTMLElement>(`[data-xyle-node="${id}"]`))
+    .filter((element): element is HTMLElement => !!element);
+  if (elements.length === 0) return "";
+  const parent = elements[0]!.parentElement;
+  if (parent && elements.every((element) => element.parentElement === parent)) {
+    if (isListTag(parent.tagName.toLowerCase())) return serializeSelectedList(parent, nodeIds);
+    return cleanRichFragment(
+      [...elements].sort((left, right) => {
+        const children = [...parent.children];
+        return children.indexOf(left) - children.indexOf(right);
+      }),
+    );
+  }
+  // Region membership is authoritative. Never serialize an unrelated ancestor
+  // merely because a transformation temporarily split the member nodes.
+  return cleanRichFragment(elements);
+}
+
+function sourceRichRegionHtml(pagePath: string, nodeIds: string[]): string {
+  const current = state.current;
+  if (!current || current.pagePath !== pagePath) return "";
+  const base = new DOMParser().parseFromString(current.html, "text/html");
+  return serializeRichRegion(base, nodeIds);
+}
+
+function regionAnchor(nodeIds: string[]): string {
+  const order = new Map((state.current?.nodes ?? []).map((node, index) => [node.id, index]));
+  return [...nodeIds].sort(
+    (left, right) => (order.get(left) ?? Infinity) - (order.get(right) ?? Infinity),
+  )[0]!;
+}
+
+function regionForNode(pagePath: string, nodeId: string): RichContentRegion | undefined {
+  const normalized = nodeId.split("#")[0]!;
+  return [...richContentRegions.values()].find(
+    (region) => region.pagePath === pagePath && region.nodeIds.includes(normalized),
+  );
+}
+
+function ensureRichContentRegion(
+  pagePath: string,
+  op: Extract<Op, { type: "text" | "format" | "formatBlock" | "toggleList" | "html" }>,
+): RichContentRegion {
+  const ids = [...new Set(richNodeIds(op))];
+  const matches = [...richContentRegions.values()].filter(
+    (region) => region.pagePath === pagePath && ids.some((id) => region.nodeIds.includes(id)),
+  );
+  const nodeIds = [...new Set(matches.flatMap((region) => region.nodeIds).concat(ids))];
+  const anchorId = regionAnchor(nodeIds);
+  const targetIds = nodeIds.map((id) => stableTargetIdForNode(pagePath, id));
+  const members = nodeIds.map((nodeId, index) => {
+    const meta = state.current?.nodes.find((node) => node.id === nodeId);
+    return {
+      nodeId,
+      targetId: targetIds[index]!,
+      elementStart: meta?.elementStart ?? meta?.sourceStart ?? -1,
+      elementEnd: meta?.elementEnd ?? meta?.sourceEnd ?? -1,
+    };
+  });
+  const regionId = richRegionKey(pagePath, targetIds);
+  const region: RichContentRegion = {
+    id: regionId,
+    pagePath,
+    anchorId,
+    targetIds,
+    nodeIds,
+    members,
+    originalHtml: sourceRichRegionHtml(pagePath, nodeIds),
+    currentHtml: "",
+  };
+  for (const match of matches) {
+    richContentRegions.delete(match.id);
+    richContentRegionAliases.set(match.id, {
+      pagePath,
+      targetIds: match.targetIds,
+      regionId,
+    });
+    changeIdAliases.set(
+      stableChangeId(pagePath, "rich", match.id),
+      stableChangeId(pagePath, "rich", regionId),
+    );
+  }
+  richContentRegions.set(region.id, region);
+  return region;
+}
+
+function regionHasPendingOps(region: RichContentRegion): boolean {
+  return state.ops.some(
+    (entry) =>
+      entry.pagePath === region.pagePath &&
+      isRichContentOp(entry.op) &&
+      richNodeIds(entry.op).some((id) => region.nodeIds.includes(id)),
+  );
+}
+
+function reconcileRichContent(pagePath?: string): void {
+  for (const region of [...richContentRegions.values()]) {
+    if (pagePath && region.pagePath !== pagePath) continue;
+    if (!regionHasPendingOps(region)) {
+      richContentRegions.delete(region.id);
+      continue;
+    }
+    if (state.current?.pagePath === region.pagePath) {
+      const doc = previewDoc();
+      if (!doc) continue;
+      const currentHtml = serializeRichRegion(doc, region.nodeIds);
+      if (currentHtml) region.currentHtml = currentHtml;
+      if (region.currentHtml === region.originalHtml) richContentRegions.delete(region.id);
+    }
+  }
 }
 
 function opKey(op: Op): string {
@@ -4169,7 +4567,7 @@ function pushHistory(entry: HistoryEntry): void {
 }
 
 function dirtyCount(): number {
-  return state.ops.length;
+  return buildUserChanges().length;
 }
 
 const SEO_FIELDS: SeoField[] = [
@@ -4306,6 +4704,85 @@ function updateSeo(field: SeoField, value: string): SeoUpdateResult {
   return { field, pagePath: current.pagePath, value };
 }
 
+function sectionMeta(nodeId: string): NodeMeta | undefined {
+  return state.current?.nodes.find(
+    (candidate) => candidate.id === nodeId && candidate.kind === "section",
+  );
+}
+
+function sectionChildren(parent: Element): HTMLElement[] {
+  const current = state.current;
+  if (!current) return [];
+  return [...parent.children].filter((child): child is HTMLElement => {
+    const id = child.getAttribute("data-xyle-node");
+    return (
+      !!id && current.nodes.some((candidate) => candidate.id === id && candidate.kind === "section")
+    );
+  });
+}
+
+function updateSectionVisibility(
+  nodeId: string,
+  visible: boolean,
+): { id: string; visible: boolean } {
+  const current = state.current;
+  const element = currentNodeElement(nodeId);
+  if (!current || !element || !sectionMeta(nodeId))
+    throw new Error(`Unknown Xyle section ${nodeId}`);
+  if (typeof visible !== "boolean") throw new Error("Section visibility must be boolean");
+  const previous = state.ops.find(
+    (entry) =>
+      entry.pagePath === current.pagePath &&
+      entry.op.type === "sectionVisibility" &&
+      entry.op.nodeId === nodeId,
+  );
+  const before = previous?.op.type === "sectionVisibility" ? previous.op.before : !element.hidden;
+  const operation: Op = { type: "sectionVisibility", nodeId, visible, before };
+  applyOpToDom(current.pagePath, operation);
+  applyOp(current.pagePath, operation, visible ? "Show section" : "Hide section");
+  return { id: nodeId, visible };
+}
+
+function moveSection(
+  nodeId: string,
+  targetId: string,
+  before: boolean,
+): { id: string; targetId: string; before: boolean } {
+  const current = state.current;
+  const source = currentNodeElement(nodeId);
+  const target = currentNodeElement(targetId);
+  if (
+    !current ||
+    !source ||
+    !target ||
+    !sectionMeta(nodeId) ||
+    !sectionMeta(targetId) ||
+    source === target ||
+    source.parentElement !== target.parentElement
+  ) {
+    throw new Error("Sections must be safe siblings in one parent");
+  }
+  const siblings = sectionChildren(source.parentElement!);
+  if (siblings.length !== source.parentElement!.children.length) {
+    throw new Error("Section parent contains unsupported sibling content");
+  }
+  const currentIndex = siblings.indexOf(source);
+  if (currentIndex < 0 || !siblings.includes(target))
+    throw new Error("Section order is unavailable");
+  const previous = state.ops.find(
+    (entry) =>
+      entry.pagePath === current.pagePath &&
+      entry.op.type === "moveSection" &&
+      entry.op.nodeId === nodeId,
+  );
+  const originalIndex =
+    previous?.op.type === "moveSection" ? previous.op.originalIndex : currentIndex;
+  const operation: Op = { type: "moveSection", nodeId, targetId, before, originalIndex };
+  applyOpToDom(current.pagePath, operation);
+  applyOp(current.pagePath, operation, before ? "Move section before" : "Move section after");
+  return { id: nodeId, targetId, before };
+}
+
 function listEditableContent(): EditableContent[] {
   const current = state.current;
   if (!current) return [];
@@ -4314,6 +4791,7 @@ function listEditableContent(): EditableContent[] {
     .filter(
       (meta) =>
         meta.kind === "image" ||
+        meta.kind === "section" ||
         ((meta.kind === "text" || meta.kind === "link") && meta.textEditable === true),
     )
     .map((meta) => {
@@ -4326,56 +4804,206 @@ function listEditableContent(): EditableContent[] {
           ...(meta.mediaCapabilities ? { capabilities: meta.mediaCapabilities } : {}),
         };
       }
+      if (meta.kind === "section") {
+        const heading = element?.querySelector("h1,h2,h3,h4,h5,h6");
+        return {
+          id: meta.id,
+          type: meta.kind,
+          preview: heading?.textContent?.trim() || element?.getAttribute("aria-label") || "Section",
+        };
+      }
       return { id: meta.id, type: meta.kind, preview: element?.textContent ?? "" };
     });
 }
 
-function listChanges(): ChangeInfo[] {
-  const changes: ChangeInfo[] = [];
-  for (const [index, entry] of state.ops.entries()) {
-    const { pagePath, op } = entry;
-    const [elementId] = op.nodeId.split("#");
-    if (!elementId) continue;
-    changes.push({
-      changeId: `change-${index + 1}`,
-      elementId,
-      type: op.type,
-      before: originalValue(pagePath, op),
-      after:
-        op.type === "formatBlock"
-          ? blockFormattingFor(op.value)
-          : op.type === "toggleList"
-            ? op.after === "plain"
-              ? "paragraphs"
-              : op.after
-            : op.type === "imageStyle"
-              ? imageStyleDescription(op)
-              : op.type === "media"
-                ? mediaStateDescription(op.value)
+function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: PendingOp): ChangeInfo {
+  const [elementId] = op.nodeId.split("#");
+  if (!elementId) throw new Error("Change target is missing");
+  const domain =
+    op.type === "sectionVisibility"
+      ? "section-visibility"
+      : op.type === "moveSection"
+        ? "section-order"
+        : op.type === "media" || op.type === "src" || op.type === "alt"
+          ? "media"
+          : op.type;
+  const resolvedChangeId =
+    changeId || stableChangeId(pagePath, domain, stableTargetIdForNode(pagePath, elementId));
+  return {
+    changeId: resolvedChangeId,
+    elementId,
+    type: op.type,
+    before: originalValue(pagePath, op),
+    after:
+      op.type === "formatBlock"
+        ? blockFormattingFor(op.value)
+        : op.type === "toggleList"
+          ? op.after === "plain"
+            ? "paragraphs"
+            : op.after
+          : op.type === "media"
+            ? mediaStateDescription(op.value)
+            : op.type === "sectionVisibility"
+              ? op.visible
+                ? "visible"
+                : "hidden"
+              : op.type === "moveSection"
+                ? `${op.before ? "before" : "after"} ${op.targetId}`
                 : op.value,
-      ...(entry.changeSetId
-        ? {
-            changeSetId: entry.changeSetId,
-            changeSetLabel: entry.changeSetLabel,
-          }
-        : {}),
+    ...(entry.changeSetId
+      ? {
+          changeSetId: entry.changeSetId,
+          changeSetLabel: entry.changeSetLabel,
+        }
+      : {}),
+  };
+}
+
+function buildUserChanges(): UserChange[] {
+  reconcileRichContent();
+  const changes: Array<UserChange & { order: number }> = [];
+  for (const region of richContentRegions.values()) {
+    const relevant = state.ops
+      .map((entry, index) => ({ entry, index }))
+      .filter(
+        ({ entry }) =>
+          entry.pagePath === region.pagePath &&
+          isRichContentOp(entry.op) &&
+          richNodeIds(entry.op).some((id) => region.nodeIds.includes(id)),
+      );
+    if (!relevant.length || !region.currentHtml || region.currentHtml === region.originalHtml)
+      continue;
+    const first = relevant[0]!;
+    changes.push({
+      order: first.index,
+      pagePath: region.pagePath,
+      region,
+      label: "Rich content",
+      info: {
+        changeId: stableChangeId(region.pagePath, "rich", region.id),
+        elementId: region.anchorId,
+        type: "html",
+        before: region.originalHtml,
+        after: region.currentHtml,
+        ...(first.entry.changeSetId
+          ? {
+              changeSetId: first.entry.changeSetId,
+              changeSetLabel: first.entry.changeSetLabel,
+            }
+          : {}),
+      },
     });
   }
+  for (const [index, entry] of state.ops.entries()) {
+    if (isRichContentOp(entry.op)) continue;
+    changes.push({
+      order: index,
+      pagePath: entry.pagePath,
+      opIndex: index,
+      label: opLabel(entry.op),
+      info: changeInfoForOp("", entry.pagePath, entry.op, entry),
+    });
+  }
+  changes.sort((left, right) => left.order - right.order);
   return changes;
 }
 
-function undoChange(changeId: string): UndoResult {
-  const match = /^change-(\d+)$/.exec(changeId);
-  const number = match?.[1];
-  const index = number ? Number(number) - 1 : -1;
-  if (!Number.isSafeInteger(index) || index < 0) {
+function listChanges(): ChangeInfo[] {
+  return buildUserChanges().map(({ info }) => info);
+}
+
+function revertRichContentRegion(region: RichContentRegion): void {
+  const activeRegion = richRegionById(region.id) ?? region;
+  const affected = state.ops
+    .map((entry, index) => ({ entry, index }))
+    .filter(
+      ({ entry }) =>
+        entry.pagePath === activeRegion.pagePath &&
+        isRichContentOp(entry.op) &&
+        richNodeIds(entry.op).some((id) => activeRegion.nodeIds.includes(id)),
+    );
+  if (affected.length === 0) return;
+
+  const snapshot = {
+    ...activeRegion,
+    targetIds: [...activeRegion.targetIds],
+    nodeIds: [...activeRegion.nodeIds],
+    members: activeRegion.members.map((member) => ({ ...member })),
+  };
+  const removeAffected = (): void => {
+    for (const { entry } of affected) removeOpsFor(entry.pagePath, opKey(entry.op));
+    richContentRegions.delete(activeRegion.id);
+    if (state.current?.pagePath === activeRegion.pagePath) renderPreview();
+    updateDirtyUi();
+  };
+  const restoreAffected = (): void => {
+    const restored = state.ops.slice();
+    for (const { entry, index } of affected) {
+      if (
+        restored.some(
+          (candidate) =>
+            candidate.pagePath === entry.pagePath && opKey(candidate.op) === opKey(entry.op),
+        )
+      )
+        continue;
+      restored.splice(Math.min(index, restored.length), 0, entry);
+    }
+    state.ops = restored;
+    richContentRegions.set(snapshot.id, snapshot);
+    if (state.current?.pagePath === snapshot.pagePath) renderPreview();
+    updateDirtyUi();
+  };
+  removeAffected();
+  pushHistory({
+    label: "Revert rich content",
+    assetPaths: [],
+    undo: restoreAffected,
+    redo: removeAffected,
+  });
+  updateDirtyUi();
+}
+
+function revertPendingOperation(index: number): void {
+  const entry = state.ops[index];
+  if (!entry) return;
+  const restore = (): void => {
+    if (
+      state.ops.some(
+        (candidate) =>
+          candidate.pagePath === entry.pagePath && opKey(candidate.op) === opKey(entry.op),
+      )
+    )
+      return;
+    state.ops.splice(Math.min(index, state.ops.length), 0, entry);
+    applyOpToDom(entry.pagePath, entry.op);
+    updateDirtyUi();
+  };
+  const remove = (): void => {
+    removeOpsFor(entry.pagePath, opKey(entry.op));
+    revertOpInDom(entry.pagePath, entry.op);
+    updateDirtyUi();
+  };
+  remove();
+  pushHistory({
+    label: `Revert ${opLabel(entry.op)}`,
+    assetPaths: [],
+    undo: restore,
+    redo: remove,
+  });
+  updateDirtyUi();
+}
+
+function revertChange(changeId: string): UndoResult {
+  const resolvedChangeId = changeIdAliases.get(changeId) ?? changeId;
+  const change = buildUserChanges().find(
+    (candidate) => candidate.info.changeId === resolvedChangeId,
+  );
+  if (!change) {
     throw new Error(`Unknown Xyle change ${changeId}`);
   }
-  const change = listChanges()[index];
-  if (!change || change.changeId !== changeId) {
-    throw new Error(`Unknown Xyle change ${changeId}`);
-  }
-  undoOp(index);
+  const region = change.region ?? regionForNode(change.pagePath, change.info.elementId);
+  if (region) revertRichContentRegion(region);
+  else if (change.opIndex !== undefined) revertPendingOperation(change.opIndex);
   return { changeId, undone: true };
 }
 
@@ -4412,6 +5040,33 @@ function applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSet
     if (change.type === "asset") {
       if (meta.kind !== "image") throw new Error(`Xyle node ${change.id} is not an image`);
       if (!isSafeUrl(change.src)) throw new Error("Unsafe media source rejected");
+      continue;
+    }
+    if (change.type === "sectionVisibility") {
+      if (meta.kind !== "section") throw new Error(`Xyle node ${change.id} is not a section`);
+      if (typeof change.visible !== "boolean")
+        throw new Error("Section visibility must be boolean");
+      continue;
+    }
+    if (change.type === "moveSection") {
+      const target = currentNodeElement(change.targetId);
+      const targetMeta = current.nodes.find((candidate) => candidate.id === change.targetId);
+      if (
+        meta.kind !== "section" ||
+        !target ||
+        targetMeta?.kind !== "section" ||
+        element.parentElement !== target.parentElement
+      ) {
+        throw new Error("Sections must be safe siblings in one parent");
+      }
+      const siblings = sectionChildren(element.parentElement!);
+      if (
+        siblings.length !== element.parentElement!.children.length ||
+        !siblings.includes(target)
+      ) {
+        throw new Error("Section parent contains unsupported sibling content");
+      }
+      if (typeof change.before !== "boolean") throw new Error("Section move must include before");
       continue;
     }
     if (change.type === "formatting") {
@@ -4461,6 +5116,10 @@ function applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSet
       if (change.type === "text") updateText(change.id, change.text);
       else if (change.type === "link") updateLink(change.id, change.text, change.href);
       else if (change.type === "asset") replaceAsset(change.id, change.src, change.alt);
+      else if (change.type === "sectionVisibility")
+        updateSectionVisibility(change.id, change.visible);
+      else if (change.type === "moveSection")
+        moveSection(change.id, change.targetId, change.before);
       else updateFormatting(change.id, change.format);
     }
   } catch (error) {
@@ -4516,6 +5175,13 @@ function getContent(nodeId: string): ContentResult {
       type: meta.kind,
       content: element.getAttribute("src") ?? "",
       alt: element.getAttribute("alt") ?? "",
+    };
+  }
+  if (meta.kind === "section") {
+    return {
+      id: nodeId,
+      type: meta.kind,
+      content: element.textContent?.trim() ?? "",
     };
   }
   if ((meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
@@ -4650,6 +5316,7 @@ function reconcileInlineHtml(
         }
         replacePendingOp(pagePath, key, previous);
         applyOpToDom(pagePath, previous);
+        reconcileRichContent(pagePath);
         updateDirtyUi();
       },
       redo: () => {
@@ -4658,11 +5325,13 @@ function reconcileInlineHtml(
         }
         replacePendingOp(pagePath, key, null);
         revertOpInDom(pagePath, previous);
+        reconcileRichContent(pagePath);
         updateDirtyUi();
       },
     };
     if (activeChangeSet) activeChangeSet.entries.push(history);
     else pushHistory(history);
+    reconcileRichContent(pagePath);
     updateDirtyUi();
     return;
   }
@@ -4918,6 +5587,7 @@ function updateBlockFormatting(nodeId: string, format: BlockFormatting): Formatt
 }
 
 function updateText(nodeId: string, text: string): TextUpdateResult {
+  if (/[\r\n]/.test(text)) throw new Error("Line-break editing is deferred.");
   if (session) commitEdit();
   const current = state.current;
   if (!current) throw new Error("No page is loaded");
@@ -4942,6 +5612,9 @@ function updateText(nodeId: string, text: string): TextUpdateResult {
 }
 
 function updateLink(nodeId: string, text?: string, href?: string): LinkUpdateResult {
+  if (text !== undefined && /[\r\n]/.test(text)) {
+    throw new Error("Line-break editing is deferred.");
+  }
   if (session) commitEdit();
   const current = state.current;
   if (!current) throw new Error("No page is loaded");
@@ -5047,6 +5720,7 @@ function buildChrome(): void {
             <button data-action="exit" class="xyle-menu-item" role="menuitem">Exit editor</button>
             <button data-action="live" class="xyle-menu-item" role="menuitem">View live site</button>
             <button data-action="media" class="xyle-menu-item" role="menuitem">Media library</button>
+            <button data-action="sections" class="xyle-menu-item" role="menuitem">Sections</button>
             <button data-action="seo" class="xyle-menu-item" role="menuitem">SEO metadata</button>
             <div class="xyle-menu-separator" role="separator"></div>
             <button data-action="logout" class="xyle-menu-item" role="menuitem">Log out</button>
@@ -5217,6 +5891,7 @@ function buildChrome(): void {
 function menuAction(action: string): void {
   if (action === "exit") exitEditor();
   if (action === "media") void openMediaDrawer();
+  if (action === "sections") openSectionDrawer();
   if (action === "seo") openSeoEditor();
   if (action === "live") {
     try {
@@ -5273,6 +5948,7 @@ function discardAll(): void {
   mediaMutationGeneration += 1;
   closeMediaDrawer(false);
   closeChangesDrawer(false);
+  closeSectionDrawer(false);
   selectedImage = null;
   previewDoc()
     ?.querySelectorAll(".xyle-img-tools,.xyle-link-tools")
@@ -5286,6 +5962,10 @@ function discardAll(): void {
   state.history = [];
   state.historyIndex = 0;
   state.changeSets.clear();
+  richContentRegions.clear();
+  richContentRegionAliases.clear();
+  stableTargetIds.clear();
+  changeIdAliases.clear();
   state.changeSetSequence = 0;
   activeChangeSet = null;
   originalSegments.clear();
@@ -5441,8 +6121,10 @@ function opLabel(op: Op): string {
       return "Media";
     case "seo":
       return "SEO metadata";
-    case "imageStyle":
-      return "Image crop";
+    case "sectionVisibility":
+      return "Section visibility";
+    case "moveSection":
+      return "Section order";
   }
 }
 
@@ -5463,14 +6145,13 @@ function originalValue(pagePath: string, op: Op): string {
   if (op.type === "html") {
     return originalMarkups.get(segmentIdentity(pagePath, op.nodeId)) ?? "";
   }
-  if (op.type === "imageStyle") {
-    return originalAttrs.get(attrIdentity(pagePath, op.nodeId, "style")) ?? "";
-  }
   if (op.type === "media") {
     const original = originalMedia.get(segmentIdentity(pagePath, op.nodeId));
     return original ? mediaStateDescription(original) : "";
   }
   if (op.type === "seo") return originalSeo.get(seoIdentity(pagePath, op.field)) ?? "";
+  if (op.type === "sectionVisibility") return op.before ? "visible" : "hidden";
+  if (op.type === "moveSection") return "original position";
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
 
@@ -5552,7 +6233,8 @@ function openChangesDrawer(): void {
     <button id="xyle-discard" class="xyle-dialog-button xyle-dialog-button--accent"><svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg><span>Discard all changes</span></button>
   </footer>`),
   );
-  const changeCount = state.ops.length;
+  const userChanges = buildUserChanges();
+  const changeCount = userChanges.length;
   $("#xyle-changes-count", drawer).textContent = changeCount > 0 ? String(changeCount) : "";
   document.body.append(drawer);
   const closeButton = $("#xyle-changes-close", drawer);
@@ -5603,21 +6285,18 @@ function openChangesDrawer(): void {
   );
 
   const list = $("#xyle-changes-list", drawer);
-  if (state.ops.length === 0) {
+  if (userChanges.length === 0) {
     drawer.querySelector(".xyle-drawer-actions")?.remove();
     list.innerHTML = `<p class="xyle-empty-state">No pending changes.</p>`;
     closeButton.focus();
     return;
   }
-  const operationsByPage = new Map<
-    string,
-    Array<{ index: number; entry: (typeof state.ops)[number] }>
-  >();
-  for (const [index, entry] of state.ops.entries()) {
-    const pageEntries = operationsByPage.get(entry.pagePath) ?? [];
-    pageEntries.push({ index, entry });
-    operationsByPage.set(entry.pagePath, pageEntries);
-  }
+  const operationsByPage = new Map(
+    [...new Set(userChanges.map((change) => change.pagePath))].map((pagePath) => [
+      pagePath,
+      userChanges.filter((change) => change.pagePath === pagePath),
+    ]),
+  );
   let pageIndex = 0;
   let changeNumber = 0;
   const renderedChangeSetActions = new Set<string>();
@@ -5630,14 +6309,14 @@ function openChangesDrawer(): void {
     pageLabel.textContent = pagePath;
     group.setAttribute("aria-labelledby", pageLabel.id);
     group.append(pageLabel);
-    for (const { index, entry } of entries) {
-      if (entry.changeSetId && !renderedChangeSetActions.has(entry.changeSetId)) {
-        renderedChangeSetActions.add(entry.changeSetId);
+    for (const change of entries) {
+      if (change.info.changeSetId && !renderedChangeSetActions.has(change.info.changeSetId)) {
+        renderedChangeSetActions.add(change.info.changeSetId);
         const task = document.createElement("div");
         task.className = "xyle-change-set";
         const taskLabel = document.createElement("strong");
         taskLabel.className = "xyle-change-set-label";
-        taskLabel.textContent = entry.changeSetLabel ?? "Grouped changes";
+        taskLabel.textContent = change.info.changeSetLabel ?? "Grouped changes";
         const taskUndo = document.createElement("button");
         taskUndo.type = "button";
         taskUndo.className = "xyle-undo-button xyle-change-set-undo";
@@ -5646,7 +6325,7 @@ function openChangesDrawer(): void {
         taskUndo.addEventListener("click", (event) => {
           event.stopPropagation();
           try {
-            undoChangeSet(entry.changeSetId!);
+            undoChangeSet(change.info.changeSetId!);
             drawer.remove();
             updateDirtyUi();
             openChangesDrawer();
@@ -5658,18 +6337,18 @@ function openChangesDrawer(): void {
         group.append(task);
       }
       const row = document.createElement("div");
-      const changeKey = `${pagePath}:${entry.op.nodeId}`;
+      const changeKey = `${pagePath}:${change.info.elementId}`;
       row.className = "xyle-change-row";
       row.dataset.changeKey = changeKey;
       row.classList.toggle("is-located", focusedChangeKey === changeKey);
       row.tabIndex = 0;
       row.setAttribute("role", "button");
-      row.setAttribute("aria-label", `Locate ${opLabel(entry.op)} change on ${pagePath}`);
-      row.addEventListener("click", () => focusChange(pagePath, entry.op.nodeId));
+      row.setAttribute("aria-label", `Locate ${change.label} change on ${pagePath}`);
+      row.addEventListener("click", () => focusChange(pagePath, change.info.elementId));
       row.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
-        focusChange(pagePath, entry.op.nodeId);
+        focusChange(pagePath, change.info.elementId);
       });
       const header = document.createElement("div");
       header.className = "xyle-change-row-header";
@@ -5687,20 +6366,20 @@ function openChangesDrawer(): void {
       locateButton.className = "xyle-locate-button";
       locateButton.innerHTML =
         '<svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg><span>Locate</span>';
-      locateButton.setAttribute("aria-label", `Locate ${opLabel(entry.op)} change on ${pagePath}`);
+      locateButton.setAttribute("aria-label", `Locate ${change.label} change on ${pagePath}`);
       locateButton.addEventListener("click", (event) => {
         event.stopPropagation();
-        focusChange(pagePath, entry.op.nodeId);
+        focusChange(pagePath, change.info.elementId);
       });
       const undoButton = document.createElement("button");
       undoButton.type = "button";
       undoButton.innerHTML =
         '<svg class="xyle-action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M4 12h9a7 7 0 0 1 7 7"/></svg><span>Revert</span>';
       undoButton.className = "xyle-undo-button";
-      undoButton.setAttribute("aria-label", `Revert ${opLabel(entry.op)} change on ${pagePath}`);
+      undoButton.setAttribute("aria-label", `Revert ${change.label} change on ${pagePath}`);
       undoButton.addEventListener("click", (event) => {
         event.stopPropagation();
-        undoOp(index);
+        revertChange(change.info.changeId);
       });
       rowActions.append(locateButton, undoButton);
       header.append(heading, rowActions);
@@ -5708,19 +6387,8 @@ function openChangesDrawer(): void {
       comparison.className = "xyle-change-comparison";
       // User-authored values are appended as text nodes so the privileged shell
       // never interprets edited content as markup.
-      const beforeValue = originalValue(pagePath, entry.op).trim();
-      const afterValue =
-        entry.op.type === "imageStyle"
-          ? imageStyleDescription(entry.op)
-          : entry.op.type === "media"
-            ? mediaStateDescription(entry.op.value)
-            : entry.op.type === "toggleList"
-              ? entry.op.after === "plain"
-                ? "paragraphs"
-                : entry.op.after
-              : entry.op.type === "seo"
-                ? entry.op.value
-                : entry.op.value.trim();
+      const beforeValue = change.info.before.trim();
+      const afterValue = change.info.after.trim();
       const diff = changeParts(beforeValue, afterValue);
       appendChangeValue(comparison, "Before", beforeValue, diff.before);
       const arrow = document.createElement("span");
@@ -5735,15 +6403,6 @@ function openChangesDrawer(): void {
     list.append(group);
   }
   closeButton.focus();
-}
-
-/** Undo one specific op by index. */
-function undoOp(index: number): void {
-  const entry = state.ops[index];
-  if (!entry) return;
-  removeOpsFor(entry.pagePath, opKey(entry.op));
-  revertOpInDom(entry.pagePath, entry.op);
-  updateDirtyUi();
 }
 
 function applyOpToDom(pagePath: string, op: Op): void {
@@ -5766,11 +6425,6 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) replaceElementContentsFromHtml(el, op.value);
     return;
   }
-  if (op.type === "imageStyle") {
-    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
-    if (el instanceof HTMLImageElement) applyImageStyle(el, op);
-    return;
-  }
   if (op.type === "media") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
     if (el instanceof HTMLImageElement) applyMediaStateToDom(el, op.value);
@@ -5787,6 +6441,21 @@ function applyOpToDom(pagePath: string, op: Op): void {
   }
   if (op.type === "toggleList") {
     applyToggleListToDom(pagePath, op, op.after);
+    return;
+  }
+  if (op.type === "sectionVisibility") {
+    const el = currentNodeElement(op.nodeId);
+    if (el) el.hidden = !op.visible;
+    return;
+  }
+  if (op.type === "moveSection") {
+    const source = currentNodeElement(op.nodeId);
+    const target = currentNodeElement(op.targetId);
+    const parent = target?.parentElement;
+    if (source && target && parent && source.parentElement === parent) {
+      if (op.before) parent.insertBefore(source, target);
+      else parent.insertBefore(source, target.nextSibling);
+    }
     return;
   }
   const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
@@ -5827,15 +6496,25 @@ function revertOpInDom(pagePath: string, op: Op): void {
     restoreOriginalBlockFormat(pagePath, op.nodeId);
   } else if (op.type === "toggleList") {
     applyToggleListToDom(pagePath, op, op.before);
+  } else if (op.type === "sectionVisibility") {
+    const el = currentNodeElement(op.nodeId);
+    if (el) el.hidden = !op.before;
+  } else if (op.type === "moveSection") {
+    const source = currentNodeElement(op.nodeId);
+    const parent = source?.parentElement;
+    if (source && parent) {
+      const siblings = sectionChildren(parent);
+      const currentIndex = siblings.indexOf(source);
+      const target = siblings[op.originalIndex];
+      if (target && target !== source) {
+        if (currentIndex < op.originalIndex) parent.insertBefore(source, target.nextSibling);
+        else parent.insertBefore(source, target);
+      } else if (op.originalIndex >= siblings.length - 1) {
+        parent.append(source);
+      }
+    }
   } else if (op.type === "html") {
     restoreOriginalMarkup(pagePath, op.nodeId);
-  } else if (op.type === "imageStyle") {
-    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
-    if (el instanceof HTMLImageElement) {
-      const original = originalAttrs.get(attrIdentity(pagePath, op.nodeId, "style"));
-      if (original !== undefined) el.setAttribute("style", original);
-      else el.removeAttribute("style");
-    }
   } else if (op.type === "media") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
     const original = originalMedia.get(segmentIdentity(pagePath, op.nodeId));
@@ -6202,12 +6881,20 @@ function restoreOpsIntoDom(): void {
       applyBlockFormatToDom(pagePath, op);
     } else if (op.type === "toggleList") {
       applyToggleListToDom(pagePath, op, op.after);
+    } else if (op.type === "sectionVisibility") {
+      const el = currentNodeElement(op.nodeId);
+      if (el) el.hidden = !op.visible;
+    } else if (op.type === "moveSection") {
+      const source = currentNodeElement(op.nodeId);
+      const target = currentNodeElement(op.targetId);
+      const parent = target?.parentElement;
+      if (source && target && parent && source.parentElement === parent) {
+        if (op.before) parent.insertBefore(source, target);
+        else parent.insertBefore(source, target.nextSibling);
+      }
     } else if (op.type === "html") {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) replaceElementContentsFromHtml(el, op.value);
-    } else if (op.type === "imageStyle") {
-      const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
-      if (el instanceof HTMLImageElement) applyImageStyle(el, op);
     } else if (op.type === "media") {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
       if (el instanceof HTMLImageElement) applyMediaStateToDom(el, op.value);
@@ -6309,6 +6996,10 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     state.history = [];
     state.historyIndex = 0;
     state.changeSets.clear();
+    richContentRegions.clear();
+    richContentRegionAliases.clear();
+    stableTargetIds.clear();
+    changeIdAliases.clear();
     state.changeSetSequence = 0;
     activeChangeSet = null;
     originalSegments.clear();

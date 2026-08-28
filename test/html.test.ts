@@ -146,7 +146,17 @@ describe("preparePreview source locations", () => {
     const id = [...analyzePage(source).candidates.values()][0]!.id;
     await expect(
       patchAndGetText(source, [
-        { type: "imageStyle", nodeId: id, fit: "cover", focalX: 20, focalY: 70 },
+        {
+          type: "media",
+          nodeId: id,
+          value: {
+            source: { kind: "existing", src: "/hero.jpg" },
+            alt: { present: false, value: "" },
+            crop: null,
+            focus: { x: 0.2, y: 0.7 },
+            framing: { fit: "cover" },
+          },
+        },
       ]),
     ).resolves.toBe(
       `<img src="/hero.jpg" style="width: 100%; color: red; object-fit: cover; object-position: 20% 70%;">`,
@@ -444,22 +454,17 @@ describe("patchHtml text fidelity", () => {
     await expect(
       patchSource(source, [
         { type: "text", nodeId: "n1#0", value: "a" },
-        { type: "lineBreak", nodeId: "n1#0", position: 3 },
+        { type: "text", nodeId: "n1#0", value: "b" },
       ]),
     ).rejects.toThrow(/duplicate/);
   });
 
-  it("applies controlled line breaks to multiline containers only", async () => {
-    const p = `<p>Serving Edmonton and surrounding areas.</p>`;
-    const pId = firstNodeId(p);
-    const out = await patchAndGetText(p, [{ type: "lineBreak", nodeId: `${pId}#0`, position: 16 }]);
-    expect(out).toBe(`<p>Serving Edmonton<br> and surrounding areas.</p>`);
-
-    const h = `<h1>Plumbing you can depend on</h1>`;
-    const hId = firstNodeId(h);
+  it("rejects deferred line-break operations", async () => {
+    const source = `<p>Serving Edmonton and surrounding areas.</p>`;
+    const id = firstNodeId(source);
     await expect(
-      patchAndGetText(h, [{ type: "lineBreak", nodeId: `${hId}#0`, position: 8 }]),
-    ).rejects.toThrow(/single-line|rejects line breaks/);
+      patchAndGetText(source, [{ type: "lineBreak", nodeId: `${id}#0`, position: 16 }]),
+    ).rejects.toThrow(/line-break editing is deferred/i);
   });
 
   it("applies safe formatting and combines it with a text edit", async () => {
@@ -672,5 +677,71 @@ describe("escaping helpers", () => {
   it("round-trips common entities", () => {
     expect(escapeHtmlText(`&<>"'`)).toBe(`&amp;&lt;&gt;"'`);
     expect(escapeHtmlAttr(`say "hi"`)).toBe("say &quot;hi&quot;");
+  });
+});
+
+describe("safe structural patches", () => {
+  const source =
+    '<main>\n  <section id="first"><h2>First</h2></section>\n  <section id="second"><h2>Second</h2></section>\n</main>';
+
+  function sectionIds() {
+    return [...analyzePage(source).candidates.values()]
+      .filter((candidate) => candidate.kind === "section")
+      .map((candidate) => candidate.id);
+  }
+
+  it("discovers only safe top-level sections", () => {
+    const prepared = preparePreview(source, "/index.html", "http://localhost:4173");
+    expect(sectionIds()).toEqual(["s1", "s2"]);
+    expect(prepared.html).toContain('data-xyle-node="s1"');
+    expect(prepared.html).toContain('data-xyle-node="s2"');
+  });
+
+  it("hides and shows a section through the hidden attribute", async () => {
+    const [first] = sectionIds();
+    const hidden = await patchAndGetText(source, [
+      { type: "sectionVisibility", nodeId: first!, visible: false, before: true },
+    ]);
+    expect(hidden).toContain('<section id="first" hidden>');
+
+    const hiddenSource = hidden;
+    const shown = await patchAndGetText(hiddenSource, [
+      { type: "sectionVisibility", nodeId: "s1", visible: true, before: false },
+    ]);
+    expect(shown).toContain('<section id="first">');
+    expect(shown).not.toContain('<section id="first" hidden>');
+  });
+
+  it("moves only safe sibling sections while preserving their contents", async () => {
+    const [first, second] = sectionIds();
+    const moved = await patchAndGetText(source, [
+      {
+        type: "moveSection",
+        nodeId: second!,
+        targetId: first!,
+        before: true,
+        originalIndex: 1,
+      },
+    ]);
+    expect(moved.indexOf('id="second"')).toBeLessThan(moved.indexOf('id="first"'));
+    expect(moved).toContain("<h2>Second</h2>");
+    expect(moved).toContain("<h2>First</h2>");
+  });
+
+  it("rejects unsafe sections and unsupported sibling parents", async () => {
+    const unsafe = "<main><section><form><input></form></section></main>";
+    expect(
+      [...analyzePage(unsafe).candidates.values()].some((node) => node.kind === "section"),
+    ).toBe(false);
+    const sourceWithDiv =
+      '<main><section id="first">A</section><div>other</div><section id="second">B</section></main>';
+    const ids = [...analyzePage(sourceWithDiv).candidates.values()]
+      .filter((node) => node.kind === "section")
+      .map((node) => node.id);
+    await expect(
+      patchSource(sourceWithDiv, [
+        { type: "moveSection", nodeId: ids[1]!, targetId: ids[0]!, before: true, originalIndex: 1 },
+      ]),
+    ).rejects.toThrow(/unsupported sibling/);
   });
 });

@@ -17,6 +17,39 @@ function validCrop(crop: CropRect): boolean {
   );
 }
 
+function bytesEqualAt(bytes: Uint8Array, offset: number, text: string): boolean {
+  return [...text].every((character, index) => bytes[offset + index] === character.charCodeAt(0));
+}
+
+function hasAnimatedPng(bytes: Uint8Array): boolean {
+  if (!bytesEqualAt(bytes, 0, "\x89PNG\r\n\x1a\n")) return false;
+  let offset = 8;
+  while (offset + 12 <= bytes.length) {
+    const length = new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
+    if (offset + 12 + length > bytes.length) return false;
+    if (bytesEqualAt(bytes, offset + 4, "acTL")) return true;
+    offset += 12 + length;
+  }
+  return false;
+}
+
+function hasAnimatedWebp(bytes: Uint8Array): boolean {
+  if (!bytesEqualAt(bytes, 0, "RIFF") || !bytesEqualAt(bytes, 8, "WEBP")) return false;
+  let offset = 12;
+  while (offset + 8 <= bytes.length) {
+    const length = new DataView(bytes.buffer, bytes.byteOffset + offset + 4, 4).getUint32(0, true);
+    if (offset + 8 + length > bytes.length) return false;
+    if (bytesEqualAt(bytes, offset, "ANIM")) return true;
+    if (bytesEqualAt(bytes, offset, "VP8X") && (bytes[offset + 8]! & 0x02) !== 0) return true;
+    offset += 8 + length + (length % 2);
+  }
+  return false;
+}
+
+function isAnimatedImage(bytes: Uint8Array, pages: number | undefined): boolean {
+  return (pages ?? 1) > 1 || hasAnimatedPng(bytes) || hasAnimatedWebp(bytes);
+}
+
 /** Apply EXIF orientation before extracting a normalized source rectangle. */
 export async function deriveCroppedImage(
   bytes: Uint8Array,
@@ -27,6 +60,9 @@ export async function deriveCroppedImage(
   const rawMetadata = await source.metadata();
   const rawWidth = rawMetadata.width ?? 0;
   const rawHeight = rawMetadata.height ?? 0;
+  if (isAnimatedImage(bytes, rawMetadata.pages)) {
+    throw new Error("animated images support replacement and alt text only");
+  }
   if (!rawWidth || !rawHeight || rawWidth * rawHeight > MAX_DECODED_PIXELS) {
     throw new Error("image dimensions are too large to crop safely");
   }

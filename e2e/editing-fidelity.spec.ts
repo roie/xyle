@@ -91,15 +91,16 @@ test.describe("editing fidelity gate", () => {
     await editNode(page, id!);
     await page.evaluate((nodeId) => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-      const el = doc.querySelector(`[data-xyle-node="${nodeId}"]`)!;
+      const el = doc.querySelector(`[data-xyle-node="${nodeId}"]`) as HTMLElement;
       const win = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentWindow!;
       const range = win.document.createRange();
       range.selectNodeContents(el);
       const selection = win.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
+      el.focus();
     }, id);
-    await page.keyboard.type("Meet the crew");
+    await page.keyboard.insertText("Meet the crew");
     await commitAndAssertOp("Meet the crew");
   });
 
@@ -266,20 +267,20 @@ test.describe("editing fidelity gate", () => {
     await page.keyboard.press("Enter");
     await page.waitForTimeout(150);
     expect(await nodeHtml(page, h1!)).not.toContain("<br");
-    expect(await flashText(page)).toMatch(/not supported/i);
+    expect(await flashText(page)).toMatch(/line-break editing is deferred/i);
   });
 
-  test("Shift+Enter in a paragraph creates a controlled <br>", async () => {
+  test("line-break editing is deferred in paragraphs", async () => {
     const id = await findNodeByText(page, "Do the small jobs well");
     await editNode(page, id!);
     await focusCaret(page, id!, "start");
     for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Shift+Enter");
     await page.waitForTimeout(150);
-    expect(await nodeHtml(page, id!)).toMatch(/<br(?:\s[^>]*)?>/);
+    expect(await nodeHtml(page, id!)).not.toMatch(/<br(?:\s[^>]*)?>/);
+    expect(await flashText(page)).toMatch(/line-break editing is deferred/i);
     await clickOutsideToCommit(page);
-    const op = await textOpFor(page);
-    expect(op?.value.includes("\n")).toBe(true);
+    expect(await opsCount(page)).toBe(0);
   });
 
   test("drag/drop text cannot restructure markup", async () => {
@@ -288,7 +289,6 @@ test.describe("editing fidelity gate", () => {
     // simulate a drop that would inject foreign markup
     await page.evaluate((nodeId) => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
-      const _win = frame.contentWindow!;
       const target = frame.contentDocument!.querySelector(
         `[data-xyle-node="${nodeId}"]`,
       ) as HTMLElement;

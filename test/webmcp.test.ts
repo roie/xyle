@@ -24,7 +24,7 @@ describe("WebMCP tools", () => {
           after: "Hello",
         },
       ],
-      undoChange: (changeId: string) => ({ changeId, undone: true as const }),
+      revertChange: (changeId: string) => ({ changeId, undone: true as const }),
       applyChangeSet: (label: string, _changes: unknown[]) => ({
         changeSetId: "changeset-1",
         label,
@@ -51,6 +51,8 @@ describe("WebMCP tools", () => {
         pagePath: "/index.html",
         format,
       }),
+      updateSectionVisibility: (id: string, visible: boolean) => ({ id, visible }),
+      moveSection: (id: string, targetId: string, before: boolean) => ({ id, targetId, before }),
       updateText: (id: string, text: string) => ({ id, pagePath: "/index.html", text }),
       updateLink: (id: string, text?: string, href?: string) => ({
         id,
@@ -67,11 +69,13 @@ describe("WebMCP tools", () => {
       "list_changes",
       "apply_change_set",
       "undo_change_set",
-      "undo_change",
+      "revert_change",
       "update_link",
       "replace_asset",
       "update_media",
       "update_formatting",
+      "set_section_visibility",
+      "move_section",
       "update_text",
     ]);
 
@@ -102,7 +106,7 @@ describe("WebMCP tools", () => {
       content: [{ type: "text", text: JSON.stringify(bridge.undoChangeSet("changeset-1")) }],
     });
     await expect(tools[5]!.execute({ changeId: "change-1" }, { signal })).resolves.toEqual({
-      content: [{ type: "text", text: JSON.stringify(bridge.undoChange("change-1")) }],
+      content: [{ type: "text", text: JSON.stringify(bridge.revertChange("change-1")) }],
     });
     await expect(tools[6]!.execute({ id: "n1", href: "/about.html" }, { signal })).resolves.toEqual(
       {
@@ -142,7 +146,25 @@ describe("WebMCP tools", () => {
         },
       ],
     });
-    await expect(tools[10]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
+    await expect(tools[10]!.execute({ id: "s1", visible: false }, { signal })).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(bridge.updateSectionVisibility!("s1", false)),
+        },
+      ],
+    });
+    await expect(
+      tools[11]!.execute({ id: "s2", targetId: "s1", before: true }, { signal }),
+    ).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(bridge.moveSection!("s2", "s1", true)),
+        },
+      ],
+    });
+    await expect(tools[12]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.updateText("n1", "Hello")) }],
     });
     await expect(
@@ -161,7 +183,7 @@ describe("WebMCP tools", () => {
         listEditableContent: () => [],
         getContent: (id) => ({ id, type: "text", content: "" }),
         listChanges: () => [],
-        undoChange: (changeId) => ({ changeId, undone: true }),
+        revertChange: (changeId: string) => ({ changeId, undone: true }),
         applyChangeSet: (label, _changes) => ({ changeSetId: "changeset-1", label, changes: [] }),
         undoChangeSet: (changeSetId) => ({ changeSetId, undone: true }),
         replaceAsset: (id, src, alt) => ({ id, pagePath: "/index.html", src, alt: alt ?? "" }),
