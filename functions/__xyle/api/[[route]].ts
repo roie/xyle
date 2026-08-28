@@ -1,11 +1,18 @@
 import { authenticated, login, logoutCookie, sessionCookie, type Env } from "../../_auth";
-import { deployCompleteSnapshot } from "../../_publish";
+import {
+  deployCompleteSnapshot,
+  materializeHostedMediaOperations,
+} from "../../_publish";
 import { preparePreview, patchHtml } from "../../../src/html.ts";
 import { discoverMedia, uploadPathFor, validateUpload } from "../../../src/media.ts";
 import { computeSnapshotDigest, digestBytes } from "../../../src/digest.ts";
 import type { ManifestFile, XyleDigest } from "../../../src/types.ts";
 
-type RuntimeEnv = Env & { ASSETS: { fetch(request: Request): Promise<Response> }; CLOUDFLARE_PROJECT?: string };
+type RuntimeEnv = Env & {
+  ASSETS: { fetch(request: Request): Promise<Response> };
+  CLOUDFLARE_PROJECT?: string;
+  IMAGES?: import("../../_publish").CloudflareImagesBinding;
+};
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 export const onRequest = async ({ request, env, params }: { request: Request; env: RuntimeEnv; params: { route?: string[] } }): Promise<Response> => {
@@ -122,11 +129,20 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     }
     const byPath = new Map(files.map((file) => [file.path, file]));
     for (const upload of uploads) byPath.set(upload.path, upload);
+    const submitted = new Map(uploads.map((upload) => [upload.path, upload.bytes]));
     for (const page of metadata.pages ?? []) {
       const file = byPath.get(page.pagePath);
       const entry = current.files[page.pagePath];
       if (!file || !entry || entry.digest !== page.baseDigest) return Response.json({ error: "stale-site" }, { status: 409 });
-      file.bytes = await patchHtml(file.bytes, { pagePath: page.pagePath, baseDigest: page.baseDigest, operations: page.operations });
+      const materialized = await materializeHostedMediaOperations(
+        env,
+        request.url,
+        page.operations,
+        byPath,
+        submitted,
+      );
+      for (const asset of materialized.assets) byPath.set(asset.path, asset);
+      file.bytes = await patchHtml(file.bytes, { pagePath: page.pagePath, baseDigest: page.baseDigest, operations: materialized.operations });
     }
     const nextFiles = [...byPath.values()];
     const nextEntries: typeof current.files = {};

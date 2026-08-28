@@ -201,6 +201,20 @@ export class CloudflarePagesPublisher implements Publisher {
       join(staging, "blake3_js_bg.wasm"),
     );
     await writeFile(
+      join(staging, "wrangler.jsonc"),
+      JSON.stringify(
+        {
+          $schema: "./node_modules/wrangler/config-schema.json",
+          name: this.options.projectName,
+          pages_build_output_dir: ".",
+          compatibility_date: "2026-08-24",
+          images: { binding: "IMAGES" },
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFile(
       join(staging, "_routes.json"),
       JSON.stringify({ version: 1, include: ["/edit", "/__xyle/*"], exclude: [] }),
     );

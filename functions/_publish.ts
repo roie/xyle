@@ -1,6 +1,116 @@
+import type { PageOperation, MediaState } from "../src/types.ts";
+import { digestBytes } from "../src/digest.ts";
+import { MEDIA_PREFIX } from "../src/media.ts";
+import { mediaSourcePath } from "../src/media-state.ts";
 import { pagesAssetHash, pagesRequest, type PagesEnv } from "./_pages";
 
 export interface PublishFile { path: string; bytes: Uint8Array; contentType: string; }
+
+type ImageOutput = { response(): Promise<Response> };
+type ImageInput = {
+  transform(options: Record<string, unknown>): ImageInput;
+  output(options: Record<string, unknown>): Promise<ImageOutput>;
+};
+export interface CloudflareImagesBinding {
+  input(source: Uint8Array | ReadableStream<Uint8Array>): ImageInput;
+}
+
+export interface HostedPublishEnv extends PagesEnv {
+  IMAGES?: CloudflareImagesBinding;
+}
+
+/** Materialize normalized crops using the Workers Images binding or cf.image fetch transforms. */
+export async function materializeHostedMediaOperations(
+  env: HostedPublishEnv,
+  requestUrl: string,
+  operations: PageOperation[],
+  files: Map<string, PublishFile>,
+  submitted: Map<string, Uint8Array>,
+): Promise<{ operations: PageOperation[]; assets: PublishFile[] }> {
+  const assets: PublishFile[] = [];
+  const derivedByKey = new Map<string, string>();
+  const known = new Set(files.keys());
+  const output: PageOperation[] = [];
+  for (const operation of operations) {
+    if (operation.type !== "media" || !operation.value.crop) {
+      output.push(operation);
+      continue;
+    }
+    const sourcePath = mediaSourcePath(operation.value.source);
+    const sourceBytes = submitted.get(sourcePath) ?? files.get(sourcePath)?.bytes;
+    const sourceUrl = toSourceUrl(sourcePath, requestUrl);
+    const key = `${sourcePath}:${JSON.stringify(operation.value.crop)}`;
+    let derivedPath = derivedByKey.get(key);
+    if (!derivedPath) {
+      const bytes = await transformHostedCrop(
+        env,
+        sourceBytes,
+        sourceUrl,
+        operation.value.crop,
+        submitted.has(sourcePath),
+      );
+      const digest = await digestBytes(bytes);
+      derivedPath = `${MEDIA_PREFIX}${digest.slice("sha256:".length)}.webp`;
+      derivedByKey.set(key, derivedPath);
+      if (!known.has(derivedPath)) {
+        const asset = { path: derivedPath, bytes, contentType: "image/webp" };
+        assets.push(asset);
+        known.add(derivedPath);
+      }
+    }
+    const value: MediaState = {
+      ...operation.value,
+      source: { kind: "existing", src: derivedPath },
+      crop: null,
+    };
+    output.push({ ...operation, value });
+  }
+  return { operations: output, assets };
+}
+
+function toSourceUrl(sourcePath: string, requestUrl: string): string | null {
+  try {
+    const parsed = new URL(sourcePath, requestUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function transformHostedCrop(
+  env: HostedPublishEnv,
+  sourceBytes: Uint8Array | undefined,
+  sourceUrl: string | null,
+  crop: NonNullable<MediaState["crop"]>,
+  staged: boolean,
+): Promise<Uint8Array> {
+  const image = {
+    trim: { top: crop.y, right: 1 - crop.x - crop.width, bottom: 1 - crop.y - crop.height, left: crop.x },
+    format: "webp",
+    quality: 90,
+    anim: false,
+    metadata: "none",
+  };
+  let response: Response;
+  if (sourceBytes && env.IMAGES) {
+    response = await (
+      await env.IMAGES.input(sourceBytes).transform(image).output({ format: "webp", quality: 90 })
+    ).response();
+  } else {
+    if (!sourceUrl) throw new Error("media crop source is not a fetchable image URL");
+    if (staged) {
+      throw new Error("Cloudflare crop publishing requires an Images binding for staged uploads");
+    }
+    response = await fetch(sourceUrl, { cf: { image } } as RequestInit & { cf: unknown });
+  }
+  if (!response.ok) throw new Error(`Cloudflare image crop failed (${response.status})`);
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("image/webp")) {
+    throw new Error("Cloudflare image crop did not return WebP output");
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
 
 export async function deployCompleteSnapshot(env: PagesEnv & { CLOUDFLARE_PROJECT?: string }, files: PublishFile[]): Promise<string> {
   const projectName = env.CLOUDFLARE_PROJECT ?? "xyle";
