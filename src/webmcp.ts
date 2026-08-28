@@ -75,6 +75,12 @@ export interface FormattingUpdateResult {
   format: Formatting;
 }
 
+export interface ListFormattingUpdateResult {
+  ids: string[];
+  pagePath: string;
+  format: "unordered-list" | "ordered-list";
+}
+
 export interface ChangeInfo {
   changeId: string;
   elementId: string;
@@ -88,7 +94,8 @@ export interface ChangeInfo {
     | "html"
     | "imageStyle"
     | "media"
-    | "seo";
+    | "seo"
+    | "toggleList";
   before: string;
   after: string;
   changeSetId?: string;
@@ -129,6 +136,10 @@ export interface WebMcpBridge {
   getSeo?: () => SeoState;
   updateSeo?: (field: SeoField, value: string) => SeoUpdateResult;
   updateFormatting(id: string, format: Formatting): FormattingUpdateResult;
+  updateList?: (
+    ids: string[],
+    format: "unordered-list" | "ordered-list",
+  ) => ListFormattingUpdateResult;
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -276,6 +287,25 @@ function parseAssetInput(value: unknown): { id: string; src: string; alt?: strin
     src: value.src,
     ...(value.alt !== undefined ? { alt: value.alt } : {}),
   };
+}
+
+function parseListFormattingInput(value: unknown): {
+  ids: string[];
+  format: "unordered-list" | "ordered-list";
+} {
+  if (!isRecord(value) || !Array.isArray(value.ids) || typeof value.format !== "string") {
+    throw new Error("update_list requires string[] ids and a list format");
+  }
+  if (
+    value.ids.length < 1 ||
+    value.ids.length > 20 ||
+    value.ids.some((id) => typeof id !== "string" || !id) ||
+    new Set(value.ids).size !== value.ids.length ||
+    (value.format !== "unordered-list" && value.format !== "ordered-list")
+  ) {
+    throw new Error("update_list requires 1 to 20 unique text block ids");
+  }
+  return { ids: value.ids, format: value.format };
 }
 
 function parseFormattingInput(value: unknown): { id: string; format: Formatting } {
@@ -739,6 +769,38 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
+    if (bridge.updateList) {
+      await context.registerTool(
+        {
+          name: "update_list",
+          description:
+            "Group contiguous sibling text blocks into one safe ordered or bulleted list.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              ids: {
+                type: "array",
+                minItems: 1,
+                maxItems: 20,
+                items: { type: "string" },
+                description: "The current contiguous sibling text block ids in document order.",
+              },
+              format: { type: "string", enum: ["unordered-list", "ordered-list"] },
+            },
+            required: ["ids", "format"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted) {
+              throw new DOMException("Tool execution canceled", "AbortError");
+            }
+            const parsed = parseListFormattingInput(input);
+            return textResult(JSON.stringify(bridge.updateList!(parsed.ids, parsed.format)));
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
     await context.registerTool(
       {
         name: "update_text",

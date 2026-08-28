@@ -13,6 +13,7 @@ import {
   type FormattingUpdateResult,
   type EditableContent,
   type LinkUpdateResult,
+  type ListFormattingUpdateResult,
   type TextUpdateResult,
   type UndoResult,
   type MediaPatchInput,
@@ -1317,6 +1318,14 @@ type Op =
       sourceEnd?: number;
     }
   | { type: "formatBlock"; nodeId: string; value: BlockTag }
+  | {
+      type: "toggleList";
+      nodeId: string;
+      nodeIds: string[];
+      value: "ul" | "ol";
+      before: "plain" | "ul" | "ol";
+      after: "plain" | "ul" | "ol";
+    }
   | { type: "html"; nodeId: string; value: string }
   | { type: "media"; nodeId: string; value: MediaState }
   | { type: "seo"; nodeId: string; field: SeoField; value: string }
@@ -1433,6 +1442,7 @@ async function boot(): Promise<void> {
     getSeo,
     updateSeo,
     updateFormatting,
+    updateList: toggleListFormatting,
     updateText,
     updateLink,
   });
@@ -2206,18 +2216,159 @@ function updateFormatToolState(tools: HTMLElement, target: HTMLElement, range: R
   }
 }
 
+function getSelectedListGroup(): { ids: string[]; range: Range; rect: ViewportRect } | null {
+  const selection = previewSelection();
+  const current = state.current;
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed || !current) return null;
+  const range = selection.getRangeAt(0);
+  const blockFor = (node: Node): HTMLElement | null => {
+    let element = node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : node.parentElement;
+    while (element) {
+      const id = element.dataset.xyleNode;
+      const meta = id ? current.nodes.find((candidate) => candidate.id === id) : undefined;
+      if (meta?.kind === "text" && meta.textEditable && (isBlockTag(meta.tag) || meta.tag === "li"))
+        return element;
+      element = element.parentElement;
+    }
+    return null;
+  };
+  const first = blockFor(range.startContainer);
+  const last = blockFor(range.endContainer);
+  const parent = first?.parentElement;
+  if (!first || !last || !parent || last.parentElement !== parent || first === last) return null;
+  const children = [...parent.children];
+  const start = children.indexOf(first);
+  const end = children.indexOf(last);
+  if (start < 0 || end < start) return null;
+  const elements = children.slice(start, end + 1);
+  const ids: string[] = [];
+  for (const element of elements) {
+    const id = (element as HTMLElement).dataset.xyleNode;
+    const meta = id ? current.nodes.find((candidate) => candidate.id === id) : undefined;
+    if (
+      !id ||
+      !meta ||
+      meta.kind !== "text" ||
+      !meta.textEditable ||
+      (meta.tag !== "p" && meta.tag !== "li") ||
+      meta.segmentCount === 0
+    )
+      return null;
+    ids.push(id);
+  }
+  const frameRect = iframe.getBoundingClientRect();
+  const selectionRect = range.getBoundingClientRect();
+  return {
+    ids,
+    range: range.cloneRange(),
+    rect: {
+      left: frameRect.left + selectionRect.left,
+      top: frameRect.top + selectionRect.top,
+      right: frameRect.left + selectionRect.right,
+      bottom: frameRect.top + selectionRect.bottom,
+      width: selectionRect.width,
+      height: selectionRect.height,
+    },
+  };
+}
+
+function listBlockRun(element: HTMLElement): string[] {
+  const current = state.current;
+  const parent = element.parentElement;
+  if (!current || !parent) return [];
+  const children = [...parent.children];
+  const index = children.indexOf(element);
+  if (index < 0) return [];
+  const isEligible = (candidate: Element): string | null => {
+    const id = (candidate as HTMLElement).dataset.xyleNode;
+    const meta = id ? current.nodes.find((entry) => entry.id === id) : undefined;
+    return id &&
+      meta?.kind === "text" &&
+      meta.textEditable &&
+      (meta.tag === "p" || meta.tag === "li") &&
+      (meta.segmentCount ?? 0) > 0
+      ? id
+      : null;
+  };
+  if (!isEligible(element)) return [];
+  let start = index;
+  let end = index;
+  while (start > 0 && isEligible(children[start - 1]!)) start -= 1;
+  while (end + 1 < children.length && isEligible(children[end + 1]!)) end += 1;
+  return children.slice(start, end + 1).map((child) => isEligible(child)!);
+}
+
+function openListGroupEditor(): void {
+  const current = state.current;
+  const element = session?.el;
+  if (!current || !element) return;
+  const ids = listBlockRun(element);
+  if (ids.length < 2) {
+    flash("Select at least two contiguous text blocks to group into a list.");
+    return;
+  }
+  const dialog = document.createElement("dialog");
+  dialog.className = "xyle-dialog";
+  dialog.setAttribute("aria-labelledby", "xyle-list-dialog-title");
+  dialog.replaceChildren(
+    document.createRange().createContextualFragment(`
+    <form method="dialog" class="xyle-dialog-form">
+      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Block structure</span><strong id="xyle-list-dialog-title">Group blocks into a list</strong></div>
+      <label class="xyle-dialog-label">Blocks
+        <select class="xyle-dialog-input" name="ids" multiple size="${Math.min(ids.length, 8)}"></select>
+      </label>
+      <label class="xyle-dialog-label">List style
+        <select class="xyle-dialog-input" name="format"><option value="unordered-list">Bulleted list</option><option value="ordered-list">Numbered list</option></select>
+      </label>
+      <div class="xyle-dialog-actions">
+        <button class="xyle-dialog-button" value="cancel">Cancel</button>
+        <button class="xyle-dialog-button xyle-dialog-button--primary" value="save">Group blocks</button>
+      </div>
+    </form>`),
+  );
+  const select = dialog.querySelector<HTMLSelectElement>("[name=ids]");
+  for (const id of ids) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = currentNodeElement(id)?.textContent?.trim() || id;
+    option.selected = true;
+    select?.append(option);
+  }
+  dialog.addEventListener("close", () => {
+    if (dialog.returnValue === "save" && select) {
+      const selectedIds = [...select.selectedOptions].map((option) => option.value);
+      const format = dialog.querySelector<HTMLSelectElement>("[name=format]")?.value;
+      try {
+        if (format !== "unordered-list" && format !== "ordered-list")
+          throw new Error("Unsupported list style");
+        toggleListFormatting(selectedIds, format);
+      } catch (error) {
+        flash(error instanceof Error ? error.message : "The list could not be created.");
+      }
+    }
+    dialog.remove();
+  });
+  document.body.append(dialog);
+  dialog.showModal();
+  select?.focus();
+}
+
 function showFormatTools(): void {
   if (!session) return;
   const target = session.el;
   const currentSelection = getFormatSelection();
+  const listGroup = getSelectedListGroup();
   if (currentSelection) savedFormatSelection = currentSelection;
-  const selected = currentSelection ?? savedFormatSelection;
-  if (!selected || savedFormatSelection?.start === savedFormatSelection?.end) {
+  const selected = currentSelection ?? listGroup;
+  if (
+    !selected ||
+    (currentSelection && savedFormatSelection?.start === savedFormatSelection?.end)
+  ) {
     if (activeTools?.classList.contains("xyle-format-tools")) closeContextTools(false);
     return;
   }
   if (activeTools?.classList.contains("xyle-format-tools")) {
-    updateFormatToolState(activeTools, target, selected.range);
+    if (currentSelection) updateFormatToolState(activeTools, target, currentSelection.range);
     positionContextTools(activeTools, selected.rect, "above", previewElementRect(target));
     return;
   }
@@ -2227,6 +2378,7 @@ function showFormatTools(): void {
   tools.className = "xyle-format-tools";
   tools.setAttribute("role", "toolbar");
   tools.setAttribute("aria-label", "Text formatting");
+  const currentSelectionForInline = currentSelection;
 
   const addInlineButton = (format: "bold" | "italic" | "underline", label: string): void => {
     const button = document.createElement("button");
@@ -2238,20 +2390,46 @@ function showFormatTools(): void {
     button.addEventListener("pointerdown", (event) => event.preventDefault());
     button.addEventListener("click", () => {
       if (!session) return;
-      const currentSelection = getFormatSelection() ?? selected;
+      const currentSelection = getFormatSelection() ?? currentSelectionForInline;
+      if (!currentSelection) return;
       updateFormatting(session.meta.id, format, currentSelection);
       scheduleFormatTools();
     });
     tools.append(button);
   };
-  addInlineButton("bold", "Bold");
-  addInlineButton("italic", "Italic");
-  addInlineButton("underline", "Underline");
-  updateFormatToolState(tools, target, selected.range);
+  if (currentSelection) {
+    addInlineButton("bold", "Bold");
+    addInlineButton("italic", "Italic");
+    addInlineButton("underline", "Underline");
+    updateFormatToolState(tools, target, currentSelection.range);
 
-  const separator = document.createElement("span");
-  separator.setAttribute("role", "separator");
-  tools.append(separator);
+    const separator = document.createElement("span");
+    separator.setAttribute("role", "separator");
+    tools.append(separator);
+  }
+
+  if (listGroup) {
+    for (const [format, label] of [
+      ["unordered-list", "Bulleted list"],
+      ["ordered-list", "Numbered list"],
+    ] as const) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.setAttribute("aria-label", label);
+      button.setAttribute("title", label);
+      button.addEventListener("pointerdown", (event) => event.preventDefault());
+      button.addEventListener("click", () => {
+        toggleListFormatting(listGroup.ids, format);
+        closeContextTools(false);
+      });
+      tools.append(button);
+    }
+    registerContextTools(tools, target, "above");
+    overlay.append(tools);
+    positionContextTools(tools, selected.rect, "above", previewElementRect(target));
+    return;
+  }
 
   const block = document.createElement("select");
   block.setAttribute("aria-label", "Block style");
@@ -2273,19 +2451,40 @@ function showFormatTools(): void {
     block.append(option);
   }
   const currentBlockTag = session.el.tagName.toLowerCase();
+  const currentListTag =
+    currentBlockTag === "li" && session.el.parentElement
+      ? session.el.parentElement.tagName.toLowerCase()
+      : "";
   block.value = isBlockTag(currentBlockTag)
     ? blockFormattingFor(currentBlockTag)
     : isListTag(currentBlockTag)
       ? blockFormattingFor(currentBlockTag)
-      : "paragraph";
-  block.disabled = !isBlockTag(session.meta.tag);
+      : isListTag(currentListTag)
+        ? blockFormattingFor(currentListTag)
+        : "paragraph";
+  block.disabled = !isBlockTag(session.meta.tag) && session.meta.tag !== "li";
   block.addEventListener("pointerdown", (event) => event.preventDefault());
   block.addEventListener("change", () => {
     if (!session) return;
-    updateFormatting(session.meta.id, block.value as Formatting);
+    const format = block.value as Formatting;
+    if (format === "unordered-list" || format === "ordered-list") {
+      toggleListFormatting(getSelectedListGroup()?.ids ?? [session.meta.id], format);
+    } else {
+      updateFormatting(session.meta.id, format);
+    }
     closeContextTools(false);
   });
   tools.append(block);
+  if (session.meta.kind === "text" && listBlockRun(target).length >= 2) {
+    const groupButton = document.createElement("button");
+    groupButton.type = "button";
+    groupButton.textContent = "Group list…";
+    groupButton.setAttribute("aria-label", "Group blocks into a list");
+    groupButton.setAttribute("title", "Group blocks into a list");
+    groupButton.addEventListener("pointerdown", (event) => event.preventDefault());
+    groupButton.addEventListener("click", () => openListGroupEditor());
+    tools.append(groupButton);
+  }
 
   registerContextTools(tools, target, "above");
   overlay.append(tools);
@@ -2354,11 +2553,25 @@ function onBeforeInput(event: InputEvent): void {
       return;
     }
     case "formatStrikeThrough":
-    case "insertHorizontalRule":
+    case "insertHorizontalRule": {
+      event.preventDefault();
+      flash("That formatting command is not supported.");
+      return;
+    }
     case "insertOrderedList":
     case "insertUnorderedList": {
       event.preventDefault();
-      flash("That formatting command is not supported.");
+      const selected = getSelectedListGroup();
+      const ids = selected?.ids ?? (session ? [session.meta.id] : []);
+      if (!ids.length) {
+        flash("Select one or more text blocks to create a list.");
+        return;
+      }
+      toggleListFormatting(
+        ids,
+        event.inputType === "insertOrderedList" ? "ordered-list" : "unordered-list",
+      );
+      scheduleFormatTools();
       return;
     }
     case "insertFromPaste": {
@@ -3677,7 +3890,7 @@ function cleanupUnreachableAssets(includeHistory = true): void {
   }
 }
 
-function applyOp(pagePath: string, op: Op, label: string): HistoryEntry {
+function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null = op): HistoryEntry {
   const key = opKey(op);
   const previous = state.ops.find(
     (entry) => entry.pagePath === pagePath && opKey(entry.op) === key,
@@ -3688,23 +3901,34 @@ function applyOp(pagePath: string, op: Op, label: string): HistoryEntry {
   const changeSet = activeChangeSet
     ? { id: activeChangeSet.id, label: activeChangeSet.label }
     : undefined;
-  replacePendingOp(pagePath, key, op, changeSet);
+  const revision = ++nextOpRevision;
+  opRevisions.set(op, revision);
+  pendingRevisions.set(key, revision);
+  replacePendingOp(pagePath, key, pendingOp, changeSet);
 
   const isCurrent = (): boolean =>
-    state.ops.some((entry) => entry.pagePath === pagePath && entry.op === op);
+    pendingRevisions.get(key) === revision &&
+    (pendingOp
+      ? state.ops.some((entry) => entry.pagePath === pagePath && entry.op === pendingOp)
+      : !state.ops.some((entry) => entry.pagePath === pagePath && opKey(entry.op) === key));
   const undo = (): void => {
     if (!isCurrent()) return;
     replacePendingOp(pagePath, key, previous?.op ?? null, previousChangeSet);
+    pendingRevisions.set(key, previous ? (opRevisions.get(previous.op) ?? revision) : revision);
     if (previous) applyOpToDom(pagePath, previous.op);
     else revertOpInDom(pagePath, op);
     updateDirtyUi();
   };
   const redo = (): void => {
-    const current = state.ops.find(
-      (entry) => entry.pagePath === pagePath && opKey(entry.op) === key,
-    );
-    if (current && current.op !== previous?.op) return;
-    replacePendingOp(pagePath, key, op, changeSet);
+    if (
+      pendingRevisions.get(key) === revision &&
+      (pendingOp
+        ? state.ops.some((entry) => entry.pagePath === pagePath && entry.op === pendingOp)
+        : !state.ops.some((entry) => entry.pagePath === pagePath && opKey(entry.op) === key))
+    )
+      return;
+    replacePendingOp(pagePath, key, pendingOp, changeSet);
+    pendingRevisions.set(key, revision);
     applyOpToDom(pagePath, op);
     updateDirtyUi();
   };
@@ -3933,11 +4157,15 @@ function listChanges(): ChangeInfo[] {
       after:
         op.type === "formatBlock"
           ? blockFormattingFor(op.value)
-          : op.type === "imageStyle"
-            ? imageStyleDescription(op)
-            : op.type === "media"
-              ? mediaStateDescription(op.value)
-              : op.value,
+          : op.type === "toggleList"
+            ? op.after === "plain"
+              ? "paragraphs"
+              : op.after
+            : op.type === "imageStyle"
+              ? imageStyleDescription(op)
+              : op.type === "media"
+                ? mediaStateDescription(op.value)
+                : op.value,
       ...(entry.changeSetId
         ? {
             changeSetId: entry.changeSetId,
@@ -4308,16 +4536,177 @@ function updateFormatting(
   return { id: nodeId, pagePath: current.pagePath, format };
 }
 
+interface SelectionBookmark {
+  root: HTMLElement;
+  anchorTextOffset: number;
+  focusTextOffset: number;
+  direction: "forward" | "backward";
+}
+
+function textOffsetAt(root: HTMLElement, node: Node, offset: number): number | null {
+  if (!root.contains(node) && node !== root) return null;
+  const range = root.ownerDocument.createRange();
+  try {
+    range.setStart(root, 0);
+    range.setEnd(node, offset);
+  } catch {
+    return null;
+  }
+  return range.toString().length;
+}
+
+function textBoundaryAt(root: HTMLElement, offset: number): { node: Text; offset: number } | null {
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let remaining = Math.max(0, offset);
+  let node: Text | null;
+  for (;;) {
+    node = walker.nextNode() as Text | null;
+    if (!node) break;
+    if (remaining <= node.length) return { node, offset: remaining };
+    remaining -= node.length;
+  }
+  const last = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let final: Text | null = null;
+  for (;;) {
+    node = last.nextNode() as Text | null;
+    if (!node) break;
+    final = node;
+  }
+  return final ? { node: final, offset: final.length } : null;
+}
+
+function captureSelectionBookmark(root: HTMLElement): SelectionBookmark | null {
+  const selection = root.ownerDocument.getSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  const anchorTextOffset = textOffsetAt(root, selection.anchorNode!, selection.anchorOffset);
+  const focusTextOffset = textOffsetAt(root, selection.focusNode!, selection.focusOffset);
+  if (anchorTextOffset === null || focusTextOffset === null) return null;
+  const direction =
+    range.startContainer === selection.anchorNode && range.startOffset === selection.anchorOffset
+      ? "forward"
+      : "backward";
+  return { root, anchorTextOffset, focusTextOffset, direction };
+}
+
+function restoreSelectionBookmark(bookmark: SelectionBookmark | null): void {
+  if (!bookmark) return;
+  const anchor = textBoundaryAt(bookmark.root, bookmark.anchorTextOffset);
+  const focus = textBoundaryAt(bookmark.root, bookmark.focusTextOffset);
+  if (!anchor || !focus) return;
+  const selection = bookmark.root.ownerDocument.getSelection();
+  if (!selection) return;
+  selection.removeAllRanges();
+  const range = bookmark.root.ownerDocument.createRange();
+  if (bookmark.direction === "forward") {
+    range.setStart(anchor.node, anchor.offset);
+    range.setEnd(focus.node, focus.offset);
+    selection.addRange(range);
+  } else {
+    range.setStart(focus.node, focus.offset);
+    range.setEnd(anchor.node, anchor.offset);
+    selection.addRange(range);
+    if (selection.extend) {
+      selection.collapse(anchor.node, anchor.offset);
+      selection.extend(focus.node, focus.offset);
+    }
+  }
+}
+
+function toggleListFormatting(
+  nodeIds: string[],
+  format: "unordered-list" | "ordered-list",
+): ListFormattingUpdateResult {
+  if (session) commitEdit();
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  if (nodeIds.length < 1 || nodeIds.length > 20 || new Set(nodeIds).size !== nodeIds.length) {
+    throw new Error("A list group requires 1 to 20 unique text blocks");
+  }
+  const elements = nodeIds.map((nodeId) => {
+    const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+    const element = currentNodeElement(nodeId);
+    if (
+      !meta ||
+      meta.kind !== "text" ||
+      !meta.textEditable ||
+      (meta.tag !== "p" && meta.tag !== "li")
+    ) {
+      throw new Error(`Xyle node ${nodeId} is not a safe list block`);
+    }
+    if ((meta.segmentCount ?? 0) === 0 || !element) {
+      throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
+    }
+    return { meta, element };
+  });
+  const parent = elements[0]!.element.parentElement;
+  if (!parent || elements.some(({ element }) => element.parentElement !== parent)) {
+    throw new Error("List blocks must be siblings");
+  }
+  const children = [...parent.children];
+  elements.sort(({ element: left }, { element: right }) => {
+    const leftIndex = children.indexOf(left);
+    const rightIndex = children.indexOf(right);
+    return leftIndex - rightIndex;
+  });
+  const indexes = elements.map(({ element }) => children.indexOf(element));
+  if (
+    indexes.some((index) => index < 0) ||
+    indexes.some((index, position) => index !== indexes[0]! + position)
+  ) {
+    throw new Error("List blocks must be contiguous siblings");
+  }
+  const firstTag = elements[0]!.element.tagName.toLowerCase();
+  const parentTag = parent.tagName.toLowerCase();
+  const before: "plain" | "ul" | "ol" =
+    firstTag === "li" && (parentTag === "ul" || parentTag === "ol") ? parentTag : "plain";
+  if (
+    elements.some(
+      ({ element }) => (element.tagName.toLowerCase() === "li") !== (before !== "plain"),
+    )
+  ) {
+    throw new Error("List selection cannot mix list items and plain blocks");
+  }
+  const requested = format === "unordered-list" ? "ul" : "ol";
+  const after = before === requested ? "plain" : requested;
+  const selectionRoot = before === "plain" ? parent : parent.parentElement;
+  const bookmark = selectionRoot ? captureSelectionBookmark(selectionRoot) : null;
+  for (const { meta } of elements) {
+    const stateKey = segmentIdentity(current.pagePath, meta.id);
+    if (!originalListStates.has(stateKey)) originalListStates.set(stateKey, before);
+    originalBlockTags.set(stateKey, (meta.tag === "li" ? "p" : meta.tag) as BlockTag);
+  }
+  const operation: Op = {
+    type: "toggleList",
+    nodeId: elements[0]!.meta.id,
+    nodeIds: elements.map(({ meta }) => meta.id),
+    value: requested,
+    before,
+    after,
+  };
+  applyToggleListToDom(current.pagePath, operation, after);
+  restoreSelectionBookmark(bookmark);
+  const returnsToOriginal = operation.nodeIds.every(
+    (nodeId) => originalListStates.get(segmentIdentity(current.pagePath, nodeId)) === after,
+  );
+  applyOp(current.pagePath, operation, "Update list", returnsToOriginal ? null : operation);
+  return { ids: [...nodeIds], pagePath: current.pagePath, format };
+}
+
 function updateBlockFormatting(nodeId: string, format: BlockFormatting): FormattingUpdateResult {
   if (session) commitEdit();
   const current = state.current;
   if (!current) throw new Error("No page is loaded");
+  const isListFormat = format === "unordered-list" || format === "ordered-list";
+  if (isListFormat) {
+    toggleListFormatting([nodeId], format);
+    return { id: nodeId, pagePath: current.pagePath, format };
+  }
   const meta = current.nodes.find((candidate) => candidate.id === nodeId);
   if (!meta || meta.kind !== "text" || !meta.textEditable || !isBlockTag(meta.tag)) {
     throw new Error(`Unknown or non-block-formatting Xyle node ${nodeId}`);
   }
-  const isListFormat = format === "unordered-list" || format === "ordered-list";
-  if (meta.segmentCount !== 1 && !isListFormat) {
+  if (meta.segmentCount !== 1) {
     throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
   }
   const element = currentNodeElement(nodeId);
@@ -4689,6 +5078,8 @@ function discardAll(): void {
   originalMarkups.clear();
   originalFormats.clear();
   originalBlockTags.clear();
+  originalListStates.clear();
+  pendingRevisions.clear();
 }
 
 async function exitEditor(): Promise<void> {
@@ -4816,6 +5207,8 @@ function opLabel(op: Op): string {
       return "Formatting";
     case "formatBlock":
       return isListTag(op.value) ? "List style" : "Heading level";
+    case "toggleList":
+      return "List formatting";
     case "html":
       return "Formatting";
     case "media":
@@ -4837,6 +5230,9 @@ function originalValue(pagePath: string, op: Op): string {
   if (op.type === "formatBlock") {
     const original = originalBlockTags.get(segmentIdentity(pagePath, op.nodeId));
     return original ? blockFormattingFor(original) : "paragraph";
+  }
+  if (op.type === "toggleList") {
+    return op.before === "plain" ? "paragraphs" : op.before;
   }
   if (op.type === "html") {
     return originalMarkups.get(segmentIdentity(pagePath, op.nodeId)) ?? "";
@@ -5085,9 +5481,13 @@ function openChangesDrawer(): void {
           ? imageStyleDescription(entry.op)
           : entry.op.type === "media"
             ? mediaStateDescription(entry.op.value)
-            : entry.op.type === "seo"
-              ? entry.op.value
-              : entry.op.value.trim();
+            : entry.op.type === "toggleList"
+              ? entry.op.after === "plain"
+                ? "paragraphs"
+                : entry.op.after
+              : entry.op.type === "seo"
+                ? entry.op.value
+                : entry.op.value.trim();
       const diff = changeParts(beforeValue, afterValue);
       appendChangeValue(comparison, "Before", beforeValue, diff.before);
       const arrow = document.createElement("span");
@@ -5152,6 +5552,10 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) applyBlockFormatToDom(pagePath, op);
     return;
   }
+  if (op.type === "toggleList") {
+    applyToggleListToDom(pagePath, op, op.after);
+    return;
+  }
   const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
   if (!el) return;
   const asset = state.assets.get(op.value);
@@ -5188,6 +5592,8 @@ function revertOpInDom(pagePath: string, op: Op): void {
     }
   } else if (op.type === "formatBlock") {
     restoreOriginalBlockFormat(pagePath, op.nodeId);
+  } else if (op.type === "toggleList") {
+    applyToggleListToDom(pagePath, op, op.before);
   } else if (op.type === "html") {
     restoreOriginalMarkup(pagePath, op.nodeId);
   } else if (op.type === "imageStyle") {
@@ -5221,6 +5627,10 @@ const originalSeo = new Map<string, string>();
 const originalMarkups = new Map<string, string>();
 const originalFormats = new Map<string, "bold" | "italic" | "underline" | "none">();
 const originalBlockTags = new Map<string, BlockTag>();
+const originalListStates = new Map<string, "plain" | "ul" | "ol">();
+const pendingRevisions = new Map<string, number>();
+const opRevisions = new WeakMap<object, number>();
+let nextOpRevision = 0;
 
 function segmentIdentity(pagePath: string, id: string): string {
   return `${pagePath}@${id}`;
@@ -5344,6 +5754,120 @@ function applyBlockFormatToDom(pagePath: string, op: Extract<Op, { type: "format
   const el = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${op.nodeId}"]`);
   if (el) replaceBlockElement(el, op.value);
 }
+function copyElementAttributes(from: Element, to: Element, omit = "data-xyle-node"): void {
+  for (const attribute of Array.from(from.attributes)) {
+    if (attribute.name !== omit) to.setAttribute(attribute.name, attribute.value);
+  }
+}
+
+function wireListElement(element: HTMLElement, nodeId: string): void {
+  const meta = state.current?.nodes.find((candidate) => candidate.id === nodeId);
+  if (meta) wireCandidate(element, meta);
+}
+
+function createListElement(doc: Document, tag: "ul" | "ol", items: HTMLElement[]): HTMLElement {
+  const list = doc.createElement(tag);
+  for (const item of items) list.append(item);
+  return list;
+}
+
+function mergeAdjacentLists(list: HTMLElement): HTMLElement {
+  let merged = list;
+  const previous = merged.previousElementSibling;
+  if (previous instanceof HTMLElement && previous.tagName === merged.tagName) {
+    while (merged.firstChild) previous.append(merged.firstChild);
+    merged.remove();
+    merged = previous;
+  }
+  const next = merged.nextElementSibling;
+  if (next instanceof HTMLElement && next.tagName === merged.tagName) {
+    while (next.firstChild) merged.append(next.firstChild);
+    next.remove();
+  }
+  return merged;
+}
+
+function applyToggleListToDom(
+  pagePath: string,
+  op: Extract<Op, { type: "toggleList" }>,
+  target: "plain" | "ul" | "ol",
+): void {
+  if (pagePath !== state.current?.pagePath) return;
+  const doc = previewDoc();
+  if (!doc) return;
+  const elements = op.nodeIds.map((nodeId) =>
+    doc.querySelector<HTMLElement>(`[data-xyle-node="${nodeId}"]`),
+  );
+  const parent = elements[0]?.parentElement;
+  if (!parent || elements.some((element) => !element || element.parentElement !== parent)) {
+    throw new Error("List blocks must be siblings");
+  }
+  const resolved = elements as HTMLElement[];
+  const firstTag = resolved[0]!.tagName.toLowerCase();
+  const currentList = firstTag === "li" ? parent : null;
+  if (currentList && !isListTag(currentList.tagName.toLowerCase())) {
+    throw new Error("List items must belong to a flat list");
+  }
+  if (!currentList) {
+    if (target === "plain") return;
+    const list = doc.createElement(target);
+    parent.insertBefore(list, resolved[0]!);
+    for (const [index, element] of resolved.entries()) {
+      const item = doc.createElement("li");
+      copyElementAttributes(element, item);
+      item.dataset.xyleNode = op.nodeIds[index]!;
+      while (element.firstChild) item.append(element.firstChild);
+      list.append(item);
+      element.remove();
+      wireListElement(item, op.nodeIds[index]!);
+    }
+    mergeAdjacentLists(list);
+    refreshMarkers();
+    return;
+  }
+  const listParent = currentList.parentElement;
+  if (!listParent) throw new Error("List has no parent container");
+  const allItems = [...currentList.children].filter(
+    (child): child is HTMLElement => child.tagName.toLowerCase() === "li",
+  );
+  const selectedIndexes = resolved.map((element) => allItems.indexOf(element));
+  if (
+    selectedIndexes.some((index) => index < 0) ||
+    selectedIndexes.some(
+      (index, indexInSelection) => index !== selectedIndexes[0]! + indexInSelection,
+    )
+  ) {
+    throw new Error("List blocks must be contiguous siblings");
+  }
+  const start = selectedIndexes[0]!;
+  const end = selectedIndexes.at(-1)! + 1;
+  const beforeItems = allItems.slice(0, start);
+  const selectedItems = allItems.slice(start, end);
+  const afterItems = allItems.slice(end);
+  const pieces: HTMLElement[] = [];
+  if (beforeItems.length)
+    pieces.push(createListElement(doc, op.before as "ul" | "ol", beforeItems));
+  if (target === "plain") {
+    for (const item of selectedItems) {
+      const block = doc.createElement("p");
+      copyElementAttributes(item, block);
+      block.dataset.xyleNode = item.dataset.xyleNode ?? "";
+      while (item.firstChild) block.append(item.firstChild);
+      pieces.push(block);
+      wireListElement(block, block.dataset.xyleNode);
+    }
+  } else {
+    pieces.push(createListElement(doc, target, selectedItems));
+  }
+  if (afterItems.length) pieces.push(createListElement(doc, op.before as "ul" | "ol", afterItems));
+  for (const piece of pieces) listParent.insertBefore(piece, currentList);
+  currentList.remove();
+  for (const item of listParent.querySelectorAll<HTMLElement>("li[data-xyle-node]")) {
+    wireListElement(item, item.dataset.xyleNode!);
+  }
+  refreshMarkers();
+}
+
 function restoreOriginalBlockFormat(pagePath: string, nodeId: string): void {
   if (pagePath !== state.current?.pagePath) return;
   const tag = originalBlockTags.get(segmentIdentity(pagePath, nodeId));
@@ -5443,6 +5967,8 @@ function restoreOpsIntoDom(): void {
       if (el) applyFormatOperationToElement(el, op);
     } else if (op.type === "formatBlock") {
       applyBlockFormatToDom(pagePath, op);
+    } else if (op.type === "toggleList") {
+      applyToggleListToDom(pagePath, op, op.after);
     } else if (op.type === "html") {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) replaceElementContentsFromHtml(el, op.value);
@@ -5553,6 +6079,8 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     originalMarkups.clear();
     originalFormats.clear();
     originalBlockTags.clear();
+    originalListStates.clear();
+    pendingRevisions.clear();
     selectedImage = null;
     label.textContent = "Published ✓";
     flash("Published.");

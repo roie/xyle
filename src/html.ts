@@ -138,6 +138,11 @@ interface Candidate {
   id: string;
   kind: PreviewNode["kind"];
   tag: string;
+  parentStart?: number;
+  parentEnd?: number;
+  parentTag?: string;
+  parentStartTagEnd?: number;
+  parentEndTagStart?: number;
   startTagStart: number;
   startTagEnd: number;
   contentStart?: number;
@@ -156,6 +161,24 @@ interface Candidate {
   mediaCapabilities?: import("./types.ts").MediaCapabilities;
 }
 
+function parentRange(
+  parent: P5Element | null,
+): Pick<
+  Candidate,
+  "parentStart" | "parentEnd" | "parentTag" | "parentStartTagEnd" | "parentEndTagStart"
+> {
+  const location = parent?.sourceCodeLocation;
+  if (!location || location.startOffset === undefined || location.endOffset === undefined)
+    return {};
+  return {
+    parentStart: location.startOffset,
+    parentEnd: location.endOffset,
+    parentTag: parent.tagName,
+    ...(location.startTag ? { parentStartTagEnd: location.startTag.endOffset } : {}),
+    ...(location.endTag ? { parentEndTagStart: location.endTag.startOffset } : {}),
+  };
+}
+
 export interface PageAnalysis {
   candidates: Map<string, Candidate>;
   injections: { offset: number; text: string }[];
@@ -170,6 +193,19 @@ function isElement(node: P5Node): node is P5Element {
     node.nodeName !== "#documentType" &&
     node.nodeName !== "#document"
   );
+}
+
+function elementAtSourceRange(root: P5Node, start: number, end: number): P5Element | null {
+  if (isElement(root)) {
+    const location = root.sourceCodeLocation;
+    if (location?.startOffset === start && location.endOffset === end) return root;
+  }
+  const children = "childNodes" in root ? root.childNodes : [];
+  for (const child of children) {
+    const found = elementAtSourceRange(child, start, end);
+    if (found) return found;
+  }
+  return null;
 }
 
 function attrValue(el: P5Element, name: string): string | null {
@@ -363,6 +399,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
     insidePicture: boolean,
     insideTextContainer: boolean,
     insideIgnored: boolean,
+    parent: P5Element | null,
   ): void => {
     if (!isElement(node)) return;
 
@@ -403,6 +440,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
         candidates.set(id, {
           id,
           kind: "image",
+          ...parentRange(parent),
           mediaCapabilities: {
             replace: !responsive,
             alt: true,
@@ -440,6 +478,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
         candidates.set(id, {
           id,
           kind: "link",
+          ...parentRange(parent),
           tag,
           startTagStart: loc.startTag!.startOffset,
           startTagEnd: loc.startTag!.endOffset,
@@ -474,6 +513,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
         candidates.set(id, {
           id,
           kind: "text",
+          ...parentRange(parent),
           tag,
           startTagStart: loc.startTag!.startOffset,
           startTagEnd: loc.startTag!.endOffset,
@@ -525,13 +565,14 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
         insidePicture || tag === "picture",
         insideTextContainer || suppressesChildren,
         ignored,
+        node,
       );
     }
   };
 
   const htmlEl = doc.childNodes.find((n) => isElement(n) && n.tagName === "html");
   const roots = htmlEl && isElement(htmlEl) ? htmlEl.childNodes : doc.childNodes;
-  for (const child of roots) visit(child, false, false, false);
+  for (const child of roots) visit(child, false, false, false, null);
 
   return { candidates, injections, removals, baseTagNeeded };
 }
@@ -747,6 +788,7 @@ export async function patchHtml(
   }
   const encoder = new TextEncoder();
   const analysis = analyzePage(sourceText, options.ignoreSelectors ?? []);
+  const sourceDocument = parse(sourceText, { sourceCodeLocationInfo: true }) as P5Document;
   const seoAnalysis = findSeoTargets(sourceText);
 
   /** key: `${nodeId}#${segmentIndex}` -> pending text/lineBreak intent */
@@ -768,6 +810,7 @@ export async function patchHtml(
   }[] = [];
   const mediaOps: { candidate: Candidate; op: PageOperation & { type: "media" } }[] = [];
   const seoOps: (PageOperation & { type: "seo" })[] = [];
+  const patches: SourcePatch[] = [];
   const htmlTargets = new Set(
     change.operations
       .filter((op): op is PageOperation & { type: "html" } => op.type === "html")
@@ -968,6 +1011,253 @@ export async function patchHtml(
         formatBlockOps.push({ candidate, op });
         break;
       }
+      case "toggleList": {
+        if (
+          !Array.isArray(op.nodeIds) ||
+          op.nodeIds.length < 1 ||
+          op.nodeIds.length > 20 ||
+          new Set(op.nodeIds).size !== op.nodeIds.length ||
+          !isListTag(op.value) ||
+          !["plain", "ul", "ol"].includes(op.before) ||
+          !["plain", "ul", "ol"].includes(op.after)
+        ) {
+          throw new Error("invalid list toggle");
+        }
+        const selected = op.nodeIds.map((nodeId) => analysis.candidates.get(nodeId));
+        if (
+          selected.some(
+            (candidate) =>
+              !candidate ||
+              candidate.kind !== "text" ||
+              !candidate.textEditable ||
+              candidate.segments.length === 0 ||
+              candidate.contentStart === undefined ||
+              candidate.contentEnd === undefined ||
+              candidate.elementEnd === undefined,
+          )
+        ) {
+          throw new Error("list selection contains an unsafe text block");
+        }
+        // Normalize API input to source order, but keep mixed p/li selections rejected:
+        // the existing toggleList schema cannot describe their original wrappers for undo.
+        const resolved = (selected as Candidate[]).sort(
+          (left, right) => left.startTagStart - right.startTagStart,
+        );
+        const selectedIsList = resolved.map((candidate) => candidate.tag === "li");
+        const allList = selectedIsList.every(Boolean);
+        const allPlain = selectedIsList.every((value) => !value);
+        if (!allList && !allPlain)
+          throw new Error("list selection cannot mix list items and plain blocks");
+        const parentStart = resolved[0]!.parentStart;
+        const parentEnd = resolved[0]!.parentEnd;
+        const parentTag = resolved[0]!.parentTag;
+        if (
+          parentStart === undefined ||
+          parentEnd === undefined ||
+          resolved.some(
+            (candidate) =>
+              candidate.parentStart !== parentStart ||
+              candidate.parentEnd !== parentEnd ||
+              candidate.parentTag !== parentTag,
+          )
+        ) {
+          throw new Error("list blocks must share one parent");
+        }
+        if (!parentTag || (allList && !isListTag(parentTag))) {
+          throw new Error("list items must belong to a flat list");
+        }
+        if (allPlain && resolved.some((candidate) => candidate.tag !== "p")) {
+          throw new Error("only paragraphs can become list items");
+        }
+        for (let index = 1; index < resolved.length; index += 1) {
+          if (resolved[index - 1]!.startTagStart >= resolved[index]!.startTagStart) {
+            throw new Error("list blocks must be in document order");
+          }
+        }
+        const siblingCandidates = [...analysis.candidates.values()]
+          .filter(
+            (candidate) =>
+              candidate.kind === "text" &&
+              candidate.segments.length > 0 &&
+              candidate.parentStart === parentStart &&
+              candidate.parentEnd === parentEnd &&
+              (allList ? candidate.tag === "li" : isTextBlockTag(candidate.tag)),
+          )
+          .sort((left, right) => left.startTagStart - right.startTagStart);
+        const indexes = resolved.map((candidate) => siblingCandidates.indexOf(candidate));
+        if (
+          indexes.some((index) => index < 0) ||
+          indexes.some((index, position) => index !== indexes[0]! + position)
+        ) {
+          throw new Error("list blocks must be contiguous siblings");
+        }
+        const actualBefore: "plain" | "ul" | "ol" = allList ? (parentTag as "ul" | "ol") : "plain";
+        if (op.before !== actualBefore) throw new Error("list state changed before this edit");
+        const listStart = resolved[0]!.parentStartTagEnd;
+        const listEnd = resolved[0]!.parentEndTagStart;
+        if (allList && (listStart === undefined || listEnd === undefined)) {
+          throw new Error("list source mapping is ambiguous");
+        }
+        const renderList = (items: Candidate[], tag: "ul" | "ol"): string => {
+          if (items.length === 0) return "";
+          if (allList) {
+            const open = sourceText
+              .slice(parentStart, listStart!)
+              .replace(new RegExp(`^<${parentTag}\\b`, "i"), `<${tag}`);
+            const close = sourceText
+              .slice(listEnd!, parentEnd)
+              .replace(new RegExp(`^</${parentTag}\\s*>$`, "i"), `</${tag}>`);
+            let body = sourceText.slice(listStart!, siblingCandidates[0]!.startTagStart);
+            for (const [index, item] of items.entries()) {
+              if (index > 0) {
+                const previous = items[index - 1]!;
+                body += sourceText.slice(previous.elementEnd!, item.startTagStart);
+              }
+              body += sourceText.slice(item.startTagStart, item.elementEnd!);
+            }
+            return `${open}${body}${close}`;
+          }
+          let result = `<${tag}>`;
+          for (const [index, item] of items.entries()) {
+            if (index > 0) {
+              const previous = items[index - 1]!;
+              result += sourceText.slice(previous.elementEnd!, item.startTagStart);
+            }
+            const attrs = sourceText.slice(
+              item.startTagStart + 1 + item.tag.length,
+              item.startTagEnd - 1,
+            );
+            result += `<li${attrs}>${sourceText.slice(item.contentStart!, item.contentEnd!)}</li>`;
+          }
+          return `${result}</${tag}>`;
+        };
+        const renderPlain = (items: Candidate[]): string =>
+          items
+            .map((item) => {
+              const attrs = sourceText.slice(
+                item.startTagStart + 1 + item.tag.length,
+                item.startTagEnd - 1,
+              );
+              return `<p${attrs}>${sourceText.slice(item.contentStart!, item.contentEnd!)}</p>`;
+            })
+            .join("\n");
+        const listItemsFor = (list: P5Element): Candidate[] =>
+          [...analysis.candidates.values()]
+            .filter(
+              (candidate) =>
+                candidate.tag === "li" &&
+                candidate.parentStart === list.sourceCodeLocation?.startOffset &&
+                candidate.parentEnd === list.sourceCodeLocation?.endOffset,
+            )
+            .sort((left, right) => left.startTagStart - right.startTagStart);
+        const renderMergedList = (list: P5Element, items: Candidate[]): string => {
+          const location = list.sourceCodeLocation;
+          if (!location?.startTag || !location.endTag)
+            throw new Error("list source mapping is ambiguous");
+          const opening = sourceText.slice(location.startOffset, location.startTag.endOffset);
+          const closing = sourceText.slice(location.endTag.startOffset, location.endOffset);
+          const rendered = items.map((item) => {
+            if (item.tag === "li") return sourceText.slice(item.startTagStart, item.elementEnd!);
+            const attrs = sourceText.slice(
+              item.startTagStart + 1 + item.tag.length,
+              item.startTagEnd - 1,
+            );
+            return `<li${attrs}>${sourceText.slice(item.contentStart!, item.contentEnd!)}</li>`;
+          });
+          return `${opening}${rendered.join("\n")}${closing}`;
+        };
+        const sourceParent =
+          parentStart !== undefined && parentEnd !== undefined
+            ? elementAtSourceRange(sourceDocument, parentStart, parentEnd)
+            : null;
+        const directChildren = sourceParent?.childNodes.filter(isElement) ?? [];
+        const directIndexes = resolved.map((candidate) =>
+          directChildren.findIndex(
+            (child) => child.sourceCodeLocation?.startOffset === candidate.startTagStart,
+          ),
+        );
+        const firstIndex = indexes[0]!;
+        const lastIndex = indexes.at(-1)! + 1;
+        const beforeItems = siblingCandidates.slice(0, firstIndex);
+        const selectedItems = siblingCandidates.slice(firstIndex, lastIndex);
+        const afterItems = siblingCandidates.slice(lastIndex);
+        let replacement: string;
+        let replacementStart = allList ? parentStart : resolved[0]!.startTagStart;
+        let replacementEnd = allList ? parentEnd : resolved.at(-1)!.elementEnd!;
+        if (allPlain) {
+          const directSelection =
+            directIndexes.length === resolved.length &&
+            directIndexes.every((index) => index >= 0) &&
+            directIndexes.every(
+              (index, position) => position === 0 || index === directIndexes[position - 1]! + 1,
+            );
+          const previousChild = directSelection ? directChildren[directIndexes[0]! - 1] : undefined;
+          const nextChild = directSelection ? directChildren[directIndexes.at(-1)! + 1] : undefined;
+          const isMergeableList = (child: P5Element | undefined): boolean => {
+            if (!child || child.tagName !== op.after) return false;
+            const children = child.childNodes.filter(isElement);
+            return children.length > 0 && children.every((item) => item.tagName === "li");
+          };
+          const previousList = isMergeableList(previousChild) ? previousChild : null;
+          const nextList = isMergeableList(nextChild) ? nextChild : null;
+          const template = previousList ?? nextList;
+          const templateLocation = template?.sourceCodeLocation;
+          const templateOpening =
+            template && templateLocation?.startTag
+              ? sourceText.slice(templateLocation.startOffset, templateLocation.startTag.endOffset)
+              : null;
+          const sameOpening = (list: P5Element | null | undefined): boolean => {
+            const location = list?.sourceCodeLocation;
+            return !!(
+              list &&
+              location?.startTag &&
+              templateOpening ===
+                sourceText.slice(location.startOffset, location.startTag.endOffset)
+            );
+          };
+          const mergePrevious = sameOpening(previousList) ? previousList : null;
+          const mergeNext = sameOpening(nextList) ? nextList : null;
+          if (template && (mergePrevious || mergeNext)) {
+            const mergedItems = [
+              ...(mergePrevious ? listItemsFor(mergePrevious) : []),
+              ...selectedItems,
+              ...(mergeNext ? listItemsFor(mergeNext) : []),
+            ].sort((left, right) => left.startTagStart - right.startTagStart);
+            replacement = renderMergedList(template, mergedItems);
+            replacementStart =
+              mergePrevious?.sourceCodeLocation?.startOffset ?? resolved[0]!.startTagStart;
+            replacementEnd =
+              mergeNext?.sourceCodeLocation?.endOffset ?? resolved.at(-1)!.elementEnd!;
+          } else {
+            replacement = renderList(selectedItems, op.after as "ul" | "ol");
+          }
+        } else if (op.after === "plain") {
+          replacement = [
+            renderList(beforeItems, actualBefore as "ul" | "ol"),
+            renderPlain(selectedItems),
+            renderList(afterItems, actualBefore as "ul" | "ol"),
+          ]
+            .filter(Boolean)
+            .join("\n");
+        } else {
+          replacement = [
+            renderList(beforeItems, actualBefore as "ul" | "ol"),
+            renderList(selectedItems, op.after),
+            renderList(afterItems, actualBefore as "ul" | "ol"),
+          ]
+            .filter(Boolean)
+            .join("\n");
+        }
+        if (allList && selectedItems.length === siblingCandidates.length && op.after !== "plain") {
+          replacement = renderList(selectedItems, op.after);
+        }
+        patches.push({
+          start: replacementStart,
+          end: replacementEnd,
+          replacement,
+        });
+        break;
+      }
       case "lineBreak": {
         const ref = parseSegmentRef(op.nodeId);
         const candidate = analysis.candidates.get(ref.nodeId);
@@ -1011,7 +1301,6 @@ export async function patchHtml(
     }
   }
 
-  const patches: SourcePatch[] = [];
   for (const { candidate, op } of htmlOps) {
     if (htmlOps.filter((item) => item.candidate.id === candidate.id).length > 1) {
       throw new Error(`duplicate html op on ${candidate.id}`);
@@ -1242,7 +1531,6 @@ export async function patchHtml(
       });
     }
   }
-
   for (const { candidate, op } of attrOps) {
     const escaped = `${op.type}="${escapeHtmlAttr(op.value)}"`;
     const attr = candidate.attrs.get(op.type);

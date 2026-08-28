@@ -195,6 +195,136 @@ describe("preparePreview source locations", () => {
     ).rejects.toThrow(/unsafe SEO URL/);
   });
 
+  it("groups contiguous sibling text blocks into one list", async () => {
+    const source = `<section><p class="lead">One</p>\n<p>Two</p>\n<p>Three</p></section>`;
+    const blocks = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.kind === "text",
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "toggleList",
+          nodeIds: blocks.map((block) => block.id),
+          value: "ul",
+          before: "plain",
+          after: "ul",
+        },
+      ]),
+    ).resolves.toBe(
+      `<section><ul><li class="lead">One</li>\n<li>Two</li>\n<li>Three</li></ul></section>`,
+    );
+  });
+
+  it("merges same-tag adjacent lists around selected paragraphs", async () => {
+    const source =
+      `<div><ul class="items"><li>Before</li></ul>\n` +
+      `<p class="selected">One</p>\n<p>Two</p>\n` +
+      `<ul class="items"><li>After</li></ul></div>`;
+    const candidates = [...analyzePage(source).candidates.values()];
+    const paragraphs = candidates.filter((candidate) => candidate.tag === "p");
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "toggleList",
+          nodeIds: paragraphs.map((paragraph) => paragraph.id).reverse(),
+          value: "ul",
+          before: "plain",
+          after: "ul",
+        },
+      ]),
+    ).resolves.toBe(
+      `<div><ul class="items"><li>Before</li>\n<li class="selected">One</li>\n<li>Two</li>\n<li>After</li></ul></div>`,
+    );
+  });
+
+  it("rejects mixed list and plain selections when undo cannot preserve wrappers", async () => {
+    const source = `<div><p>One</p>\n<ul><li>Two</li></ul></div>`;
+    const candidates = [...analyzePage(source).candidates.values()];
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "toggleList",
+          nodeIds: candidates.map((candidate) => candidate.id),
+          value: "ol",
+          before: "plain",
+          after: "ol",
+        },
+      ]),
+    ).rejects.toThrow(/mix list items and plain blocks/);
+  });
+
+  it("rejects list grouping across different parents", async () => {
+    const source = `<section><p>One</p></section><section><p>Two</p></section>`;
+    const blocks = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.kind === "text",
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "toggleList",
+          nodeIds: blocks.map((block) => block.id),
+          value: "ol",
+          before: "plain",
+          after: "ol",
+        },
+      ]),
+    ).rejects.toThrow(/parent/);
+  });
+
+  it("toggles selected paragraphs into one list while preserving inline markup", async () => {
+    const source = `<div><p>Plumbing <strong>services</strong></p>\n<p>Heating <em>services</em></p>\n<p>Drain <a href="/contact.html">cleaning</a></p></div>`;
+    const blocks = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.kind === "text",
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "toggleList",
+          nodeIds: blocks.map((block) => block.id),
+          value: "ul",
+          before: "plain",
+          after: "ul",
+        },
+      ]),
+    ).resolves.toBe(
+      `<div><ul><li>Plumbing <strong>services</strong></li>\n<li>Heating <em>services</em></li>\n<li>Drain <a href="/contact.html">cleaning</a></li></ul></div>`,
+    );
+  });
+
+  it("splits a list when selected items are unlisted or changed to another type", async () => {
+    const source = `<div><ul><li>One</li>\n<li>Two</li>\n<li>Three</li>\n<li>Four</li></ul></div>`;
+    const items = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.kind === "text" && candidate.tag === "li",
+    );
+    const selected = items.slice(1, 3).map((item) => item.id);
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "toggleList",
+          nodeIds: selected,
+          value: "ol",
+          before: "ul",
+          after: "ol",
+        },
+      ]),
+    ).resolves.toContain(
+      `<div><ul><li>One</li></ul>\n<ol><li>Two</li>\n<li>Three</li></ol>\n<ul><li>Four</li></ul></div>`,
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "toggleList",
+          nodeIds: selected,
+          value: "ul",
+          before: "ul",
+          after: "plain",
+        },
+      ]),
+    ).resolves.toContain(
+      `<div><ul><li>One</li></ul>\n<p>Two</p>\n<p>Three</p>\n<ul><li>Four</li></ul></div>`,
+    );
+  });
+
   it("allows SVG replacement but rejects SVG framing", async () => {
     const source = `<img src="/logo.svg" alt="Logo">`;
     const image = [...analyzePage(source).candidates.values()][0]!;

@@ -652,6 +652,57 @@ test.describe("changes drawer and undo", () => {
     expect(await textOf(page, id!)).toBe(secondEdit);
     expect(await opsCount(page)).toBe(1);
   });
+  test("groups selected sibling blocks from the human editor", async ({ page }) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const firstId = await findNodeByText(page, "The first Riverbend jobs");
+    const secondId = await findNodeByText(page, "We keep appointments realistic");
+    expect(firstId).toBeTruthy();
+    expect(secondId).toBeTruthy();
+    await editNode(page, firstId!);
+    await page.evaluate((id) => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const doc = frame.contentDocument!;
+      const el = doc.querySelector(`[data-xyle-node="${id}"]`)!;
+      const selection = doc.getSelection()!;
+      const range = doc.createRange();
+      range.selectNodeContents(el);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      doc.dispatchEvent(new Event("selectionchange"));
+    }, firstId);
+    const groupButton = page.getByRole("button", { name: "Group blocks into a list" });
+    await expect(groupButton).toBeVisible();
+    await groupButton.click();
+    const dialog = page.locator('dialog[aria-labelledby="xyle-list-dialog-title"]');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Group blocks" }).click();
+    await expect
+      .poll(async () =>
+        page
+          .frameLocator("#xyle-preview")
+          .locator(`[data-xyle-node="${firstId}"]`)
+          .evaluate((element) => element.parentElement?.tagName),
+      )
+      .toBe("UL");
+    await expect
+      .poll(async () =>
+        page
+          .frameLocator("#xyle-preview")
+          .locator(`[data-xyle-node="${secondId}"]`)
+          .evaluate((element) => element.tagName),
+      )
+      .toBe("LI");
+    await expect
+      .poll(async () =>
+        page.evaluate(() =>
+          (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument
+            ?.getSelection()
+            ?.toString(),
+        ),
+      )
+      .toContain("The first Riverbend jobs");
+  });
+
   test("updates SEO metadata from the human editor", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     await page.locator("#xyle-control-hitbox").hover();

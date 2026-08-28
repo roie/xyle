@@ -89,6 +89,13 @@ export type PageOperation =
       sourceEnd?: number;
     }
   | { type: "formatBlock"; nodeId: string; value: BlockFormat }
+  | {
+      type: "toggleList";
+      nodeIds: string[];
+      value: "ul" | "ol";
+      before: "plain" | "ul" | "ol";
+      after: "plain" | "ul" | "ol";
+    }
   | { type: "html"; nodeId: string; value: string }
   | { type: "media"; nodeId: string; value: MediaState }
   | { type: "seo"; nodeId: string; field: SeoField; value: string }

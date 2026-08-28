@@ -599,6 +599,41 @@ test.describe("WebMCP editor tools", () => {
     });
   });
 
+  test("groups contiguous text blocks into one list", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/about.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const blocks = [
+      content.find((item) => item.preview.includes("The first Riverbend jobs")),
+      content.find((item) => item.preview.includes("We keep appointments realistic")),
+    ];
+    expect(blocks.every((block) => block?.type === "text")).toBe(true);
+    const ids = blocks.map((block) => block!.id);
+    await expect(
+      invokeTool(page, "update_list", { ids, format: "unordered-list" }),
+    ).resolves.toMatchObject({ ids, format: "unordered-list", pagePath: "/about.html" });
+    const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${ids[0]}"]`);
+    await expect(first).toHaveJSProperty("tagName", "LI");
+    await expect(first.locator("..")).toHaveJSProperty("tagName", "UL");
+    await expect(first.locator("..").locator(":scope > li")).toHaveCount(2);
+    await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
+      { type: "toggleList", before: "paragraphs", after: "ul" },
+    ]);
+    await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
+      changeId: "change-1",
+      undone: true,
+    });
+    await expect(first).toHaveJSProperty("tagName", "P");
+    expect(await opsCount(page)).toBe(0);
+  });
+
   test("formats a safely mapped text block as a list", async ({ page, browserName }) => {
     test.skip(
       browserName !== "chromium" || test.info().project.name !== "webmcp",
@@ -624,16 +659,23 @@ test.describe("WebMCP editor tools", () => {
         format: "unordered-list",
       }),
     ).resolves.toMatchObject({ id: paragraph!.id, format: "unordered-list" });
-    await expect(paragraphLocator).toHaveJSProperty("tagName", "UL");
-    await expect(paragraphLocator.locator(":scope > li")).toHaveText(paragraph!.preview);
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "LI");
+    await expect(paragraphLocator.locator("..")).toHaveJSProperty("tagName", "UL");
+    await expect(paragraphLocator).toHaveText(paragraph!.preview);
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
-      { type: "formatBlock", before: "paragraph", after: "unordered-list" },
+      { type: "toggleList", before: "paragraphs", after: "ul" },
     ]);
+    await expect(
+      invokeTool(page, "update_formatting", { id: paragraph!.id, format: "unordered-list" }),
+    ).resolves.toMatchObject({ id: paragraph!.id, format: "unordered-list" });
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "P");
+    await expect(invokeTool(page, "list_changes", {})).resolves.toEqual([]);
+    expect(await opsCount(page)).toBe(0);
 
     await expect(
       invokeTool(page, "update_formatting", { id: paragraph!.id, format: "ordered-list" }),
     ).resolves.toMatchObject({ id: paragraph!.id, format: "ordered-list" });
-    await expect(paragraphLocator).toHaveJSProperty("tagName", "OL");
+    await expect(paragraphLocator.locator("..")).toHaveJSProperty("tagName", "OL");
     await expect(invokeTool(page, "undo_change", { changeId: "change-1" })).resolves.toMatchObject({
       changeId: "change-1",
       undone: true,
