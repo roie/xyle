@@ -2,11 +2,13 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { isControlSitePath, isLocalXyleStatePath } from "./control-paths.ts";
 import { computeSnapshotDigest, digestBytes } from "./digest.ts";
-import type { ManifestFile, XyleManifest } from "./types.ts";
+import type { ManifestFile, XyleManagedAssetManifest, XyleManifest } from "./types.ts";
+import { layoutAssetName } from "./layout.ts";
 
 export { computeSnapshotDigest, digestBytes } from "./digest.ts";
 
 const XYLE_MANIFEST_PATH = "/_xyle/manifest.json";
+export const XYLE_MANAGED_ASSET_MANIFEST_PATH = "/__xyle/manifest.json";
 const RESERVED_PREFIXES = ["/edit", "/__xyle/", "/__media/"];
 export const RESERVED_PATHS = ["/edit", XYLE_MANIFEST_PATH, ...RESERVED_PREFIXES];
 
@@ -16,6 +18,10 @@ export function normalizeSitePath(path: string): string {
   if (posix.split("/").includes("..")) throw new Error(`path traversal: ${path}`);
   const segments = posix.split("/").filter((s) => s.length > 0 && s !== ".");
   return `/${segments.join("/")}`;
+}
+
+export function isManagedLayoutAssetPath(sitePath: string): boolean {
+  return layoutAssetName(sitePath);
 }
 
 export function isReservedSitePath(sitePath: string): boolean {
@@ -70,8 +76,8 @@ export async function validateManifest(manifest: unknown): Promise<XyleManifest>
   for (const [path, entry] of Object.entries(candidate.files)) {
     if (
       normalizeSitePath(path) !== path ||
-      isControlSitePath(path) ||
-      (isReservedSitePath(path) && !path.startsWith("/__media/"))
+      (isControlSitePath(path) && !isManagedLayoutAssetPath(path)) ||
+      (isReservedSitePath(path) && !path.startsWith("/__media/") && !isManagedLayoutAssetPath(path))
     ) {
       throw new Error(`untrusted manifest path: ${path}`);
     }
@@ -92,6 +98,45 @@ export async function validateManifest(manifest: unknown): Promise<XyleManifest>
     throw new Error("manifest snapshot digest does not match its files");
   }
   return typed;
+}
+
+export async function validateManagedAssetManifest(
+  value: unknown,
+): Promise<XyleManagedAssetManifest> {
+  if (!value || typeof value !== "object") throw new Error("malformed managed asset manifest");
+  const candidate = value as Partial<XyleManagedAssetManifest>;
+  if (
+    candidate.version !== 1 ||
+    !candidate.assets ||
+    typeof candidate.assets !== "object" ||
+    Array.isArray(candidate.assets)
+  ) {
+    throw new Error("malformed managed asset manifest");
+  }
+  for (const [path, asset] of Object.entries(candidate.assets)) {
+    if (!isManagedLayoutAssetPath(path) || !asset || typeof asset !== "object") {
+      throw new Error("invalid managed asset path");
+    }
+    if (
+      asset.digest !== `sha256:${path.split(".").at(-2)}` ||
+      !Number.isSafeInteger(asset.size) ||
+      asset.size < 0 ||
+      asset.contentType !== "text/css"
+    ) {
+      throw new Error("invalid managed asset entry");
+    }
+  }
+  return candidate as XyleManagedAssetManifest;
+}
+
+async function readManagedAssetManifest(root: string): Promise<XyleManagedAssetManifest | null> {
+  try {
+    const bytes = await readFile(join(root, XYLE_MANAGED_ASSET_MANIFEST_PATH.slice(1)));
+    return await validateManagedAssetManifest(JSON.parse(new TextDecoder().decode(bytes)));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error("site file collides with reserved Xyle path: /__xyle/manifest.json");
+  }
 }
 
 async function walk(dir: string, base: string, out: string[]): Promise<void> {
@@ -138,21 +183,33 @@ export async function scanStaticDirectory(
 ): Promise<{ manifest: XyleManifest; files: Map<string, Uint8Array> }> {
   const relativePaths: string[] = [];
   await walk(root, "", relativePaths);
+  const managedManifest = await readManagedAssetManifest(root);
   const files = new Map<string, Uint8Array>();
   const manifestFiles = Object.create(null) as Record<string, ManifestFile>;
   for (const rel of relativePaths.sort((a, b) => a.localeCompare(b))) {
     const sitePath = normalizeSitePath(rel);
     const bytes = new Uint8Array(await readFile(join(root, rel)));
-    if (sitePath === XYLE_MANIFEST_PATH) {
-      try {
-        await validateManifest(JSON.parse(new TextDecoder().decode(bytes)));
-        continue;
-      } catch {
-        throw new Error(`site file collides with reserved Xyle path: ${sitePath}`);
+    if (sitePath === XYLE_MANIFEST_PATH || sitePath === XYLE_MANAGED_ASSET_MANIFEST_PATH) {
+      if (sitePath === XYLE_MANIFEST_PATH) {
+        try {
+          await validateManifest(JSON.parse(new TextDecoder().decode(bytes)));
+        } catch {
+          throw new Error(`site file collides with reserved Xyle path: ${sitePath}`);
+        }
       }
+      continue;
     }
     const contentType = contentTypeFor(rel.slice(rel.lastIndexOf(".")));
-    if (isReservedSitePath(sitePath)) {
+    if (isManagedLayoutAssetPath(sitePath)) {
+      const expected = managedManifest?.assets[sitePath];
+      if (
+        !expected ||
+        expected.digest !== (await digestBytes(bytes)) ||
+        expected.size !== bytes.byteLength
+      ) {
+        throw new Error(`site file collides with reserved Xyle path: ${sitePath}`);
+      }
+    } else if (isReservedSitePath(sitePath)) {
       const validUpload = sitePath.startsWith("/__media/")
         ? await isValidXyleUploadPath(sitePath, bytes, contentType)
         : false;

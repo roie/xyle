@@ -230,6 +230,8 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
     publicBaseUrl,
     publisher,
     auth,
+    publicAssetRoot: "/",
+    cspKnown: true,
     ignorePaths: state.ignorePaths,
     ignoreSelectors: state.ignoreSelectors,
   };

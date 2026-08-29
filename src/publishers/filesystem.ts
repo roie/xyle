@@ -2,7 +2,13 @@ import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isControlSitePath, isPathInsideRoot } from "../control-paths.ts";
-import { buildManifestFromDirectory, validateManifest } from "../manifest.ts";
+import {
+  buildManifestFromDirectory,
+  isManagedLayoutAssetPath as isManagedManifestAssetPath,
+  validateManagedAssetManifest,
+  validateManifest,
+  XYLE_MANAGED_ASSET_MANIFEST_PATH,
+} from "../manifest.ts";
 import type { PublishResult, PublishSnapshot, PublishedSnapshot, Publisher } from "../types.ts";
 
 export const MANIFEST_PATH = "/_xyle/manifest.json";
@@ -20,7 +26,12 @@ export class StaleSnapshotError extends Error {
 }
 
 function assertInsideRoot(root: string, sitePath: string): string {
-  if (isControlSitePath(sitePath) || sitePath === MANIFEST_PATH) {
+  if (
+    (isControlSitePath(sitePath) &&
+      !isManagedManifestAssetPath(sitePath) &&
+      sitePath !== XYLE_MANAGED_ASSET_MANIFEST_PATH) ||
+    sitePath === MANIFEST_PATH
+  ) {
     throw new Error(`Xyle control path cannot be published: ${sitePath}`);
   }
   const target = resolve(root, `.${sitePath}`);
@@ -87,9 +98,26 @@ export class FilesystemPublisher implements Publisher {
     const current = await this.readSnapshot();
     if (current.snapshotDigest !== next.baseSnapshotDigest)
       throw new StaleSnapshotError(current.snapshotDigest, next.baseSnapshotDigest);
-    const allFiles = [...next.changedFiles, ...next.addedFiles];
+    const allFiles = [...next.changedFiles, ...next.addedFiles, ...(next.managedFiles ?? [])];
     for (const file of allFiles) {
       assertInsideRoot(this.rootAbs, file.path);
+      if (file.path === XYLE_MANAGED_ASSET_MANIFEST_PATH) {
+        try {
+          await validateManagedAssetManifest(JSON.parse(new TextDecoder().decode(file.bytes)));
+        } catch {
+          throw new Error("malformed managed Layout asset manifest");
+        }
+        continue;
+      }
+      if (isManagedManifestAssetPath(file.path)) {
+        if (
+          file.contentType !== "text/css" ||
+          next.manifest.files[file.path]?.digest !== file.digest
+        ) {
+          throw new Error(`invalid managed Layout asset: ${file.path}`);
+        }
+        continue;
+      }
       if (file.path.startsWith("/__media/")) {
         const extension = (
           {
@@ -113,6 +141,13 @@ export class FilesystemPublisher implements Publisher {
         throw new Error(`publish file does not match manifest: ${file.path}`);
       }
     }
+    const removedFiles = next.removedFiles ?? [];
+    for (const path of removedFiles) {
+      if (path !== XYLE_MANAGED_ASSET_MANIFEST_PATH && !isManagedManifestAssetPath(path)) {
+        throw new Error(`invalid removed Xyle asset: ${path}`);
+      }
+      assertInsideRoot(this.rootAbs, path);
+    }
     const backups = new Map<string, Uint8Array | null>();
     const tempPaths: string[] = [];
     try {
@@ -130,6 +165,12 @@ export class FilesystemPublisher implements Publisher {
         const finalPath = assertInsideRoot(this.rootAbs, file.path);
         backups.set(file.path, await readIfExists(finalPath));
         await rename(tempPath, finalPath);
+      }
+      for (const path of removedFiles) {
+        if (backups.has(path)) continue;
+        const finalPath = assertInsideRoot(this.rootAbs, path);
+        backups.set(path, await readIfExists(finalPath));
+        await rm(finalPath, { force: true });
       }
       const manifestBytes = new TextEncoder().encode(JSON.stringify(next.manifest, null, 2));
       const manifestFinal = join(this.rootAbs, MANIFEST_PATH);

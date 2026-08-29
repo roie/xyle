@@ -82,6 +82,9 @@ export interface GroupMoveCapability {
   reason?: string;
 }
 
+export type LayoutPreset = "stacked" | "two-column";
+export type RegionOrder = "original" | "swapped";
+
 export type PageOperation =
   | { type: "text"; nodeId: string; value: string }
   | {
@@ -119,7 +122,9 @@ export type PageOperation =
     }
   | DuplicateSectionOperation
   | DuplicateGroupItemOperation
-  | MoveGroupItemOperation;
+  | MoveGroupItemOperation
+  | SetLayoutPresetOperation
+  | SetRegionOrderOperation;
 
 export interface DuplicateSectionOperation {
   type: "duplicateSection";
@@ -166,6 +171,26 @@ export interface MoveGroupItemOperation {
   itemSignature: string;
 }
 
+export interface SetLayoutPresetOperation {
+  type: "setLayoutPreset";
+  nodeId: string;
+  preset: LayoutPreset;
+  baseline: LayoutPreset;
+  targetSignature: string;
+  regionSignatures: [string, string];
+}
+
+export interface SetRegionOrderOperation {
+  type: "setRegionOrder";
+  targetId: string;
+  firstRegionId: string;
+  secondRegionId: string;
+  order: RegionOrder;
+  targetSignature: string;
+  regionSignatures: [string, string];
+  sequence: number;
+}
+
 export type SnapshotOperation = Exclude<
   PageOperation,
   DuplicateSectionOperation | DuplicateGroupItemOperation | MoveGroupItemOperation
@@ -194,11 +219,18 @@ export interface PublishedSnapshot {
   manifest: XyleManifest;
 }
 
+export interface XyleManagedAssetManifest {
+  version: 1;
+  assets: Record<string, { digest: XyleDigest; size: number; contentType: string }>;
+}
+
 export interface PublishSnapshot {
   baseSnapshotDigest: XyleDigest;
   manifest: XyleManifest;
   changedFiles: SiteFile[];
   addedFiles: SiteFile[];
+  managedFiles?: SiteFile[];
+  removedFiles?: string[];
 }
 
 export interface PublishResult {
@@ -272,6 +304,21 @@ export interface GroupDescriptor {
   move?: GroupMoveCapability;
 }
 
+export interface LayoutRegionDescriptor {
+  id: string;
+  sourceStart: number;
+  sourceEnd: number;
+  signature: string;
+}
+
+export interface LayoutTargetDescriptor {
+  id: string;
+  signature: string;
+  regions: [LayoutRegionDescriptor, LayoutRegionDescriptor];
+  baseline: LayoutPreset;
+  managedPreset?: LayoutPreset;
+}
+
 export interface PreviewNode {
   id: string;
   pagePath: string;
@@ -293,6 +340,7 @@ export interface PreparedPreview {
   html: string;
   nodes: Map<string, PreviewNode>;
   groups: GroupDescriptor[];
+  layouts: LayoutTargetDescriptor[];
 }
 
 export interface AuthConfig {

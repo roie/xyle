@@ -5,12 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Group layout capabilities</title>
     <style>
-      .cards { gap: 12px; margin: 12px 0; }
-      .flex-cards { display: flex; flex-direction: row; flex-wrap: nowrap; }
-      .grid-cards { display: grid; grid-template-columns: repeat(2, 1fr); }
-      .reverse-cards { display: flex; flex-direction: row-reverse; }
-      .explicit-cards { display: grid; grid-template-columns: repeat(2, 1fr); }
-      .explicit-cards article { grid-column: 1; }
+      .cards {
+        gap: 12px;
+        margin: 12px 0;
+      }
+      .flex-cards {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: nowrap;
+      }
+      .grid-cards {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .reverse-cards {
+        display: flex;
+        flex-direction: row-reverse;
+      }
+      .explicit-cards {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .explicit-cards article {
+        grid-column: 1;
+      }
     </style>
   </head>
   <body>
@@ -18,36 +36,66 @@
       <section>
         <h1>Block</h1>
         <div class="cards">
-          <article><h2>Block A</h2><p>First block item.</p></article>
-          <article><h2>Block B</h2><p>Second block item.</p></article>
+          <article>
+            <h2>Block A</h2>
+            <p>First block item.</p>
+          </article>
+          <article>
+            <h2>Block B</h2>
+            <p>Second block item.</p>
+          </article>
         </div>
       </section>
       <section>
         <h1>Flex</h1>
         <div class="flex-cards">
-          <article><h2>Flex A</h2><p>First flex item.</p></article>
-          <article><h2>Flex B</h2><p>Second flex item.</p></article>
+          <article>
+            <h2>Flex A</h2>
+            <p>First flex item.</p>
+          </article>
+          <article>
+            <h2>Flex B</h2>
+            <p>Second flex item.</p>
+          </article>
         </div>
       </section>
       <section>
         <h1>Grid</h1>
         <div class="grid-cards">
-          <article><h2>Grid A</h2><p>First grid item.</p></article>
-          <article><h2>Grid B</h2><p>Second grid item.</p></article>
+          <article>
+            <h2>Grid A</h2>
+            <p>First grid item.</p>
+          </article>
+          <article>
+            <h2>Grid B</h2>
+            <p>Second grid item.</p>
+          </article>
         </div>
       </section>
       <section>
         <h1>Reverse</h1>
         <div class="reverse-cards">
-          <article><h2>Reverse A</h2><p>First reverse item.</p></article>
-          <article><h2>Reverse B</h2><p>Second reverse item.</p></article>
+          <article>
+            <h2>Reverse A</h2>
+            <p>First reverse item.</p>
+          </article>
+          <article>
+            <h2>Reverse B</h2>
+            <p>Second reverse item.</p>
+          </article>
         </div>
       </section>
       <section>
         <h1>Explicit grid</h1>
         <div class="explicit-cards">
-          <article><h2>Explicit A</h2><p>First explicit item.</p></article>
-          <article><h2>Explicit B</h2><p>Second explicit item.</p></article>
+          <article>
+            <h2>Explicit A</h2>
+            <p>First explicit item.</p>
+          </article>
+          <article>
+            <h2>Explicit B</h2>
+            <p>Second explicit item.</p>
+          </article>
         </div>
       </section>
     </main>

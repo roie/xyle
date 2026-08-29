@@ -11,10 +11,22 @@ import type {
   SnapshotOperation,
   GroupDescriptor,
   GroupItemDescriptor,
+  LayoutTargetDescriptor,
+  SetLayoutPresetOperation,
+  SetRegionOrderOperation,
 } from "./types.ts";
 import { digestBytes } from "./digest.ts";
 import { sourceTargetIdentity, stableIdentity } from "./identity.ts";
 import { mediaSourcePath, normalizeMediaState } from "./media-state.ts";
+import {
+  LAYOUT_ATTRIBUTE,
+  LAYOUT_RESOURCE_ATTRIBUTE,
+  LAYOUT_RESOURCE_VALUE,
+  LAYOUT_REGION_ATTRIBUTE,
+  layoutAttributeValue,
+  layoutPresetFromAttribute,
+  layoutRegionId,
+} from "./layout.ts";
 import {
   STRUCTURAL_ID_REFERENCE_ATTRIBUTES,
   createdNodeIdentity,
@@ -583,6 +595,65 @@ function rawGroupsForSection(section: GroupElementRecord): RawGroupDescriptor[] 
  * Discover conservative repeating collections from an original source snapshot.
  * The caller must retain these descriptors instead of re-analysing mutated preview HTML.
  */
+export function analyzeLayouts(
+  source: string,
+  analysis: PageAnalysis,
+  groups: GroupDescriptor[],
+): LayoutTargetDescriptor[] {
+  const document = parse(source, { sourceCodeLocationInfo: true }) as P5Document;
+  const targets: LayoutTargetDescriptor[] = [];
+  for (const candidate of analysis.candidates.values()) {
+    if (candidate.kind !== "section" || candidate.elementEnd === undefined) continue;
+    const section = elementAtSourceRange(document, candidate.startTagStart, candidate.elementEnd);
+    if (!section || hasUnsafeStructuralDescendant(section)) continue;
+    const children = elementChildren(section);
+    if (
+      children.length !== 2 ||
+      section.childNodes.some(
+        (child) =>
+          child.nodeName === "#text" && String((child as { value?: string }).value ?? "").trim(),
+      ) ||
+      children.some(
+        (child) =>
+          child.tagName === "section" ||
+          hasUnsafeStructuralDescendant(child) ||
+          !hasGroupContent(child),
+      )
+    ) {
+      continue;
+    }
+    if (
+      groups.some(
+        (group) =>
+          group.sectionStart >= candidate.startTagStart &&
+          group.sectionEnd <= candidate.elementEnd!,
+      )
+    ) {
+      continue;
+    }
+    const regions = children.map((child, index) => {
+      const location = child.sourceCodeLocation!;
+      return {
+        id: layoutRegionId(candidate.id, index as 0 | 1),
+        sourceStart: location.startOffset,
+        sourceEnd: location.endOffset,
+        signature: canonicalGroupSignature(child),
+      };
+    }) as [LayoutTargetDescriptor["regions"][number], LayoutTargetDescriptor["regions"][number]];
+    const managedAttribute = attrValue(section, LAYOUT_ATTRIBUTE);
+    const managedPreset = layoutPresetFromAttribute(managedAttribute);
+    if (managedAttribute !== null && !managedPreset) continue;
+    targets.push({
+      id: candidate.id,
+      signature: canonicalGroupSignature(section),
+      regions,
+      baseline: managedPreset ?? "stacked",
+      ...(managedPreset ? { managedPreset } : {}),
+    });
+  }
+  return targets;
+}
+
 export function analyzeGroups(source: string, pagePath: string): GroupDescriptor[] {
   const document = parse(source, { sourceCodeLocationInfo: true }) as P5Document;
   const sections: GroupElementRecord[] = [];
@@ -942,7 +1013,9 @@ export function preparePreview(
 ): PreparedPreview {
   const analysis = analyzePage(source, ignoreSelectors);
   const groups = analyzeGroups(source, pagePath);
+  const layouts = analyzeLayouts(source, analysis, groups);
   const nodes = new Map<string, PreviewNode>();
+  const previewDocument = parse(source, { sourceCodeLocationInfo: true }) as P5Document;
 
   for (const c of analysis.candidates.values()) {
     const node: PreviewNode &
@@ -988,6 +1061,18 @@ export function preparePreview(
   for (const injection of analysis.injections) {
     patches.push({ start: injection.offset, end: injection.offset, replacement: injection.text });
   }
+  for (const layout of layouts) {
+    for (const region of layout.regions) {
+      const element = elementAtSourceRange(previewDocument, region.sourceStart, region.sourceEnd);
+      const location = element?.sourceCodeLocation;
+      if (!location?.startTag) continue;
+      patches.push({
+        start: location.startTag.endOffset - 1,
+        end: location.startTag.endOffset - 1,
+        replacement: ` ${LAYOUT_REGION_ATTRIBUTE}="${escapeHtmlAttr(region.id)}"`,
+      });
+    }
+  }
   for (const group of groups) {
     patches.push({
       start: group.startTagEnd - 1,
@@ -1023,7 +1108,7 @@ export function preparePreview(
     html = html.slice(0, patch.start) + patch.replacement + html.slice(patch.end);
   }
 
-  return { html, nodes, groups };
+  return { html, nodes, groups, layouts };
 }
 
 function assertFreshSource(bytes: Uint8Array, expected: XyleDigest): Promise<void> {
@@ -1125,6 +1210,16 @@ function remapSnapshotOperation(
   operation: SnapshotOperation,
   sourceToLocalMap: ReadonlyMap<string, string>,
 ): SnapshotOperation {
+  if (operation.type === "setRegionOrder") {
+    const targetId = sourceToLocalMap.get(operation.targetId);
+    if (!targetId) throw new Error("snapshot operation targets an unknown section");
+    return {
+      ...operation,
+      targetId,
+      firstRegionId: layoutRegionId(targetId, 0),
+      secondRegionId: layoutRegionId(targetId, 1),
+    };
+  }
   if (operation.type === "toggleList") {
     return {
       ...operation,
@@ -1222,6 +1317,16 @@ function remapCreatedOperation(
   operation: SnapshotOperation,
   createdToLocalMap: ReadonlyMap<string, string>,
 ): SnapshotOperation {
+  if (operation.type === "setRegionOrder") {
+    const targetId = createdToLocalMap.get(operation.targetId);
+    if (!targetId) throw new Error("created operation targets an unknown section");
+    return {
+      ...operation,
+      targetId,
+      firstRegionId: layoutRegionId(targetId, 0),
+      secondRegionId: layoutRegionId(targetId, 1),
+    };
+  }
   if (operation.type === "toggleList") {
     return {
       ...operation,
@@ -1300,7 +1405,11 @@ function rawOffsetForVisibleText(source: string, offset: number): number | null 
 export async function patchHtml(
   source: Uint8Array,
   change: PageChange,
-  options: { ignoreSelectors?: string[] } = {},
+  options: {
+    ignoreSelectors?: string[];
+    layoutAssetHref?: string;
+    layoutAssetRequired?: boolean;
+  } = {},
 ): Promise<Uint8Array> {
   await assertFreshSource(source, change.baseDigest);
 
@@ -1353,6 +1462,16 @@ export async function patchHtml(
     group: GroupDescriptor;
     item: GroupDescriptor["items"][number];
     op: PageOperation & { type: "moveGroupItem" };
+  }[] = [];
+  const layoutOps: {
+    target: LayoutTargetDescriptor;
+    candidate: Candidate;
+    op: SetLayoutPresetOperation;
+  }[] = [];
+  const regionOrderOps: {
+    target: LayoutTargetDescriptor;
+    candidate: Candidate;
+    op: SetRegionOrderOperation;
   }[] = [];
   const structuralSequences = new Set<number>();
   const seoOps: (PageOperation & { type: "seo" })[] = [];
@@ -1452,6 +1571,61 @@ export async function patchHtml(
           throw new Error(`formatting HTML cannot add a line break to <${candidate.tag}>`);
         }
         htmlOps.push({ candidate, op: { ...op, value } });
+        break;
+      }
+      case "setLayoutPreset": {
+        const target = analyzeLayouts(sourceText, analysis, groups).find(
+          (candidate) => candidate.id === op.nodeId,
+        );
+        const candidate = analysis.candidates.get(op.nodeId);
+        if (
+          !target ||
+          !candidate ||
+          candidate.kind !== "section" ||
+          (op.preset !== "stacked" && op.preset !== "two-column") ||
+          (op.baseline !== "stacked" && op.baseline !== "two-column") ||
+          op.targetSignature !== target.signature ||
+          op.regionSignatures.length !== 2 ||
+          op.regionSignatures.some(
+            (signature, index) => signature !== target.regions[index]!.signature,
+          )
+        ) {
+          throw new Error("invalid Layout target or preset");
+        }
+        if (layoutOps.some(({ candidate: existing }) => existing.id === candidate.id)) {
+          throw new Error(`duplicate Layout operation on ${candidate.id}`);
+        }
+        layoutOps.push({ target, candidate, op });
+        break;
+      }
+      case "setRegionOrder": {
+        const target = analyzeLayouts(sourceText, analysis, groups).find(
+          (candidate) => candidate.id === op.targetId,
+        );
+        const candidate = analysis.candidates.get(op.targetId);
+        if (
+          !target ||
+          !candidate ||
+          candidate.kind !== "section" ||
+          (op.order !== "original" && op.order !== "swapped") ||
+          op.targetSignature !== target.signature ||
+          op.firstRegionId !== target.regions[0]!.id ||
+          op.secondRegionId !== target.regions[1]!.id ||
+          op.regionSignatures.length !== 2 ||
+          op.regionSignatures.some(
+            (signature, index) => signature !== target.regions[index]!.signature,
+          ) ||
+          !Number.isInteger(op.sequence) ||
+          op.sequence < 1 ||
+          structuralSequences.has(op.sequence)
+        ) {
+          throw new Error("invalid region order operation");
+        }
+        if (regionOrderOps.some(({ candidate: existing }) => existing.id === candidate.id)) {
+          throw new Error(`duplicate region order operation on ${candidate.id}`);
+        }
+        regionOrderOps.push({ target, candidate, op });
+        structuralSequences.add(op.sequence);
         break;
       }
       case "sectionVisibility": {
@@ -1664,6 +1838,9 @@ export async function patchHtml(
         );
         ownedNodeIds.add(candidate.id);
         for (const snapshot of op.snapshotOperations) {
+          if (snapshot.type === "setRegionOrder" && !ownedNodeIds.has(snapshot.targetId)) {
+            throw new Error("snapshot operation crosses the duplicated section boundary");
+          }
           if (snapshot.type === "toggleList") {
             if (snapshot.nodeIds.some((id) => !ownedNodeIds.has(id.split("#")[0]!)))
               throw new Error("snapshot operation crosses the duplicated section boundary");
@@ -1692,6 +1869,9 @@ export async function patchHtml(
           throw new Error("duplicate asset reference is not owned by its recipe");
         }
         for (const created of createdOperations) {
+          if (created.type === "setRegionOrder" && !inverseNodeMap.has(created.targetId)) {
+            throw new Error("created operation crosses the duplicated section boundary");
+          }
           if (created.type === "toggleList") {
             if (created.nodeIds.some((id) => !inverseNodeMap.has(id.split("#")[0]!)))
               throw new Error("created operation crosses the duplicated section boundary");
@@ -2133,31 +2313,180 @@ export async function patchHtml(
       });
     }
   }
+  for (const { candidate, target, op } of layoutOps) {
+    const existing = candidate.attrs.get(LAYOUT_ATTRIBUTE);
+    const value = op.preset === op.baseline ? null : layoutAttributeValue(op.preset);
+    if (value === null) {
+      if (!existing) continue;
+      const hasPreviousAttribute = [...candidate.attrs.values()].some(
+        (attribute) => attribute.sliceEnd < existing.sliceStart,
+      );
+      const start =
+        hasPreviousAttribute && /\s/.test(sourceText[existing.sliceStart - 1] ?? "")
+          ? existing.sliceStart - 1
+          : existing.sliceStart;
+      patches.push({ start, end: existing.sliceEnd, replacement: "" });
+    } else {
+      const replacement = `${LAYOUT_ATTRIBUTE}="${value}"`;
+      patches.push({
+        start: existing?.sliceStart ?? candidate.startTagEnd - 1,
+        end: existing?.sliceEnd ?? candidate.startTagEnd - 1,
+        replacement: existing ? replacement : ` ${replacement}`,
+      });
+    }
+    void target;
+  }
+  const managedLinks: P5Element[] = [];
+  const visitManagedLink = (node: P5Node): void => {
+    if (!isElement(node)) return;
+    if (
+      node.tagName === "link" &&
+      attrValue(node, LAYOUT_RESOURCE_ATTRIBUTE) === LAYOUT_RESOURCE_VALUE
+    ) {
+      managedLinks.push(node);
+    }
+    node.childNodes.forEach(visitManagedLink);
+  };
+  sourceDocument.childNodes.forEach(visitManagedLink);
+  if (managedLinks.length > 1) throw new Error("multiple managed Layout stylesheets are ambiguous");
+  const layoutAssetRequired = options.layoutAssetRequired ?? false;
+  if (layoutAssetRequired && !options.layoutAssetHref) {
+    throw new Error("managed Layout stylesheet URL is unavailable");
+  }
+  const managedLink = managedLinks[0];
+  if (managedLink) {
+    const location = managedLink.sourceCodeLocation;
+    if (!location) throw new Error("managed Layout stylesheet mapping is unavailable");
+    if (!layoutAssetRequired) {
+      patches.push({ start: location.startOffset, end: location.endOffset, replacement: "" });
+    } else if (options.layoutAssetHref) {
+      const href = attrValue(managedLink, "href");
+      const hrefAttr = collectAttrRanges(managedLink).get("href");
+      if (href !== options.layoutAssetHref) {
+        if (!hrefAttr) {
+          throw new Error("managed Layout stylesheet has no href");
+        }
+        patches.push({
+          start: hrefAttr.sliceStart,
+          end: hrefAttr.sliceEnd,
+          replacement: `href="${escapeHtmlAttr(options.layoutAssetHref)}"`,
+        });
+      }
+    }
+  } else if (layoutAssetRequired) {
+    const head = sourceDocument.childNodes
+      .flatMap((node) => (isElement(node) ? [node] : []))
+      .find((node) => node.tagName === "html")
+      ?.childNodes.find((node) => isElement(node) && node.tagName === "head");
+    const headLocation = head?.sourceCodeLocation;
+    const headEnd =
+      headLocation && "endTag" in headLocation ? headLocation.endTag?.startOffset : undefined;
+    if (headEnd === undefined || !options.layoutAssetHref) {
+      throw new Error("HTML document has no safe Layout stylesheet location");
+    }
+    patches.push({
+      start: headEnd,
+      end: headEnd,
+      replacement: `<link rel="stylesheet" href="${escapeHtmlAttr(options.layoutAssetHref)}" data-xyle-resource="${LAYOUT_RESOURCE_VALUE}">`,
+    });
+  }
   let moveSourceText = sourceText;
   let moveAnalysis = analysis;
   let moveDocument = sourceDocument;
   const movedParentRanges: Array<{ start: number; end: number }> = [];
-  if (moveSectionOps.length > 0) {
-    const contentOperations = change.operations.filter(
-      (operation) =>
-        operation.type !== "duplicateSection" &&
-        operation.type !== "moveSection" &&
-        operation.type !== "duplicateGroupItem" &&
-        operation.type !== "moveGroupItem",
-    );
-    if (contentOperations.length > 0) {
+  const regionContentOperations = change.operations.filter(
+    (operation) =>
+      operation.type !== "duplicateSection" &&
+      operation.type !== "moveSection" &&
+      operation.type !== "duplicateGroupItem" &&
+      operation.type !== "moveGroupItem" &&
+      operation.type !== "setRegionOrder",
+  );
+  if (moveSectionOps.length > 0 || regionOrderOps.length > 0) {
+    if (regionContentOperations.length > 0) {
       const contentBytes = await patchHtml(
         encoder.encode(sourceText),
         {
           pagePath: change.pagePath,
           baseDigest: await digestBytes(encoder.encode(sourceText)),
-          operations: contentOperations,
+          operations: regionContentOperations,
         },
         options,
       );
       moveSourceText = new TextDecoder("utf-8", { fatal: true }).decode(contentBytes);
       moveAnalysis = analyzePage(moveSourceText, options.ignoreSelectors ?? []);
       moveDocument = parse(moveSourceText, { sourceCodeLocationInfo: true }) as P5Document;
+    }
+    if (regionOrderOps.length > 0) {
+      const regionPatches: SourcePatch[] = [];
+      for (const { target: sourceTarget, op } of regionOrderOps) {
+        const target = analyzeLayouts(
+          moveSourceText,
+          moveAnalysis,
+          analyzeGroups(moveSourceText, change.pagePath),
+        ).find((candidate) => candidate.id === op.targetId);
+        const candidate = moveAnalysis.candidates.get(op.targetId);
+        const section =
+          candidate?.elementEnd === undefined
+            ? null
+            : elementAtSourceRange(moveDocument, candidate.startTagStart, candidate.elementEnd);
+        const children = section ? elementChildren(section) : [];
+        const first = children[0]?.sourceCodeLocation;
+        const second = children[1]?.sourceCodeLocation;
+        if (
+          !target ||
+          !candidate ||
+          candidate.elementEnd === undefined ||
+          !section ||
+          children.length !== 2 ||
+          target.regions[0]!.id !== sourceTarget.regions[0]!.id ||
+          target.regions[1]!.id !== sourceTarget.regions[1]!.id ||
+          !first ||
+          !second
+        ) {
+          throw new Error("region order source mapping is ambiguous");
+        }
+        if (op.order !== "swapped") continue;
+        const sectionStart = candidate.startTagStart;
+        const sectionEnd = candidate.elementEnd;
+        const replacement =
+          moveSourceText.slice(sectionStart, first.startOffset) +
+          moveSourceText.slice(second.startOffset, second.endOffset) +
+          moveSourceText.slice(first.endOffset, second.startOffset) +
+          moveSourceText.slice(first.startOffset, first.endOffset) +
+          moveSourceText.slice(second.endOffset, sectionEnd);
+        regionPatches.push({ start: sectionStart, end: sectionEnd, replacement });
+      }
+      if (regionPatches.length > 0) {
+        const nextText = [...regionPatches]
+          .sort((left, right) => right.start - left.start)
+          .reduce(
+            (text, patch) => text.slice(0, patch.start) + patch.replacement + text.slice(patch.end),
+            moveSourceText,
+          );
+        moveSourceText = nextText;
+        moveAnalysis = analyzePage(moveSourceText, options.ignoreSelectors ?? []);
+        moveDocument = parse(moveSourceText, { sourceCodeLocationInfo: true }) as P5Document;
+      }
+      if (moveSectionOps.length === 0) {
+        for (const { candidate } of regionOrderOps) {
+          const effective = moveAnalysis.candidates.get(candidate.id);
+          if (!effective || effective.elementEnd === undefined) {
+            throw new Error("region order source mapping is ambiguous");
+          }
+          for (let index = patches.length - 1; index >= 0; index -= 1) {
+            const patch = patches[index]!;
+            if (patch.start >= candidate.startTagStart && patch.end <= candidate.elementEnd!) {
+              patches.splice(index, 1);
+            }
+          }
+          patches.push({
+            start: candidate.startTagStart,
+            end: candidate.elementEnd!,
+            replacement: moveSourceText.slice(effective.startTagStart, effective.elementEnd),
+          });
+        }
+      }
     }
   }
   const generatedDuplicateIds = new Set<string>();
@@ -2194,11 +2523,59 @@ export async function patchHtml(
       snapshotCandidate.elementEnd,
     );
     const localAnalysis = analyzePage(sourceMarkup, options.ignoreSelectors ?? []);
+    const sourceLayout = analyzeLayouts(sourceText, analysis, groups).find(
+      (layout) => layout.id === op.sourceId,
+    );
+    const snapshotLayout = analyzeLayouts(
+      snapshotText,
+      snapshotAnalysis,
+      analyzeGroups(snapshotText, change.pagePath),
+    ).find((layout) => layout.id === op.sourceId);
+    const snapshotNodeForSource = (sourceNode: Candidate): Candidate => {
+      if (sourceNode.id === op.sourceId) return snapshotCandidate;
+      if (!sourceLayout || !snapshotLayout) {
+        throw new Error("duplicate snapshot node mapping is ambiguous");
+      }
+      const sourceRegion = sourceLayout.regions.find(
+        (region) =>
+          sourceNode.startTagStart >= region.sourceStart &&
+          (sourceNode.elementEnd ?? sourceNode.startTagEnd) <= region.sourceEnd,
+      );
+      if (!sourceRegion) {
+        throw new Error("duplicate snapshot node mapping is ambiguous");
+      }
+      const sourceRegionIndex = sourceLayout.regions.indexOf(sourceRegion);
+      const regionOrderSnapshot = op.snapshotOperations.find(
+        (operation): operation is SetRegionOrderOperation =>
+          operation.type === "setRegionOrder" && operation.targetId === op.sourceId,
+      );
+      const snapshotRegionIndex =
+        regionOrderSnapshot?.order === "swapped" ? 1 - sourceRegionIndex : sourceRegionIndex;
+      const snapshotRegion = snapshotLayout.regions[snapshotRegionIndex];
+      if (!snapshotRegion || snapshotRegion.signature !== sourceRegion.signature) {
+        throw new Error("duplicate snapshot region mapping is ambiguous");
+      }
+      const relativeStart = sourceNode.startTagStart - sourceRegion.sourceStart;
+      const matches = [...snapshotAnalysis.candidates.values()].filter(
+        (node) =>
+          node.startTagStart - snapshotRegion.sourceStart === relativeStart &&
+          node.kind === sourceNode.kind &&
+          node.tag === sourceNode.tag,
+      );
+      if (matches.length !== 1) throw new Error("duplicate snapshot node mapping is ambiguous");
+      return matches[0]!;
+    };
+    const hasRegionOrderSnapshot = op.snapshotOperations.some(
+      (operation) => operation.type === "setRegionOrder",
+    );
     const createdToLocalMap = new Map<string, string>();
     for (const [sourceId, createdId] of Object.entries(op.nodeMap)) {
-      const sourceNode = snapshotAnalysis.candidates.get(sourceId);
+      const sourceNode = hasRegionOrderSnapshot
+        ? analysis.candidates.get(sourceId)
+        : snapshotAnalysis.candidates.get(sourceId);
       if (!sourceNode) throw new Error("duplicate snapshot node mapping is ambiguous");
-      const relativeStart = sourceNode.startTagStart - snapshotCandidate.startTagStart;
+      const snapshotNode = hasRegionOrderSnapshot ? snapshotNodeForSource(sourceNode) : sourceNode;
+      const relativeStart = snapshotNode.startTagStart - snapshotCandidate.startTagStart;
       const localNode = [...localAnalysis.candidates.values()].find(
         (node) =>
           node.startTagStart === relativeStart &&
@@ -2432,7 +2809,8 @@ export async function patchHtml(
               operation.type === "moveGroupItem" ||
               operation.type === "moveSection" ||
               operation.type === "seo" ||
-              operation.type === "sectionVisibility"
+              operation.type === "sectionVisibility" ||
+              operation.type === "setRegionOrder"
             ) {
               return false;
             }

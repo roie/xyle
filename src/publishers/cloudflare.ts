@@ -137,9 +137,9 @@ export class CloudflarePagesPublisher implements Publisher {
     // Stage beside installed dependencies while deploying only this isolated directory.
     const staging = await mkdtemp(join(process.cwd(), ".xyle-stage-"));
     try {
-      await this.stageStaticSnapshot(staging);
+      await this.stageStaticSnapshot(staging, new Set(next.removedFiles ?? []));
       await this.stageControlRuntime(staging);
-      for (const file of [...next.changedFiles, ...next.addedFiles]) {
+      for (const file of [...next.changedFiles, ...next.addedFiles, ...(next.managedFiles ?? [])]) {
         const target = join(staging, file.path.replace(/^\/+/, ""));
         await mkdir(dirname(target), { recursive: true });
         await writeFile(target, file.bytes);
@@ -182,9 +182,10 @@ export class CloudflarePagesPublisher implements Publisher {
     }
   }
 
-  private async stageStaticSnapshot(staging: string): Promise<void> {
+  private async stageStaticSnapshot(staging: string, excluded = new Set<string>()): Promise<void> {
     const { files } = await scanStaticDirectory(this.root);
     for (const [path, bytes] of files) {
+      if (excluded.has(path)) continue;
       const target = join(staging, path.replace(/^\/+/, ""));
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, bytes);

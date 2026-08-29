@@ -6,7 +6,8 @@ import {
 import { preparePreview, patchHtml } from "../../../src/html.ts";
 import { discoverMedia, uploadPathFor, validateUpload } from "../../../src/media.ts";
 import { computeSnapshotDigest, digestBytes } from "../../../src/digest.ts";
-import type { ManifestFile, XyleDigest } from "../../../src/types.ts";
+import { LAYOUT_CSS, layoutAssetPath } from "../../../src/layout.ts";
+import type { ManifestFile, PageOperation, XyleDigest } from "../../../src/types.ts";
 
 type RuntimeEnv = Env & {
   ASSETS: { fetch(request: Request): Promise<Response> };
@@ -14,6 +15,56 @@ type RuntimeEnv = Env & {
   IMAGES?: import("../../_publish").CloudflareImagesBinding;
 };
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+function isLayoutNeeded(source: string, operations: PageOperation[]): boolean {
+  const managedAttributeCount =
+    source.match(/data-xyle-layout\s*=\s*(?:"(?:stack|split)"|'(?:stack|split)'|(?:stack|split))/g)
+      ?.length ?? 0;
+  const overrides = new Map<string, boolean>();
+  const visit = (nested: PageOperation[]): void => {
+    for (const operation of nested) {
+      if (operation.type === "setLayoutPreset") {
+        overrides.set(operation.nodeId, operation.preset !== operation.baseline);
+      } else if (operation.type === "duplicateSection") {
+        visit([...operation.snapshotOperations, ...(operation.createdOperations ?? [])]);
+      }
+    }
+  };
+  visit(operations);
+  return (
+    [...overrides.values()].some(Boolean) ||
+    managedAttributeCount > [...overrides.values()].filter((value) => !value).length
+  );
+}
+
+function cspPermits(source: string, policies: string[], origin: string): boolean {
+  for (const tag of source.match(/<meta\b[^>]*>/gi) ?? []) {
+    const httpEquiv = /http-equiv\s*=\s*["']?([^"'\s>]+)/i.exec(tag)?.[1];
+    if (httpEquiv?.toLowerCase() !== "content-security-policy") continue;
+    const content = /content\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1];
+    if (content) policies.push(content);
+  }
+  return policies.every((policy) => {
+    const directives = new Map<string, string[]>();
+    for (const directive of policy.split(";")) {
+      const [name, ...values] = directive.trim().split(/\s+/);
+      if (name) directives.set(name.toLowerCase(), values);
+    }
+    const sources =
+      directives.get("style-src-elem") ?? directives.get("style-src") ?? directives.get("default-src");
+    if (!sources || sources.length === 0) return true;
+    if (sources.includes("'none'")) return false;
+    if (sources.some((value) => value.startsWith("'nonce-") || value.startsWith("'sha"))) return false;
+    return sources.some((value) => {
+      if (value === "'self'") return true;
+      try {
+        return new URL(value).origin === origin;
+      } catch {
+        return false;
+      }
+    });
+  });
+}
 
 export const onRequest = async ({ request, env, params }: { request: Request; env: RuntimeEnv; params: { route?: string[] } }): Promise<Response> => {
   try {
@@ -28,6 +79,11 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
       { authenticated: await authenticated(request, env) },
       { headers: { "x-xyle-runtime": "1" } },
     );
+  }
+  if (route === "manifest.json" || route.startsWith("assets/")) {
+    const assetUrl = new URL(request.url);
+    assetUrl.pathname = `/__xyle/${route}`;
+    return env.ASSETS.fetch(new Request(assetUrl, { method: request.method }));
   }
   if ((route === "logout" || route === "publish") && (request.method !== "POST" || request.headers.get("x-xyle-request") !== "1" || request.headers.get("origin") !== new URL(request.url).origin)) return Response.json({ error: "mutation rejected" }, { status: 403 });
   if (route === "logout" && !request.headers.get("content-type")?.includes("application/json")) return Response.json({ error: "unsupported content type" }, { status: 415 });
@@ -51,7 +107,7 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     const entry = manifest.files[path];
     if (!entry) return Response.json({ error: "page not in manifest" }, { status: 404 });
     const prepared = preparePreview(await response.text(), path, url.origin);
-    return Response.json({ pagePath: path, baseDigest: entry.digest, html: prepared.html, nodes: [...prepared.nodes.values()] });
+    return Response.json({ pagePath: path, baseDigest: entry.digest, html: prepared.html, nodes: [...prepared.nodes.values()], groups: prepared.groups, layouts: prepared.layouts });
   }
   if (route === "media") {
     const manifestUrl = new URL(request.url);
@@ -130,6 +186,23 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     const byPath = new Map(files.map((file) => [file.path, file]));
     for (const upload of uploads) byPath.set(upload.path, upload);
     const submitted = new Map(uploads.map((upload) => [upload.path, upload.bytes]));
+    const layoutCssBytes = new TextEncoder().encode(LAYOUT_CSS);
+    const layoutCssDigest = await digestBytes(layoutCssBytes);
+    const layoutCssPath = layoutAssetPath(layoutCssDigest);
+    const layoutRequired =
+      [...byPath.values()].some(
+        (file) => file.contentType === "text/html" && /data-xyle-layout="(?:stack|split)"/.test(new TextDecoder().decode(file.bytes)),
+      ) ||
+      (metadata.pages ?? []).some((page) => {
+        const file = byPath.get(page.pagePath);
+        return !!file && isLayoutNeeded(new TextDecoder().decode(file.bytes), page.operations);
+      });
+    if (layoutRequired) {
+      const existing = byPath.get(layoutCssPath);
+      if (!existing || existing.bytes.length !== layoutCssBytes.length) {
+        byPath.set(layoutCssPath, { path: layoutCssPath, bytes: layoutCssBytes, contentType: "text/css" });
+      }
+    }
     for (const page of metadata.pages ?? []) {
       const file = byPath.get(page.pagePath);
       const entry = current.files[page.pagePath];
@@ -142,11 +215,54 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
         submitted,
       );
       for (const asset of materialized.assets) byPath.set(asset.path, asset);
-      file.bytes = await patchHtml(file.bytes, { pagePath: page.pagePath, baseDigest: page.baseDigest, operations: materialized.operations });
+      const pageSource = new TextDecoder().decode(file.bytes);
+      const pageNeedsLayout = isLayoutNeeded(pageSource, materialized.operations);
+      if (pageNeedsLayout) {
+        const pageUrl = new URL(page.pagePath, request.url);
+        const pageResponse = await env.ASSETS.fetch(new Request(pageUrl));
+        const policy = pageResponse.headers.get("content-security-policy");
+        if (!cspPermits(pageSource, policy ? [policy] : [], pageUrl.origin)) {
+          return Response.json({ error: `managed Layout stylesheet is blocked by CSP for ${page.pagePath}` }, { status: 400 });
+        }
+      }
+      file.bytes = await patchHtml(
+        file.bytes,
+        { pagePath: page.pagePath, baseDigest: page.baseDigest, operations: materialized.operations },
+        {
+          layoutAssetRequired: pageNeedsLayout,
+          ...(pageNeedsLayout ? { layoutAssetHref: `/__xyle/assets/${layoutCssPath.split("/").at(-1)}` } : {}),
+        },
+      );
+    }
+    for (const path of [...byPath.keys()]) {
+      if (path.startsWith("/__xyle/assets/layout-v1.") && (!layoutRequired || path !== layoutCssPath)) byPath.delete(path);
+    }
+    if (layoutRequired) {
+      byPath.set("/__xyle/manifest.json", {
+        path: "/__xyle/manifest.json",
+        bytes: new TextEncoder().encode(
+          JSON.stringify({
+            version: 1,
+            assets: {
+              [layoutCssPath]: {
+                digest: layoutCssDigest,
+                size: layoutCssBytes.byteLength,
+                contentType: "text/css",
+              },
+            },
+          }, null, 2),
+        ),
+        contentType: "application/json",
+      });
+    } else {
+      byPath.delete("/__xyle/manifest.json");
     }
     const nextFiles = [...byPath.values()];
     const nextEntries: typeof current.files = {};
-    for (const file of nextFiles) nextEntries[file.path] = { digest: await digestBytes(file.bytes), size: file.bytes.byteLength, contentType: file.contentType };
+    for (const file of nextFiles) {
+      if (file.path === "/__xyle/manifest.json") continue;
+      nextEntries[file.path] = { digest: await digestBytes(file.bytes), size: file.bytes.byteLength, contentType: file.contentType };
+    }
     const nextManifest = { version: 1 as const, snapshotDigest: await computeSnapshotDigest(nextEntries), files: nextEntries };
     try {
       const deployment = await deployCompleteSnapshot(env, [...nextFiles, { path: "/_xyle/manifest.json", bytes: new TextEncoder().encode(JSON.stringify(nextManifest, null, 2)), contentType: "application/json" }]);

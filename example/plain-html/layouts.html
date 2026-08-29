@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="style-src 'self'" />
+    <title>Layout presets</title>
+    <link rel="stylesheet" href="/layouts.css" />
+  </head>
+  <body>
+    <main>
+      <section id="layout-basic">
+        <div class="layout-image">
+          <img src="/assets/hero-fallback.jpg" alt="A fixture image" />
+        </div>
+        <div class="layout-content">
+          <h2>Safe layout</h2>
+          <p>Two meaningful regions.</p>
+        </div>
+      </section>
+      <section id="layout-flex" class="authored-flex">
+        <div class="layout-image">
+          <img src="/assets/hero-fallback.jpg" alt="A flex image" />
+        </div>
+        <div class="layout-content">
+          <h2>Authored flex</h2>
+          <p>Existing columns.</p>
+        </div>
+      </section>
+      <section id="layout-unsafe">
+        <div class="layout-image">
+          <img src="/assets/hero-fallback.jpg" alt="Unsafe fixture image" />
+        </div>
+        <form><input name="email" /></form>
+      </section>
+    </main>
+  </body>
+</html>

@@ -32,6 +32,13 @@ import {
 } from "./structural.ts";
 import { cropRectForFrame } from "./media-crop.ts";
 import {
+  LAYOUT_ATTRIBUTE,
+  LAYOUT_CSS,
+  LAYOUT_REGION_ATTRIBUTE,
+  layoutAttributeValue,
+  layoutPresetFromAttribute,
+} from "./layout.ts";
+import {
   clampUnit,
   mediaSourcePath,
   mediaStatesEqual,
@@ -49,7 +56,12 @@ import type {
   GroupDescriptor,
   GroupItemDescriptor,
   GroupMoveCapability,
+  LayoutPreset,
+  LayoutTargetDescriptor,
+  RegionOrder,
   MoveGroupItemOperation,
+  SetLayoutPresetOperation,
+  SetRegionOrderOperation,
   SnapshotOperation,
 } from "./types.ts";
 
@@ -1485,6 +1497,7 @@ interface PageData {
   html: string;
   nodes: NodeMeta[];
   groups: GroupDescriptor[];
+  layouts: LayoutTargetDescriptor[];
 }
 
 type Op =
@@ -1536,7 +1549,9 @@ type Op =
       assetRefs: AssetReference[];
     }
   | (DuplicateGroupItemOperation & { assetRefs: AssetReference[] })
-  | MoveGroupItemOperation;
+  | MoveGroupItemOperation
+  | SetLayoutPresetOperation
+  | SetRegionOrderOperation;
 
 interface PageOps {
   pagePath: string;
@@ -1681,6 +1696,9 @@ async function boot(): Promise<void> {
     duplicateSection,
     duplicateGroupItem,
     moveGroupItem,
+    listLayoutOptions,
+    setLayoutPreset,
+    setRegionOrder,
     updateText,
     updateLink,
   });
@@ -1711,7 +1729,7 @@ async function loadPage(pagePath: string, opts: { pushHistory: boolean }): Promi
   setInteractionMode("idle");
   selectedImage = null;
   mediaMutationGeneration += 1;
-  state.current = { ...data, groups: data.groups ?? [] };
+  state.current = { ...data, groups: data.groups ?? [], layouts: data.layouts ?? [] };
   cachedBaseDigest.set(data.pagePath, data.baseDigest);
   const pagePathLabel = $("#xyle-page-path");
   const pageNameLabel = $("#xyle-page-name");
@@ -2192,6 +2210,387 @@ function wireSection(el: HTMLElement, meta: NodeMeta): void {
   });
 }
 
+interface LayoutCapability {
+  supported: boolean;
+  reason?: string;
+  baseline?: LayoutPreset;
+  current?: LayoutPreset;
+}
+
+const LAYOUT_PREVIEW_STYLE_ID = "xyle-layout-preview-rules";
+
+function layoutTargetForId(id: string): LayoutTargetDescriptor | undefined {
+  return state.current?.layouts.find((target) => target.id === id);
+}
+
+function ensureLayoutPreviewStyle(doc: Document): void {
+  if (
+    doc.getElementById(LAYOUT_PREVIEW_STYLE_ID) ||
+    doc.documentElement.dataset.xyleLayoutPreviewSheet === "true"
+  )
+    return;
+  try {
+    const Sheet = doc.defaultView?.CSSStyleSheet;
+    if (!Sheet) throw new Error("constructed stylesheets are unavailable");
+    const sheet = new Sheet();
+    sheet.replaceSync(LAYOUT_CSS);
+    doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, sheet];
+    doc.documentElement.dataset.xyleLayoutPreviewSheet = "true";
+    return;
+  } catch {
+    const style = doc.createElement("style");
+    style.id = LAYOUT_PREVIEW_STYLE_ID;
+    style.textContent = LAYOUT_CSS;
+    doc.head.append(style);
+  }
+}
+
+function layoutRegions(section: HTMLElement): HTMLElement[] {
+  return [...section.children].filter(
+    (child): child is HTMLElement => !child.hasAttribute("data-xyle-group-item"),
+  );
+}
+
+function classifyLayout(section: HTMLElement, regions: HTMLElement[]): LayoutPreset | null {
+  const view = section.ownerDocument.defaultView;
+  if (!view || regions.length !== 2) return null;
+  const style = view.getComputedStyle(section);
+  const rects = regions.map((region) => region.getBoundingClientRect());
+  if (rects.some((rect) => rect.width <= 0 || rect.height <= 0)) return null;
+  if (style.display === "flex" && style.flexDirection === "row" && style.flexWrap === "nowrap") {
+    return rects[1]!.left >= rects[0]!.right - 0.5 ? "two-column" : null;
+  }
+  if (style.display === "grid" && !style.gridAutoFlow.includes("dense")) {
+    return rects[1]!.left > rects[0]!.left + 0.5 &&
+      Math.abs(rects[1]!.top - rects[0]!.top) < Math.max(rects[0]!.height, rects[1]!.height) * 0.25
+      ? "two-column"
+      : rects[1]!.top >= rects[0]!.bottom - 0.5
+        ? "stacked"
+        : null;
+  }
+  return rects[1]!.top >= rects[0]!.bottom - 0.5 ? "stacked" : null;
+}
+
+function verifyLayoutPreset(
+  section: HTMLElement,
+  regions: HTMLElement[],
+  preset: LayoutPreset,
+): boolean {
+  const view = section.ownerDocument.defaultView;
+  if (!view || regions.length !== 2) return false;
+  const computed = view.getComputedStyle(section);
+  if (computed.display !== "grid") return false;
+  const rects = regions.map((region) => region.getBoundingClientRect());
+  if (rects.some((rect) => rect.width <= 0 || rect.height <= 0)) return false;
+  if (preset === "stacked" || view.matchMedia("(max-width: 48rem)").matches) {
+    return rects[1]!.top >= rects[0]!.bottom - 0.5;
+  }
+  return (
+    rects[1]!.left >= rects[0]!.right - 0.5 &&
+    Math.abs(rects[1]!.top - rects[0]!.top) < Math.max(rects[0]!.height, rects[1]!.height) * 0.25
+  );
+}
+
+function layoutCapability(target: LayoutTargetDescriptor): LayoutCapability {
+  const doc = previewDoc();
+  const section = doc?.querySelector<HTMLElement>(`[data-xyle-node="${CSS.escape(target.id)}"]`);
+  if (!doc || !section) return { supported: false, reason: "Layout target is unavailable" };
+  ensureLayoutPreviewStyle(doc);
+  const regions = layoutRegions(section);
+  if (
+    regions.length !== 2 ||
+    regions.some(
+      (region) =>
+        region.hasAttribute("data-xyle-group") ||
+        region.querySelector("section,form,iframe,video,canvas,script") !== null,
+    )
+  ) {
+    return { supported: false, reason: "Layout requires two safe direct regions" };
+  }
+  const view = doc.defaultView;
+  if (!view) return { supported: false, reason: "Layout capability is unavailable" };
+  const targetStyle = view.getComputedStyle(section);
+  const regionStyles = regions.map((region) => view.getComputedStyle(region));
+  if (
+    targetStyle.direction !== "ltr" ||
+    targetStyle.writingMode !== "horizontal-tb" ||
+    targetStyle.position === "absolute" ||
+    targetStyle.position === "fixed" ||
+    targetStyle.position === "sticky" ||
+    targetStyle.transform !== "none" ||
+    targetStyle.columnCount !== "auto" ||
+    regionStyles.some(
+      (style) =>
+        style.display === "contents" ||
+        style.direction !== "ltr" ||
+        style.writingMode !== "horizontal-tb" ||
+        style.position !== "static" ||
+        style.float !== "none" ||
+        style.transform !== "none" ||
+        style.order !== "0",
+    )
+  ) {
+    return { supported: false, reason: "Layout uses unsupported positioning or writing mode" };
+  }
+  const authoredAttribute = section.getAttribute(LAYOUT_ATTRIBUTE);
+  const authoredManaged = layoutPresetFromAttribute(authoredAttribute);
+  if (authoredAttribute !== null && !authoredManaged) {
+    return { supported: false, reason: "Layout metadata is not recognised" };
+  }
+  section.removeAttribute(LAYOUT_ATTRIBUTE);
+  const baseline = classifyLayout(section, regions);
+  if (authoredManaged)
+    section.setAttribute(LAYOUT_ATTRIBUTE, layoutAttributeValue(authoredManaged));
+  else section.removeAttribute(LAYOUT_ATTRIBUTE);
+  if (!baseline) return { supported: false, reason: "Authored layout is ambiguous" };
+  const current = authoredManaged ?? baseline;
+  for (const preset of ["stacked", "two-column"] as const) {
+    section.setAttribute(LAYOUT_ATTRIBUTE, layoutAttributeValue(preset));
+    if (!verifyLayoutPreset(section, regions, preset)) {
+      if (authoredManaged)
+        section.setAttribute(LAYOUT_ATTRIBUTE, layoutAttributeValue(authoredManaged));
+      else section.removeAttribute(LAYOUT_ATTRIBUTE);
+      return {
+        supported: false,
+        reason: `${preset === "stacked" ? "Stack" : "Split"} is defeated by authored CSS`,
+      };
+    }
+  }
+  if (authoredManaged)
+    section.setAttribute(LAYOUT_ATTRIBUTE, layoutAttributeValue(authoredManaged));
+  else section.removeAttribute(LAYOUT_ATTRIBUTE);
+  target.baseline = baseline;
+  return { supported: true, baseline, current };
+}
+
+function regionElements(target: LayoutTargetDescriptor): [HTMLElement, HTMLElement] | null {
+  const section = previewDoc()?.querySelector<HTMLElement>(
+    `[data-xyle-node="${CSS.escape(target.id)}"]`,
+  );
+  if (!section) return null;
+  const regions = target.regions.map((region) =>
+    section.querySelector<HTMLElement>(`[${LAYOUT_REGION_ATTRIBUTE}="${CSS.escape(region.id)}"]`),
+  );
+  if (
+    regions.length !== 2 ||
+    !regions[0] ||
+    !regions[1] ||
+    regions[0].parentElement !== section ||
+    regions[1].parentElement !== section ||
+    regions[0] === regions[1]
+  )
+    return null;
+  return [regions[0], regions[1]];
+}
+
+function regionOrderInDom(target: LayoutTargetDescriptor): RegionOrder | null {
+  const regions = regionElements(target);
+  if (!regions) return null;
+  const children = [...regions[0].parentElement!.children];
+  const first = children.indexOf(regions[0]);
+  const second = children.indexOf(regions[1]);
+  if (first < 0 || second < 0 || first === second) return null;
+  return first < second ? "original" : "swapped";
+}
+
+function applyRegionOrderToDom(target: LayoutTargetDescriptor, order: RegionOrder): boolean {
+  const regions = regionElements(target);
+  if (!regions) return false;
+  const [first, second] = regions;
+  if (order === "original") first.parentElement!.insertBefore(first, second);
+  else first.parentElement!.insertBefore(second, first);
+  return true;
+}
+
+function verifyRegionOrder(target: LayoutTargetDescriptor, order: RegionOrder): boolean {
+  const regions = regionElements(target);
+  if (!regions) return false;
+  const [first, second] = regions;
+  if (regionOrderInDom(target) !== order) return false;
+  const view = first.ownerDocument.defaultView;
+  if (!view) return false;
+  const sectionStyle = view.getComputedStyle(first.parentElement!);
+  const styles = regions.map((region) => view.getComputedStyle(region));
+  if (
+    sectionStyle.position === "absolute" ||
+    sectionStyle.position === "fixed" ||
+    sectionStyle.position === "sticky" ||
+    sectionStyle.transform !== "none" ||
+    sectionStyle.direction !== "ltr" ||
+    sectionStyle.writingMode !== "horizontal-tb" ||
+    (sectionStyle.display === "flex" &&
+      (sectionStyle.flexDirection.endsWith("-reverse") || sectionStyle.flexWrap !== "nowrap")) ||
+    (sectionStyle.display === "grid" &&
+      (sectionStyle.gridAutoFlow.includes("dense") ||
+        styles.some(
+          (style) =>
+            style.gridColumnStart !== "auto" ||
+            style.gridColumnEnd !== "auto" ||
+            style.gridRowStart !== "auto" ||
+            style.gridRowEnd !== "auto",
+        ))) ||
+    styles.some(
+      (style) =>
+        style.order !== "0" ||
+        style.position !== "static" ||
+        style.transform !== "none" ||
+        style.float !== "none",
+    )
+  )
+    return false;
+  const ordered = order === "original" ? [first, second] : [second, first];
+  const firstRect = ordered[0]!.getBoundingClientRect();
+  const secondRect = ordered[1]!.getBoundingClientRect();
+  if (
+    firstRect.width <= 0 ||
+    firstRect.height <= 0 ||
+    secondRect.width <= 0 ||
+    secondRect.height <= 0
+  )
+    return false;
+  const overlapX =
+    Math.min(firstRect.right, secondRect.right) - Math.max(firstRect.left, secondRect.left);
+  const overlapY =
+    Math.min(firstRect.bottom, secondRect.bottom) - Math.max(firstRect.top, secondRect.top);
+  if (overlapX > 0.5 && overlapY > 0.5) return false;
+  const follows =
+    secondRect.top >= firstRect.bottom - 0.5 ||
+    (secondRect.left >= firstRect.right - 0.5 &&
+      Math.abs(secondRect.top - firstRect.top) <
+        Math.max(firstRect.height, secondRect.height) * 0.25);
+  return follows;
+}
+
+function canSetRegionOrder(target: LayoutTargetDescriptor, order: RegionOrder): boolean {
+  const current = regionOrderInDom(target);
+  const regions = regionElements(target);
+  if (!current || !regions || current === order) return true;
+  applyRegionOrderToDom(target, order);
+  try {
+    const section = regions[0].parentElement;
+    if (section) void section.offsetHeight;
+    return verifyRegionOrder(target, order);
+  } finally {
+    applyRegionOrderToDom(target, current);
+  }
+}
+
+function setRegionOrder(targetId: string, order: RegionOrder): { id: string; order: RegionOrder } {
+  const current = state.current;
+  const target = current?.layouts.find((candidate) => candidate.id === targetId);
+  if (!current || !target) throw new Error("Region order target is unavailable");
+  const layout = layoutCapability(target);
+  if (!layout.supported) throw new Error(layout.reason ?? "Region order is unavailable");
+  if (session) commitEdit();
+  reconcileRichContent(current.pagePath);
+  const previous = state.ops.find(
+    (entry) =>
+      entry.pagePath === current.pagePath && opKey(entry.op) === `setRegionOrder@${targetId}`,
+  );
+  const currentOrder = regionOrderInDom(target);
+  if (!currentOrder) throw new Error("Region order is unavailable");
+  if (order === currentOrder && !previous) return { id: targetId, order };
+  if (!canSetRegionOrder(target, order)) throw new Error("Region order is not supported");
+  const operation: SetRegionOrderOperation = {
+    type: "setRegionOrder",
+    targetId,
+    firstRegionId: target.regions[0]!.id,
+    secondRegionId: target.regions[1]!.id,
+    order,
+    targetSignature: target.signature,
+    regionSignatures: [target.regions[0]!.signature, target.regions[1]!.signature],
+    sequence: allocateStructuralSequence(),
+  };
+  applyRegionOrderToDom(target, order);
+  applyOp(current.pagePath, operation, "Swap order", order === "original" ? null : operation);
+  return { id: targetId, order };
+}
+
+function setLayoutPreset(
+  targetId: string,
+  preset: LayoutPreset,
+): { id: string; preset: LayoutPreset } {
+  const current = state.current;
+  const target = current?.layouts.find((candidate) => candidate.id === targetId);
+  if (!current || !target) throw new Error("Layout target is unavailable");
+  const capability = layoutCapability(target);
+  if (!capability.supported || !capability.baseline)
+    throw new Error(capability.reason ?? "Layout is unavailable");
+  const key = opKey({
+    type: "setLayoutPreset",
+    nodeId: targetId,
+    preset,
+    baseline: target.baseline,
+    targetSignature: target.signature,
+    regionSignatures: target.regions.map((region) => region.signature) as [string, string],
+  });
+  const previous = state.ops.find(
+    (entry) => entry.pagePath === current.pagePath && opKey(entry.op) === key,
+  );
+  if (preset === capability.current && !previous) return { id: targetId, preset };
+  const sourceManaged = target.managedPreset;
+  const operation: SetLayoutPresetOperation = {
+    type: "setLayoutPreset",
+    nodeId: targetId,
+    preset,
+    baseline: capability.baseline,
+    targetSignature: target.signature,
+    regionSignatures: target.regions.map((region) => region.signature) as [string, string],
+  };
+  const pending = preset === (sourceManaged ?? capability.baseline) ? null : operation;
+  if (pending) applyLayoutToDom(current.pagePath, operation);
+  applyOp(
+    current.pagePath,
+    operation,
+    preset === "stacked" ? "Set layout to Stack" : "Set layout to Split",
+    pending,
+  );
+  if (!pending) restoreLayoutToDom(current.pagePath, target);
+  return { id: targetId, preset };
+}
+
+function listLayoutOptions(targetId: string): {
+  id: string;
+  current: LayoutPreset;
+  baseline: LayoutPreset;
+  options: LayoutPreset[];
+} {
+  const target = layoutTargetForId(targetId);
+  if (!target) throw new Error("Layout target is unavailable");
+  const capability = layoutCapability(target);
+  if (!capability.supported || !capability.baseline || !capability.current)
+    throw new Error(capability.reason ?? "Layout is unavailable");
+  return {
+    id: targetId,
+    current: capability.current,
+    baseline: capability.baseline,
+    options: ["stacked", "two-column"],
+  };
+}
+
+function applyLayoutToDom(pagePath: string, op: SetLayoutPresetOperation): void {
+  if (pagePath !== state.current?.pagePath) return;
+  const target = layoutTargetForId(op.nodeId);
+  const section = target
+    ? previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${CSS.escape(target.id)}"]`)
+    : null;
+  if (section) {
+    if (op.preset === op.baseline) section.removeAttribute(LAYOUT_ATTRIBUTE);
+    else section.setAttribute(LAYOUT_ATTRIBUTE, layoutAttributeValue(op.preset));
+  }
+}
+
+function restoreLayoutToDom(pagePath: string, target: LayoutTargetDescriptor): void {
+  if (pagePath !== state.current?.pagePath) return;
+  const section = previewDoc()?.querySelector<HTMLElement>(
+    `[data-xyle-node="${CSS.escape(target.id)}"]`,
+  );
+  if (!section) return;
+  if (target.managedPreset)
+    section.setAttribute(LAYOUT_ATTRIBUTE, layoutAttributeValue(target.managedPreset));
+  else section.removeAttribute(LAYOUT_ATTRIBUTE);
+}
+
 function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = false): void {
   if (!session) {
     const overlay = shellOverlay();
@@ -2200,6 +2599,52 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
     tools.className = "xyle-link-tools xyle-section-tools";
     tools.setAttribute("role", "toolbar");
     tools.setAttribute("aria-label", "Section actions");
+
+    const layoutTarget = layoutTargetForId(meta.id);
+    if (layoutTarget) {
+      const capability = layoutCapability(layoutTarget);
+      const layoutTools = document.createElement("div");
+      layoutTools.className = "xyle-layout-tools";
+      const label = document.createElement("strong");
+      label.textContent = "Layout";
+      layoutTools.append(label);
+      for (const [preset, text] of [
+        ["stacked", "Stack"],
+        ["two-column", "Split"],
+      ] as const) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = text;
+        button.disabled = !capability.supported;
+        if (!capability.supported) button.title = capability.reason ?? "Layout is unavailable";
+        else
+          button.addEventListener("click", () => {
+            setLayoutPreset(meta.id, preset);
+            closeContextTools(false);
+          });
+        layoutTools.append(button);
+      }
+      tools.append(layoutTools);
+      const currentOrder = regionOrderInDom(layoutTarget);
+      const orderTools = document.createElement("div");
+      orderTools.className = "xyle-layout-tools";
+      const orderLabel = document.createElement("strong");
+      orderLabel.textContent = "Order";
+      const orderButton = document.createElement("button");
+      orderButton.type = "button";
+      orderButton.textContent = "Swap order";
+      const nextOrder: RegionOrder = currentOrder === "swapped" ? "original" : "swapped";
+      const orderSupported = capability.supported && canSetRegionOrder(layoutTarget, nextOrder);
+      orderButton.disabled = !orderSupported;
+      if (!orderSupported) orderButton.title = capability.reason ?? "Region order is unavailable";
+      else
+        orderButton.addEventListener("click", () => {
+          setRegionOrder(meta.id, nextOrder);
+          closeContextTools(false);
+        });
+      orderTools.append(orderLabel, orderButton);
+      tools.append(orderTools);
+    }
 
     const duplicate = document.createElement("button");
     duplicate.type = "button";
@@ -4633,6 +5078,7 @@ function stripPreviewInstrumentation(
       "data-xyle-generated-editing",
       "data-xyle-group",
       "data-xyle-group-item",
+      "data-xyle-layout-region",
     ]) {
       element.removeAttribute(attribute);
     }
@@ -4804,6 +5250,8 @@ function opKey(op: Op): string {
   if (op.type === "moveGroupItem") {
     return `${op.type}@${op.groupId}:${op.itemId}:${op.targetItemId}:${op.position}:${op.sequence}`;
   }
+  if (op.type === "setLayoutPreset") return `${op.type}@${op.nodeId}`;
+  if (op.type === "setRegionOrder") return `${op.type}@${op.targetId}`;
   const target = op.type === "text" ? op.nodeId : `${op.nodeId}:${op.type}`;
   if (op.type === "format" && op.start !== undefined && op.end !== undefined) {
     return `${op.type}@${target}:${op.start}-${op.end}`;
@@ -5479,9 +5927,11 @@ function opTargetsElement(op: Op, root: HTMLElement): boolean {
       ? op.nodeIds
       : op.type === "duplicateSection"
         ? [op.sourceId]
-        : "nodeId" in op
-          ? [op.nodeId]
-          : [];
+        : op.type === "setRegionOrder"
+          ? [op.targetId]
+          : "nodeId" in op
+            ? [op.nodeId]
+            : [];
   return ids.some((id) => {
     const baseId = id.split("#")[0]!;
     return (
@@ -5687,6 +6137,32 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
       type: op.type,
       before: "",
       after: `${op.position} ${op.targetItemId}`,
+      ...(entry.changeSetId
+        ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
+        : {}),
+    };
+  }
+  if (op.type === "setLayoutPreset") {
+    const target = layoutTargetForId(op.nodeId);
+    const baseline = target?.baseline ?? "stacked";
+    return {
+      changeId: changeId || stableChangeId(pagePath, "layout", op.nodeId),
+      elementId: op.nodeId,
+      type: op.type,
+      before: baseline,
+      after: op.preset,
+      ...(entry.changeSetId
+        ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
+        : {}),
+    };
+  }
+  if (op.type === "setRegionOrder") {
+    return {
+      changeId: changeId || stableChangeId(pagePath, "region-order", op.targetId),
+      elementId: op.targetId,
+      type: op.type,
+      before: "original",
+      after: op.order,
       ...(entry.changeSetId
         ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
         : {}),
@@ -7022,7 +7498,8 @@ function refreshMarkers(): void {
     if (
       op.type === "duplicateSection" ||
       op.type === "duplicateGroupItem" ||
-      op.type === "moveGroupItem"
+      op.type === "moveGroupItem" ||
+      op.type === "setRegionOrder"
     )
       continue;
     const baseId = op.nodeId.split("#")[0]!;
@@ -7129,6 +7606,10 @@ function opLabel(op: Op): string {
       return "Duplicate Group item";
     case "moveGroupItem":
       return "Move Group item";
+    case "setLayoutPreset":
+      return "Layout";
+    case "setRegionOrder":
+      return "Region order";
   }
 }
 
@@ -7157,7 +7638,8 @@ function originalValue(pagePath: string, op: Op): string {
   if (op.type === "sectionVisibility") return op.before ? "visible" : "hidden";
   if (op.type === "moveSection") return "original position";
   if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") return "";
-  if (op.type === "moveGroupItem") return "";
+  if (op.type === "moveGroupItem" || op.type === "setLayoutPreset" || op.type === "setRegionOrder")
+    return "";
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
 
@@ -7510,6 +7992,10 @@ function applyOpToDom(pagePath: string, op: Op): void {
     applyGroupOrderToDom(op.groupId);
     return;
   }
+  if (op.type === "setLayoutPreset") {
+    applyLayoutToDom(pagePath, op);
+    return;
+  }
   if (op.type === "duplicateSection") {
     const current = state.current;
     const source = currentNodeElement(op.sourceId);
@@ -7532,6 +8018,11 @@ function applyOpToDom(pagePath: string, op: Op): void {
       sourceNodeMap,
     );
     registerCreatedMediaStates(pagePath, clone, sourceNodeMap, op.snapshotOperations);
+    return;
+  }
+  if (op.type === "setRegionOrder") {
+    const target = layoutTargetForId(op.targetId);
+    if (target) applyRegionOrderToDom(target, op.order);
     return;
   }
   if (op.type === "moveSection") {
@@ -7595,6 +8086,12 @@ function revertOpInDom(pagePath: string, op: Op): void {
     applyGroupOrderToDom(op.groupId);
   } else if (op.type === "moveGroupItem") {
     applyGroupOrderToDom(op.groupId);
+  } else if (op.type === "setLayoutPreset") {
+    const target = layoutTargetForId(op.nodeId);
+    if (target) restoreLayoutToDom(pagePath, target);
+  } else if (op.type === "setRegionOrder") {
+    const target = layoutTargetForId(op.targetId);
+    if (target) applyRegionOrderToDom(target, "original");
   } else if (op.type === "duplicateSection") {
     currentNodeElement(op.createdId)?.remove();
     const current = state.current;
@@ -8019,6 +8516,11 @@ function restoreOpsIntoDom(): void {
       if (el) el.hidden = !op.visible;
     } else if (op.type === "moveGroupItem") {
       applyGroupOrderToDom(op.groupId);
+    } else if (op.type === "setLayoutPreset") {
+      applyLayoutToDom(pagePath, op);
+    } else if (op.type === "setRegionOrder") {
+      const target = layoutTargetForId(op.targetId);
+      if (target) applyRegionOrderToDom(target, op.order);
     } else if (op.type === "moveSection") {
       const source = currentNodeElement(op.nodeId);
       const target = currentNodeElement(op.targetId);

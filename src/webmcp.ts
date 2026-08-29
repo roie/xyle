@@ -3,6 +3,8 @@ import type {
   GroupDescriptor,
   MediaCapabilities,
   Point,
+  LayoutPreset,
+  RegionOrder,
   SeoField,
   SeoState,
 } from "./types.ts";
@@ -106,7 +108,9 @@ export interface ChangeInfo {
     | "moveSection"
     | "duplicateSection"
     | "duplicateGroupItem"
-    | "moveGroupItem";
+    | "moveGroupItem"
+    | "setLayoutPreset"
+    | "setRegionOrder";
   before: string;
   after: string;
   changeSetId?: string;
@@ -171,6 +175,17 @@ export interface WebMcpBridge {
     targetItemId: string,
     position: "before" | "after",
   ) => { id: string; targetItemId: string; position: "before" | "after" };
+  listLayoutOptions?: (targetId: string) => {
+    id: string;
+    current: LayoutPreset;
+    baseline: LayoutPreset;
+    options: LayoutPreset[];
+  };
+  setLayoutPreset?: (
+    targetId: string,
+    preset: LayoutPreset,
+  ) => { id: string; preset: LayoutPreset };
+  setRegionOrder?: (targetId: string, order: RegionOrder) => { id: string; order: RegionOrder };
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -257,6 +272,33 @@ function parseMoveGroupItemInput(value: unknown): {
     targetItemId: value.targetItemId,
     position: value.position,
   };
+}
+
+function parseLayoutTargetInput(value: unknown): string {
+  if (!isRecord(value) || typeof value.targetId !== "string") {
+    throw new Error("layout target requires a string targetId");
+  }
+  return value.targetId;
+}
+
+function parseSetRegionOrderInput(value: unknown): { targetId: string; order: RegionOrder } {
+  if (!isRecord(value) || typeof value.targetId !== "string" || typeof value.order !== "string") {
+    throw new Error("set_region_order requires string targetId and order");
+  }
+  if (value.order !== "original" && value.order !== "swapped") {
+    throw new Error("set_region_order order is not supported");
+  }
+  return { targetId: value.targetId, order: value.order };
+}
+
+function parseSetLayoutInput(value: unknown): { targetId: string; preset: LayoutPreset } {
+  if (!isRecord(value) || typeof value.targetId !== "string" || typeof value.preset !== "string") {
+    throw new Error("set_layout requires string targetId and preset");
+  }
+  if (value.preset !== "stacked" && value.preset !== "two-column") {
+    throw new Error("set_layout preset is not supported");
+  }
+  return { targetId: value.targetId, preset: value.preset };
 }
 
 function parseChangeIdInput(value: unknown): string {
@@ -1031,6 +1073,80 @@ export async function registerWebMcpTools(
             const parsed = parseGroupItemInput(input);
             return textResult(
               JSON.stringify(bridge.duplicateGroupItem!(parsed.groupId, parsed.itemId)),
+            );
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.listLayoutOptions) {
+      await context.registerTool(
+        {
+          name: "list_layout_options",
+          description: "List the safe Stack and Split options for one Structural Block.",
+          inputSchema: {
+            type: "object",
+            properties: { targetId: { type: "string", description: "The safe section id." } },
+            required: ["targetId"],
+          },
+          annotations: { readOnlyHint: true, untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            return textResult(
+              JSON.stringify(bridge.listLayoutOptions!(parseLayoutTargetInput(input))),
+            );
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.setLayoutPreset) {
+      await context.registerTool(
+        {
+          name: "set_layout",
+          description: "Set one safe Structural Block to Stack or Split.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              targetId: { type: "string", description: "The safe section id." },
+              preset: { type: "string", enum: ["stacked", "two-column"] },
+            },
+            required: ["targetId", "preset"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseSetLayoutInput(input);
+            return textResult(
+              JSON.stringify(bridge.setLayoutPreset!(parsed.targetId, parsed.preset)),
+            );
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.setRegionOrder) {
+      await context.registerTool(
+        {
+          name: "set_region_order",
+          description: "Set one safe Layout target to its original or swapped region order.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              targetId: { type: "string", description: "The safe section id." },
+              order: { type: "string", enum: ["original", "swapped"] },
+            },
+            required: ["targetId", "order"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseSetRegionOrderInput(input);
+            return textResult(
+              JSON.stringify(bridge.setRegionOrder!(parsed.targetId, parsed.order)),
             );
           },
         },

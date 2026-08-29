@@ -68,6 +68,138 @@ describe("byte-preserving HTML patches", () => {
   });
 });
 
+describe("Layout presets", () => {
+  it("swaps safe regions as physical source subtrees", async () => {
+    const source = `<!doctype html><html><body><section><div id="left"><h2>Left</h2></div><div id="right"><p>Right</p></div></section></body></html>`;
+    const prepared = preparePreview(source, "/index.html", "https://example.test");
+    const target = prepared.layouts[0]!;
+    const swapped = await patchHtml(enc.encode(source), {
+      pagePath: "/index.html",
+      baseDigest: await digestBytes(enc.encode(source)),
+      operations: [
+        {
+          type: "setRegionOrder",
+          targetId: target.id,
+          firstRegionId: target.regions[0]!.id,
+          secondRegionId: target.regions[1]!.id,
+          order: "swapped",
+          targetSignature: target.signature,
+          regionSignatures: [target.regions[0]!.signature, target.regions[1]!.signature],
+          sequence: 1,
+        },
+      ],
+    });
+    const html = dec.decode(swapped);
+    expect(html.indexOf('id="right"')).toBeLessThan(html.indexOf('id="left"'));
+    expect(html).toContain('id="left"');
+    expect(html).toContain('id="right"');
+  });
+
+  it("preserves a swapped order in a duplicated section snapshot", async () => {
+    const source = `<main><section id="first"><div class="image"><p>Image</p></div><div class="content"><p>Content</p></div></section></main>`;
+    const prepared = preparePreview(source, "/index.html", "https://example.test");
+    const target = prepared.layouts[0]!;
+    const sourceNodes = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.kind === "text",
+    );
+    const nodeMap = Object.fromEntries(
+      sourceNodes.map((candidate) => [
+        candidate.id,
+        createdNodeIdentity(
+          "x-12345678",
+          sourceTargetIdentity(
+            "/index.html",
+            candidate.kind,
+            candidate.startTagStart,
+            candidate.elementEnd ?? candidate.startTagEnd,
+            candidate.tag,
+          ),
+        ),
+      ]),
+    );
+    const duplicated = await patchAndGetText(source, [
+      {
+        type: "duplicateSection",
+        sourceId: target.id,
+        createdId: "x-12345678",
+        sequence: 1,
+        insert: "after",
+        snapshotOperations: [
+          {
+            type: "setRegionOrder",
+            targetId: target.id,
+            firstRegionId: target.regions[0]!.id,
+            secondRegionId: target.regions[1]!.id,
+            order: "swapped",
+            targetSignature: target.signature,
+            regionSignatures: [target.regions[0]!.signature, target.regions[1]!.signature],
+            sequence: 2,
+          },
+        ],
+        nodeMap: { ...nodeMap },
+        idMap: { first: duplicateHtmlId("x-12345678", "first") },
+        assetRefs: [],
+      },
+    ]);
+    const firstClone = duplicated.indexOf(`id="${duplicateHtmlId("x-12345678", "first")}"`);
+    expect(firstClone).toBeGreaterThan(duplicated.indexOf('class="content"'));
+    expect(duplicated.lastIndexOf('class="content"')).toBeLessThan(
+      duplicated.lastIndexOf('class="image"'),
+    );
+  });
+
+  it("preserves authored baselines and manages the fixed stylesheet", async () => {
+    const source = `<!doctype html><html><head></head><body><section><div><img src="a.jpg"></div><div><h2>Title</h2></div></section></body></html>`;
+    const prepared = preparePreview(source, "/index.html", "https://example.test");
+    const target = prepared.layouts[0]!;
+    const bytes = enc.encode(source);
+    const split = await patchHtml(
+      bytes,
+      {
+        pagePath: "/index.html",
+        baseDigest: await digestBytes(bytes),
+        operations: [
+          {
+            type: "setLayoutPreset",
+            nodeId: target.id,
+            preset: "two-column",
+            baseline: "stacked",
+            targetSignature: target.signature,
+            regionSignatures: [target.regions[0]!.signature, target.regions[1]!.signature],
+          },
+        ],
+      },
+      { layoutAssetHref: "/__xyle/assets/layout.css", layoutAssetRequired: true },
+    );
+    const splitHtml = dec.decode(split);
+    expect(splitHtml).toContain('data-xyle-layout="split"');
+    expect(splitHtml).toContain('data-xyle-resource="layout-v1"');
+
+    const managed = preparePreview(splitHtml, "/index.html", "https://example.test");
+    const managedTarget = managed.layouts[0]!;
+    const managedBytes = enc.encode(splitHtml);
+    const restored = await patchHtml(managedBytes, {
+      pagePath: "/index.html",
+      baseDigest: await digestBytes(managedBytes),
+      operations: [
+        {
+          type: "setLayoutPreset",
+          nodeId: managedTarget.id,
+          preset: "stacked",
+          baseline: "stacked",
+          targetSignature: managedTarget.signature,
+          regionSignatures: [
+            managedTarget.regions[0]!.signature,
+            managedTarget.regions[1]!.signature,
+          ],
+        },
+      ],
+    });
+    expect(dec.decode(restored)).not.toContain("data-xyle-layout");
+    expect(dec.decode(restored)).not.toContain('data-xyle-resource="layout-v1"');
+  });
+});
+
 describe("preparePreview source locations", () => {
   it("finds usable source ranges without modifying the original string", () => {
     const source = `<h1>Hello</h1>`;

@@ -1058,4 +1058,64 @@ test.describe("WebMCP editor tools", () => {
     await expect(page.locator("article")).toHaveCount(3);
     await expect(page.getByText("Duplicated service")).toHaveCount(1);
   });
+
+  test("sets a physical region order through WebMCP", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/layouts.html");
+    const sections = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const section = sections.find(
+      (item) => item.type === "section" && item.preview.includes("Safe layout"),
+    );
+    expect(section?.id).toBeTruthy();
+    await expect(
+      invokeTool(page, "set_region_order", { targetId: section!.id, order: "swapped" }),
+    ).resolves.toMatchObject({ id: section!.id, order: "swapped" });
+    const preview = page.frameLocator("#xyle-preview");
+    await expect(preview.locator("#layout-basic > div").nth(0)).toHaveClass(/layout-content/);
+    await expect(preview.locator("#layout-basic > div").nth(1)).toHaveClass(/layout-image/);
+    await expect(invokeTool(page, "list_changes", {})).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "setRegionOrder" })]),
+    );
+  });
+
+  test("lists and sets a safe layout preset through WebMCP", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/layouts.html");
+    const sections = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const section = sections.find(
+      (item) => item.type === "section" && item.preview.includes("Safe layout"),
+    );
+    expect(section?.id).toBeTruthy();
+    await expect(
+      invokeTool(page, "list_layout_options", { targetId: section!.id }),
+    ).resolves.toMatchObject({
+      id: section!.id,
+      current: "stacked",
+      options: ["stacked", "two-column"],
+    });
+    await expect(
+      invokeTool(page, "set_layout", { targetId: section!.id, preset: "two-column" }),
+    ).resolves.toMatchObject({ id: section!.id, preset: "two-column" });
+    await expect(page.frameLocator("#xyle-preview").locator("#layout-basic")).toHaveAttribute(
+      "data-xyle-layout",
+      "split",
+    );
+    await expect(invokeTool(page, "list_changes", {})).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "setLayoutPreset" })]),
+    );
+  });
 });

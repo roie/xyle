@@ -2,15 +2,23 @@ import { readFile, realpath } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import type { AuthConfig } from "./auth.ts";
 import { createSessionCookie, logoutCookie, verifyEditorKey, verifySessionCookie } from "./auth.ts";
-import { computeSnapshotDigest, digestBytes, normalizeSitePath } from "./manifest.ts";
+import {
+  computeSnapshotDigest,
+  isManagedLayoutAssetPath,
+  normalizeSitePath,
+  XYLE_MANAGED_ASSET_MANIFEST_PATH,
+} from "./manifest.ts";
 import { isControlSitePath, isPathInsideRoot } from "./control-paths.ts";
-import { preparePreview, patchHtml } from "./html.ts";
+import { analyzeGroups, analyzeLayouts, analyzePage, preparePreview, patchHtml } from "./html.ts";
 import { discoverMedia, MAX_UPLOAD_BYTES, validateUpload, uploadPathFor } from "./media.ts";
 import { deriveCroppedImage } from "./crop.ts";
 import { mediaSourcePath } from "./media-state.ts";
+import { digestBytes } from "./digest.ts";
+import { LAYOUT_CSS, layoutAssetPath } from "./layout.ts";
 import type {
   MediaState,
   PageOperation,
+  XyleManagedAssetManifest,
   SnapshotOperation,
   PublishedSnapshot,
   Publisher,
@@ -26,6 +34,9 @@ export interface RuntimeContext {
   auth: AuthConfig;
   ignorePaths?: string[];
   ignoreSelectors?: string[];
+  publicAssetRoot?: string;
+  cspPolicies?: string[];
+  cspKnown?: boolean;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -113,7 +124,12 @@ function isIgnoredPath(sitePath: string, ignorePaths: string[] = []): boolean {
 }
 
 async function readSiteFile(root: string, sitePath: string): Promise<Uint8Array> {
-  if (isControlSitePath(sitePath)) throw new HttpError(404, { error: "reserved path" });
+  if (
+    isControlSitePath(sitePath) &&
+    sitePath !== XYLE_MANAGED_ASSET_MANIFEST_PATH &&
+    !isManagedLayoutAssetPath(sitePath)
+  )
+    throw new HttpError(404, { error: "reserved path" });
   const rootReal = await realpath(root);
   const target = resolve(root, `.${sitePath}`);
   const targetReal = await realpath(target);
@@ -292,6 +308,8 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
             "duplicateSection",
             "duplicateGroupItem",
             "moveGroupItem",
+            "setLayoutPreset",
+            "setRegionOrder",
           ].includes((op as { type?: string }).type ?? ""),
       )
     )
@@ -387,6 +405,77 @@ async function materializeMediaOperations(
   return { operations: output, assets };
 }
 
+function layoutRequiredForPage(source: string, operations: PageOperation[]): boolean {
+  const analysis = analyzePage(source);
+  const groups = analyzeGroups(source, "layout-check");
+  const targets = analyzeLayouts(source, analysis, groups);
+  const managedAttributeCount =
+    source.match(/data-xyle-layout\s*=\s*(?:"(?:stack|split)"|'(?:stack|split)'|(?:stack|split))/g)
+      ?.length ?? 0;
+  const managed = new Map(targets.map((target) => [target.id, !!target.managedPreset]));
+  const recognizedManagedCount = targets.filter((target) => target.managedPreset).length;
+  const visit = (nested: PageOperation[]): void => {
+    for (const operation of nested) {
+      if (operation.type === "setLayoutPreset") {
+        managed.set(operation.nodeId, operation.preset !== operation.baseline);
+      } else if (operation.type === "duplicateSection") {
+        if (managed.get(operation.sourceId)) managed.set(operation.sourceId, true);
+        visit([...operation.snapshotOperations, ...(operation.createdOperations ?? [])]);
+      }
+    }
+  };
+  visit(operations);
+  return managedAttributeCount > recognizedManagedCount || [...managed.values()].some(Boolean);
+}
+
+function layoutCspPermits(context: RuntimeContext, source: string): boolean {
+  if (context.cspKnown !== true) return false;
+  const policies = [...(context.cspPolicies ?? [])];
+  for (const tag of source.match(/<meta\b[^>]*>/gi) ?? []) {
+    const httpEquiv = /http-equiv\s*=\s*["']?([^"'\s>]+)/i.exec(tag)?.[1];
+    if (httpEquiv?.toLowerCase() !== "content-security-policy") continue;
+    const content = /content\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1];
+    if (content) policies.push(content);
+  }
+  let origin: string;
+  try {
+    origin = new URL(context.publicBaseUrl).origin;
+  } catch {
+    return false;
+  }
+  return policies.every((policy) => {
+    const directives = new Map<string, string[]>();
+    for (const directive of policy.split(";")) {
+      const [name, ...values] = directive.trim().split(/\s+/);
+      if (name) directives.set(name.toLowerCase(), values);
+    }
+    const sources =
+      directives.get("style-src-elem") ??
+      directives.get("style-src") ??
+      directives.get("default-src");
+    if (!sources || sources.length === 0) return true;
+    if (sources.includes("'none'")) return false;
+    if (sources.some((value) => value.startsWith("'nonce-") || value.startsWith("'sha")))
+      return false;
+    return sources.some((value) => {
+      if (value === "'self'") return true;
+      try {
+        return new URL(value).origin === origin;
+      } catch {
+        return false;
+      }
+    });
+  });
+}
+
+function layoutAssetHref(context: RuntimeContext, path: string): string {
+  const root = context.publicAssetRoot;
+  if (root !== "/") {
+    throw new Error("managed Layout assets require the public root path");
+  }
+  return path;
+}
+
 async function handlePublish(request: Request, context: RuntimeContext): Promise<Response> {
   await requireSession(request, context);
   assertMutationAllowed(request, context);
@@ -424,8 +513,40 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
     );
   }
 
+  const pageChanges = new Map(
+    metadata.pages.map((page) => [normalizeSitePath(page.pagePath), page]),
+  );
+  const pageLayoutNeeds = new Map<string, boolean>();
+  for (const [path, entry] of Object.entries(current.manifest.files)) {
+    if (entry.contentType !== "text/html") continue;
+    try {
+      const source = new TextDecoder("utf-8", { fatal: true }).decode(
+        await readSiteFile(context.root, path),
+      );
+      pageLayoutNeeds.set(
+        path,
+        layoutRequiredForPage(source, pageChanges.get(path)?.operations ?? []),
+      );
+    } catch {
+      return json({ error: `page is not valid UTF-8: ${path}` }, 400);
+    }
+  }
+  const layoutRequired = [...pageLayoutNeeds.values()].some(Boolean);
+  const layoutCssBytes = new TextEncoder().encode(LAYOUT_CSS);
+  const layoutCssDigest = await digestBytes(layoutCssBytes);
+  const layoutCssPath = layoutAssetPath(layoutCssDigest);
+  let managedLayoutHref: string | undefined;
+  if (layoutRequired) {
+    try {
+      managedLayoutHref = layoutAssetHref(context, layoutCssPath);
+    } catch (error) {
+      return json({ error: (error as Error).message }, 400);
+    }
+  }
   const changedFiles: SiteFile[] = [];
   const addedFiles: SiteFile[] = [];
+  const managedFiles: SiteFile[] = [];
+  const removedFiles: string[] = [];
   const addedAssetPaths = new Set<string>();
   const submitted = new Map<string, Uint8Array>();
   for (const [name, value] of form.entries()) {
@@ -448,6 +569,12 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
       return json({ error: `page not editable: ${pagePath}` }, 400);
     }
     const bytes = await readSiteFile(context.root, pagePath);
+    if (
+      pageLayoutNeeds.get(pagePath) &&
+      !layoutCspPermits(context, new TextDecoder().decode(bytes))
+    ) {
+      return json({ error: `managed Layout stylesheet is blocked by CSP for ${pagePath}` }, 400);
+    }
     let patched: Uint8Array;
     try {
       const materialized = await materializeMediaOperations(
@@ -473,7 +600,11 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
           baseDigest: change.baseDigest,
           operations: materialized.operations,
         },
-        context.ignoreSelectors ? { ignoreSelectors: context.ignoreSelectors } : {},
+        {
+          ...(context.ignoreSelectors ? { ignoreSelectors: context.ignoreSelectors } : {}),
+          ...(managedLayoutHref ? { layoutAssetHref: managedLayoutHref } : {}),
+          layoutAssetRequired: pageLayoutNeeds.get(pagePath) ?? false,
+        },
       );
     } catch (error) {
       return json({ error: `patch failed for ${pagePath}: ${(error as Error).message}` }, 400);
@@ -520,6 +651,45 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
   for (const [path, entry] of Object.entries(updatedEntries)) {
     manifestFiles[path] = entry;
   }
+  for (const path of Object.keys(manifestFiles)) {
+    if (!isManagedLayoutAssetPath(path)) continue;
+    delete manifestFiles[path];
+    if (path !== layoutCssPath) removedFiles.push(path);
+  }
+  if (layoutRequired) {
+    manifestFiles[layoutCssPath] = {
+      digest: layoutCssDigest,
+      size: layoutCssBytes.byteLength,
+      contentType: "text/css",
+    };
+    if (current.manifest.files[layoutCssPath]?.digest !== layoutCssDigest) {
+      addedFiles.push({
+        path: layoutCssPath,
+        bytes: layoutCssBytes,
+        digest: layoutCssDigest,
+        contentType: "text/css",
+      });
+    }
+    const managedManifest: XyleManagedAssetManifest = {
+      version: 1,
+      assets: {
+        [layoutCssPath]: {
+          digest: layoutCssDigest,
+          size: layoutCssBytes.byteLength,
+          contentType: "text/css",
+        },
+      },
+    };
+    const managedBytes = new TextEncoder().encode(JSON.stringify(managedManifest, null, 2));
+    managedFiles.push({
+      path: XYLE_MANAGED_ASSET_MANIFEST_PATH,
+      bytes: managedBytes,
+      digest: await digestBytes(managedBytes),
+      contentType: "application/json",
+    });
+  } else {
+    removedFiles.push(XYLE_MANAGED_ASSET_MANIFEST_PATH);
+  }
   const manifest: XyleManifest = {
     version: 1,
     snapshotDigest: await computeSnapshotDigest(manifestFiles),
@@ -531,6 +701,8 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
     manifest,
     changedFiles,
     addedFiles,
+    managedFiles,
+    removedFiles,
   });
 
   return json({
@@ -658,6 +830,7 @@ export function createXyleHandler(
           html: prepared.html,
           nodes: [...prepared.nodes.values()],
           groups: prepared.groups,
+          layouts: prepared.layouts,
         });
       }
 
@@ -685,6 +858,30 @@ export function createXyleHandler(
         return await handlePublish(request, context);
       }
 
+      if (request.method === "GET" || request.method === "HEAD") {
+        const managedPath =
+          pathname === XYLE_MANAGED_ASSET_MANIFEST_PATH || isManagedLayoutAssetPath(pathname)
+            ? pathname
+            : null;
+        if (managedPath) {
+          try {
+            const bytes = await readSiteFile(context.root, managedPath);
+            const ext = extname(managedPath).toLowerCase();
+            // SAFETY: Fetch accepts the bytes read from the validated managed asset as a body.
+            return new Response(request.method === "HEAD" ? null : (bytes as unknown as BodyInit), {
+              headers: {
+                "content-type": MIME_TYPES[ext] ?? "application/octet-stream",
+                "cache-control":
+                  managedPath === XYLE_MANAGED_ASSET_MANIFEST_PATH
+                    ? "no-cache"
+                    : "public, max-age=31536000, immutable",
+              },
+            });
+          } catch {
+            return new Response("Not found", { status: 404 });
+          }
+        }
+      }
       if (pathname.startsWith("/__xyle/") || pathname === "/_xyle/manifest.json") {
         return json({ error: "reserved path" }, 404);
       }
