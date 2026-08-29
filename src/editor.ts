@@ -25,6 +25,7 @@ import { stableIdentity } from "./identity.ts";
 import {
   STRUCTURAL_ID_REFERENCE_ATTRIBUTES,
   createdNodeIdentity,
+  duplicateGroupHtmlId,
   duplicateHtmlId,
 } from "./structural.ts";
 import { cropRectForFrame } from "./media-crop.ts";
@@ -42,6 +43,9 @@ import type {
   SeoField,
   SeoState,
   AssetReference,
+  DuplicateGroupItemOperation,
+  GroupDescriptor,
+  GroupItemDescriptor,
   SnapshotOperation,
 } from "./types.ts";
 
@@ -1476,6 +1480,7 @@ interface PageData {
   baseDigest: string;
   html: string;
   nodes: NodeMeta[];
+  groups: GroupDescriptor[];
 }
 
 type Op =
@@ -1525,7 +1530,8 @@ type Op =
       previewHtml?: string;
       idMap: Record<string, string>;
       assetRefs: AssetReference[];
-    };
+    }
+  | (DuplicateGroupItemOperation & { assetRefs: AssetReference[] });
 
 interface PageOps {
   pagePath: string;
@@ -1651,6 +1657,8 @@ async function boot(): Promise<void> {
 
   unregisterWebMcp = await registerWebMcpTools({
     listEditableContent,
+    listGroups,
+
     getContent,
     listChanges,
     revertChange,
@@ -1665,6 +1673,7 @@ async function boot(): Promise<void> {
     updateSectionVisibility,
     moveSection,
     duplicateSection,
+    duplicateGroupItem,
     updateText,
     updateLink,
   });
@@ -1695,7 +1704,7 @@ async function loadPage(pagePath: string, opts: { pushHistory: boolean }): Promi
   setInteractionMode("idle");
   selectedImage = null;
   mediaMutationGeneration += 1;
-  state.current = data;
+  state.current = { ...data, groups: data.groups ?? [] };
   cachedBaseDigest.set(data.pagePath, data.baseDigest);
   const pagePathLabel = $("#xyle-page-path");
   const pageNameLabel = $("#xyle-page-name");
@@ -1799,6 +1808,12 @@ function wirePreview(): void {
   for (const el of doc.querySelectorAll<HTMLElement>("[data-xyle-node]")) {
     const id = el.getAttribute("data-xyle-node")!;
     wireCandidate(el, metaById.get(id));
+  }
+  for (const group of doc.querySelectorAll<HTMLElement>("[data-xyle-group]")) {
+    wireGroupMarker(group);
+  }
+  for (const item of doc.querySelectorAll<HTMLElement>("[data-xyle-group-item]")) {
+    wireGroupItemMarker(item);
   }
   doc.addEventListener(
     "pointerdown",
@@ -1984,6 +1999,72 @@ function handlePreviewNavigation(anchor: HTMLAnchorElement): void {
 
 /* ---------- candidate wiring ---------- */
 
+function groupForId(id: string): GroupDescriptor | undefined {
+  return state.current?.groups.find((group) => group.id === id);
+}
+
+function groupItemForId(
+  groupId: string,
+  itemId: string,
+): GroupDescriptor["items"][number] | undefined {
+  return groupForId(groupId)?.items.find((item) => item.id === itemId);
+}
+
+function showGroupItemTools(item: HTMLElement, itemDescriptor: GroupItemDescriptor): void {
+  if (session) return;
+  const overlay = shellOverlay();
+  if (!overlay) return;
+  const tools = document.createElement("div");
+  tools.className = "xyle-link-tools xyle-group-item-tools";
+  tools.setAttribute("role", "toolbar");
+  tools.setAttribute("aria-label", "Group item actions");
+  const duplicate = document.createElement("button");
+  duplicate.type = "button";
+  duplicate.textContent = "Duplicate item";
+  duplicate.addEventListener("click", () => {
+    const groupId = item.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
+    if (!groupId) return;
+    duplicateGroupItem(groupId, itemDescriptor.id);
+    closeContextTools(false);
+  });
+  tools.append(duplicate);
+  registerContextTools(tools, item, "above");
+  overlay.append(tools);
+  positionContextTools(tools, previewElementRect(item), "above");
+}
+
+function wireGroupMarker(el: HTMLElement): void {
+  if (!el.hasAttribute("tabindex")) {
+    el.tabIndex = 0;
+    el.setAttribute("data-xyle-generated-tabindex", "");
+  }
+  el.addEventListener("mouseenter", () => beginCandidateHover(el));
+  el.addEventListener("mouseleave", () => endCandidateHover(el));
+  el.addEventListener("focus", () => refreshEditabilityOverlay());
+  el.addEventListener("blur", () => refreshEditabilityOverlay());
+}
+
+function wireGroupItemMarker(el: HTMLElement): void {
+  wireGroupMarker(el);
+  const showTools = (): void => {
+    const groupId = el.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
+    const itemId = el.dataset.xyleGroupItem;
+    const item = groupId && itemId ? groupItemForId(groupId, itemId) : undefined;
+    if (groupId && item) showGroupItemTools(el, item);
+  };
+  el.addEventListener("pointerdown", (event) => {
+    const target = event.target as Element | null;
+    if (target?.closest("[data-xyle-node]")) return;
+    showTools();
+  });
+  el.addEventListener("focus", showTools);
+  el.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    showTools();
+  });
+}
+
 function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
   if (!meta) return;
   if (!el.hasAttribute("tabindex")) {
@@ -2093,7 +2174,9 @@ function refreshEditabilityOverlay(): void {
   overlay.querySelectorAll(".xyle-editable-outline").forEach((overlayItem) => {
     overlayItem.remove();
   });
-  for (const el of doc.querySelectorAll<HTMLElement>("[data-xyle-node]")) {
+  for (const el of doc.querySelectorAll<HTMLElement>(
+    "[data-xyle-node], [data-xyle-group], [data-xyle-group-item]",
+  )) {
     const isEditing = el.classList.contains("xyle-editing");
     const isHovered = el.classList.contains("xyle-hover");
     const isChangeFocused = focusedChangeTarget === el;
@@ -4271,7 +4354,8 @@ function assetPathsFor(...ops: Array<Op | undefined>): string[] {
     ...new Set(
       ops
         .flatMap((op) => {
-          if (op?.type === "duplicateSection") return op.assetRefs.map((asset) => asset.assetId);
+          if (op?.type === "duplicateSection" || op?.type === "duplicateGroupItem")
+            return op.assetRefs.map((asset) => asset.assetId);
           if (op?.type === "src") return [op.value];
           if (op?.type === "media") return [mediaSourcePath(op.value.source)];
           return [];
@@ -4287,7 +4371,8 @@ function cleanupUnreachableAssets(includeHistory = true): void {
       if (op.type === "src") return [op.value];
       if (op.type === "media" && op.value.source.kind === "staged")
         return [op.value.source.assetId];
-      if (op.type === "duplicateSection") return op.assetRefs.map((asset) => asset.assetId);
+      if (op.type === "duplicateSection" || op.type === "duplicateGroupItem")
+        return op.assetRefs.map((asset) => asset.assetId);
       return [];
     }),
     ...stagedMediaLibrary.keys(),
@@ -4453,6 +4538,8 @@ function stripPreviewInstrumentation(
       "data-xyle-generated-tabindex",
       "data-xyle-generated-hover",
       "data-xyle-generated-editing",
+      "data-xyle-group",
+      "data-xyle-group-item",
     ]) {
       element.removeAttribute(attribute);
     }
@@ -4618,7 +4705,9 @@ function reconcileRichContent(pagePath?: string): void {
 }
 
 function opKey(op: Op): string {
-  if (op.type === "duplicateSection") return `${op.type}@${op.createdId}`;
+  if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") {
+    return `${op.type}@${op.createdId}`;
+  }
   const target = op.type === "text" ? op.nodeId : `${op.nodeId}:${op.type}`;
   if (op.type === "format" && op.start !== undefined && op.end !== undefined) {
     return `${op.type}@${target}:${op.start}-${op.end}`;
@@ -4979,13 +5068,206 @@ function duplicateSection(nodeId: string): { id: string; sourceId: string } {
   return { id: createdId, sourceId: nodeId };
 }
 
-function registerCreatedSectionNodes(
+function duplicateGroupItem(
+  groupId: string,
+  itemId: string,
+): { id: string; groupId: string; sourceItemId: string } {
+  const current = state.current;
+  const doc = previewDoc();
+  const group = current?.groups.find((candidate) => candidate.id === groupId);
+  const item = group?.items.find((candidate) => candidate.id === itemId);
+  const source = item
+    ? doc?.querySelector<HTMLElement>(`[data-xyle-group-item="${CSS.escape(item.id)}"]`)
+    : null;
+  const container = group
+    ? doc?.querySelector<HTMLElement>(`[data-xyle-group="${CSS.escape(group.id)}"]`)
+    : null;
+  if (
+    !current ||
+    !group ||
+    !item ||
+    !source ||
+    !container ||
+    source.parentElement !== container ||
+    source.tagName.toLowerCase() !== item.tag
+  ) {
+    throw new Error("Only source-backed Group items can be duplicated");
+  }
+  if (state.ops.some(({ op }) => op.type === "duplicateGroupItem" && op.createdId === item.id)) {
+    throw new Error("Created Group items cannot be duplicated yet");
+  }
+  const siblings = [...container.children].filter((child) =>
+    child.hasAttribute("data-xyle-group-item"),
+  );
+  if (
+    siblings.length !== group.items.length ||
+    siblings[item.index] !== source ||
+    siblings.some(
+      (sibling, index) => sibling.getAttribute("data-xyle-group-item") !== group.items[index]!.id,
+    )
+  ) {
+    throw new Error("Group item order is unavailable");
+  }
+  const createdId = stableIdentity([
+    "created-group-item",
+    current.pagePath,
+    groupId,
+    itemId,
+    crypto.randomUUID(),
+  ]);
+  const clone = source.cloneNode(true) as HTMLElement;
+  stripPreviewInstrumentation(clone, { keepNodeMarkers: true });
+  const sourceIdValues = [
+    ...(source.id ? [source.id] : []),
+    ...[...source.querySelectorAll<HTMLElement>("[id]")]
+      .map((element) => element.id)
+      .filter(Boolean),
+  ];
+  if (new Set(sourceIdValues).size !== sourceIdValues.length)
+    throw new Error("Group item contains duplicate HTML ids");
+  const snapshotOperations = state.ops
+    .filter(
+      ({ pagePath, op }) =>
+        pagePath === current.pagePath &&
+        op.type !== "duplicateSection" &&
+        op.type !== "duplicateGroupItem" &&
+        opTargetsElement(op, source),
+    )
+    .map(({ op }) => structuredClone(op) as SnapshotOperation);
+  const documentIds = new Set(
+    [...source.ownerDocument.querySelectorAll<HTMLElement>("[id]")]
+      .map((element) => element.id)
+      .filter(Boolean),
+  );
+  const idMap = new Map<string, string>();
+  for (const id of sourceIdValues) {
+    const cloneId = duplicateGroupHtmlId(createdId, id);
+    if (documentIds.has(cloneId)) throw new Error("Group item generated an HTML id collision");
+    idMap.set(id, cloneId);
+  }
+  const sourceNodeIds = new Map<string, string>();
+  source.querySelectorAll<HTMLElement>("[data-xyle-node]").forEach((element) => {
+    const originalId = element.dataset.xyleNode;
+    if (!originalId) return;
+    const meta = current.nodes.find((candidate) => candidate.id === originalId);
+    const logicalKey = meta?.stableTargetId ?? originalId;
+    sourceNodeIds.set(originalId, createdNodeIdentity(createdId, logicalKey));
+  });
+  const rewrite = (element: HTMLElement): void => {
+    if (element.id && idMap.has(element.id)) element.id = idMap.get(element.id)!;
+    const nodeId = element.dataset.xyleNode;
+    if (nodeId && sourceNodeIds.has(nodeId)) element.dataset.xyleNode = sourceNodeIds.get(nodeId)!;
+    for (const attribute of STRUCTURAL_ID_REFERENCE_ATTRIBUTES) {
+      const value = element.getAttribute(attribute);
+      if (value)
+        element.setAttribute(
+          attribute,
+          value
+            .split(/\\s+/)
+            .map((token) => idMap.get(token) ?? token)
+            .join(" "),
+        );
+    }
+    const href = element.getAttribute("href");
+    if (href?.startsWith("#") && idMap.has(href.slice(1)))
+      element.setAttribute("href", `#${idMap.get(href.slice(1))}`);
+    for (const child of [...element.children] as HTMLElement[]) rewrite(child);
+  };
+  rewrite(clone);
+  clone.dataset.xyleGroupItem = createdId;
+  const previousDuplicates = state.ops
+    .flatMap(({ pagePath, op }) =>
+      pagePath === current.pagePath &&
+      op.type === "duplicateGroupItem" &&
+      op.groupId === groupId &&
+      op.sourceItemId === itemId
+        ? [op]
+        : [],
+    )
+    .sort((left, right) => left.sequence - right.sequence);
+  const anchor = previousDuplicates.length
+    ? (doc?.querySelector<HTMLElement>(
+        `[data-xyle-group-item="${CSS.escape(previousDuplicates.at(-1)!.createdId)}"]`,
+      ) ?? source)
+    : source;
+  anchor.after(clone);
+  registerCreatedSubtreeNodes(current, clone, sourceNodeIds);
+  registerCreatedMediaStates(current.pagePath, clone, sourceNodeIds, snapshotOperations);
+  const operation: Op = {
+    type: "duplicateGroupItem",
+    groupId,
+    sourceItemId: itemId,
+    sourceItemIndex: item.index,
+    groupSignature: group.signature,
+    itemSignature: item.signature,
+    createdId,
+    sequence: ++nextOpRevision,
+    insert: "after",
+    snapshotOperations,
+    nodeMap: { [itemId]: createdId, ...Object.fromEntries(sourceNodeIds) },
+    previewHtml: new XMLSerializer().serializeToString(clone),
+    idMap: Object.fromEntries(idMap),
+    assetRefs: [
+      ...new Set(
+        snapshotOperations.flatMap((op) =>
+          op.type === "media" && op.value.source.kind === "staged" ? [op.value.source.assetId] : [],
+        ),
+      ),
+    ].map((assetId) => ({ assetId })),
+  };
+  applyOp(current.pagePath, operation, "Duplicate Group item");
+  return { id: createdId, groupId, sourceItemId: itemId };
+}
+
+function applyGroupItemDuplicateToDom(
+  pagePath: string,
+  op: Extract<Op, { type: "duplicateGroupItem" }>,
+): void {
+  const current = state.current;
+  const doc = previewDoc();
+  const source = doc?.querySelector<HTMLElement>(
+    `[data-xyle-group-item="${CSS.escape(op.sourceItemId)}"]`,
+  );
+  if (pagePath !== current?.pagePath || !current || !doc || !source || !op.previewHtml) return;
+  const parsed = new DOMParser().parseFromString(op.previewHtml, "text/html");
+  const parsedClone = parsed.body.firstElementChild;
+  if (!(parsedClone instanceof HTMLElement)) return;
+  const clone = document.importNode(parsedClone, true) as HTMLElement;
+  const previous = state.ops
+    .flatMap(({ pagePath: entryPage, op: entryOp }) =>
+      entryPage === pagePath &&
+      entryOp.type === "duplicateGroupItem" &&
+      entryOp.groupId === op.groupId &&
+      entryOp.sourceItemId === op.sourceItemId &&
+      entryOp.sequence < op.sequence
+        ? [entryOp]
+        : [],
+    )
+    .sort((left, right) => left.sequence - right.sequence);
+  const anchor = previous.length
+    ? (doc.querySelector<HTMLElement>(
+        `[data-xyle-group-item="${CSS.escape(previous.at(-1)!.createdId)}"]`,
+      ) ?? source)
+    : source;
+  anchor.after(clone);
+  const sourceNodeMap = new Map(
+    Object.entries(op.nodeMap).map(([originalId, createdNodeId]) => [originalId, createdNodeId]),
+  );
+  registerCreatedSubtreeNodes(current, clone, sourceNodeMap);
+  registerCreatedMediaStates(pagePath, clone, sourceNodeMap, op.snapshotOperations);
+}
+
+interface CreatedRootRegistration {
+  sourceId: string;
+  createdId: string;
+  sourceMeta: NodeMeta;
+}
+
+function registerCreatedSubtreeNodes(
   current: PageData,
-  sourceMeta: NodeMeta,
   clone: HTMLElement,
-  sourceId: string,
-  createdId: string,
   sourceNodeIds: ReadonlyMap<string, string>,
+  root?: CreatedRootRegistration,
 ): void {
   const createdToSource = new Map(
     [...sourceNodeIds.entries()].map(([originalId, createdNodeId]) => [createdNodeId, originalId]),
@@ -4995,10 +5277,10 @@ function registerCreatedSectionNodes(
   for (const element of elements) {
     const id = element.dataset.xyleNode;
     if (!id) continue;
-    const originalId = id === createdId ? sourceId : createdToSource.get(id);
+    const originalId = id === root?.createdId ? root.sourceId : createdToSource.get(id);
     const original =
-      originalId === sourceId
-        ? sourceMeta
+      root && originalId === root.sourceId
+        ? root.sourceMeta
         : originalId
           ? current.nodes.find((candidate) => candidate.id === originalId)
           : undefined;
@@ -5039,6 +5321,17 @@ function registerCreatedSectionNodes(
   }
 }
 
+function registerCreatedSectionNodes(
+  current: PageData,
+  sourceMeta: NodeMeta,
+  clone: HTMLElement,
+  sourceId: string,
+  createdId: string,
+  sourceNodeIds: ReadonlyMap<string, string>,
+): void {
+  registerCreatedSubtreeNodes(current, clone, sourceNodeIds, { sourceMeta, sourceId, createdId });
+}
+
 function registerCreatedMediaStates(
   pagePath: string,
   clone: HTMLElement,
@@ -5060,16 +5353,19 @@ function registerCreatedMediaStates(
   }
 }
 
-function removeCreatedSectionState(
-  current: PageData,
-  op: Extract<Op, { type: "duplicateSection" }>,
-): void {
-  const createdIds = new Set([op.createdId, ...Object.values(op.nodeMap)]);
+function removeCreatedSubtreeState(current: PageData, createdIds: ReadonlySet<string>): void {
   current.nodes = current.nodes.filter((node) => !createdIds.has(node.id));
   for (const id of createdIds) {
     createdMedia.delete(segmentIdentity(current.pagePath, id));
     originalMedia.delete(segmentIdentity(current.pagePath, id));
   }
+}
+
+function removeCreatedSectionState(
+  current: PageData,
+  op: Extract<Op, { type: "duplicateSection" }>,
+): void {
+  removeCreatedSubtreeState(current, new Set([op.createdId, ...Object.values(op.nodeMap)]));
 }
 
 function opTargetsElement(op: Op, root: HTMLElement): boolean {
@@ -5088,6 +5384,10 @@ function opTargetsElement(op: Op, root: HTMLElement): boolean {
       Boolean(root.querySelector(`[data-xyle-node="${CSS.escape(baseId)}"]`))
     );
   });
+}
+
+function listGroups(): GroupDescriptor[] {
+  return state.current?.groups ?? [];
 }
 
 function listEditableContent(): EditableContent[] {
@@ -5131,6 +5431,18 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
       type: op.type,
       before: "",
       after: `duplicate of ${op.sourceId}`,
+      ...(entry.changeSetId
+        ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
+        : {}),
+    };
+  }
+  if (op.type === "duplicateGroupItem") {
+    return {
+      changeId: changeId || stableChangeId(pagePath, "group-item-duplicate", op.createdId),
+      elementId: op.createdId,
+      type: op.type,
+      before: "",
+      after: `duplicate of ${op.sourceItemId}`,
       ...(entry.changeSetId
         ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
         : {}),
@@ -5285,11 +5597,19 @@ function revertRichContentRegion(region: RichContentRegion): void {
 function revertPendingOperation(index: number): void {
   const entry = state.ops[index];
   if (!entry) return;
-  const duplicate = entry.op.type === "duplicateSection" ? entry.op : null;
+  const duplicate =
+    entry.op.type === "duplicateSection" || entry.op.type === "duplicateGroupItem"
+      ? entry.op
+      : null;
   const dependent = duplicate
     ? state.ops.filter(({ pagePath, op }) => {
-        if (pagePath !== entry.pagePath || op.type === "duplicateSection") return false;
-        const createdIds = new Set(Object.values(duplicate.nodeMap));
+        if (
+          pagePath !== entry.pagePath ||
+          op.type === "duplicateSection" ||
+          op.type === "duplicateGroupItem"
+        )
+          return false;
+        const createdIds = new Set([duplicate.createdId, ...Object.values(duplicate.nodeMap)]);
         const ids = op.type === "toggleList" ? op.nodeIds : "nodeId" in op ? [op.nodeId] : [];
         return ids.some((id) => createdIds.has(id.split("#")[0]!));
       })
@@ -6362,7 +6682,7 @@ function refreshMarkers(): void {
   });
   const byPageOp = state.ops.filter((o) => o.pagePath === state.current!.pagePath);
   for (const { op } of byPageOp) {
-    if (op.type === "duplicateSection") continue;
+    if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") continue;
     const baseId = op.nodeId.split("#")[0]!;
     const el = doc.querySelector(`[data-xyle-node="${baseId}"]`) as HTMLElement | null;
     if (!el) continue;
@@ -6409,7 +6729,9 @@ function focusChange(pagePath: string, nodeId: string): void {
   if (!keepDrawerOpen) closeChangesDrawer(false);
   const reveal = (): void => {
     const baseId = nodeId.split("#", 1)[0];
-    const target = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${baseId}"]`);
+    const target =
+      previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${baseId}"]`) ??
+      previewDoc()?.querySelector<HTMLElement>(`[data-xyle-group-item="${baseId}"]`);
     if (!target) return;
     window.clearTimeout(focusedChangeTimer);
     focusedChangeKey = changeKey;
@@ -6461,6 +6783,8 @@ function opLabel(op: Op): string {
       return "Section order";
     case "duplicateSection":
       return "Duplicate section";
+    case "duplicateGroupItem":
+      return "Duplicate Group item";
   }
 }
 
@@ -6488,7 +6812,7 @@ function originalValue(pagePath: string, op: Op): string {
   if (op.type === "seo") return originalSeo.get(seoIdentity(pagePath, op.field)) ?? "";
   if (op.type === "sectionVisibility") return op.before ? "visible" : "hidden";
   if (op.type === "moveSection") return "original position";
-  if (op.type === "duplicateSection") return "";
+  if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") return "";
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
 
@@ -6785,6 +7109,10 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) el.hidden = !op.visible;
     return;
   }
+  if (op.type === "duplicateGroupItem") {
+    applyGroupItemDuplicateToDom(pagePath, op);
+    return;
+  }
   if (op.type === "duplicateSection") {
     const current = state.current;
     const source = currentNodeElement(op.sourceId);
@@ -6860,6 +7188,13 @@ function revertOpInDom(pagePath: string, op: Op): void {
   } else if (op.type === "sectionVisibility") {
     const el = currentNodeElement(op.nodeId);
     if (el) el.hidden = !op.before;
+  } else if (op.type === "duplicateGroupItem") {
+    doc
+      .querySelector<HTMLElement>(`[data-xyle-group-item="${CSS.escape(op.createdId)}"]`)
+      ?.remove();
+    const current = state.current;
+    if (current)
+      removeCreatedSubtreeState(current, new Set([op.createdId, ...Object.values(op.nodeMap)]));
   } else if (op.type === "duplicateSection") {
     currentNodeElement(op.createdId)?.remove();
     const current = state.current;
@@ -7247,6 +7582,8 @@ function restoreOpsIntoDom(): void {
       applyBlockFormatToDom(pagePath, op);
     } else if (op.type === "toggleList") {
       applyToggleListToDom(pagePath, op, op.after);
+    } else if (op.type === "duplicateGroupItem") {
+      applyGroupItemDuplicateToDom(pagePath, op);
     } else if (op.type === "duplicateSection") {
       const source = currentNodeElement(op.sourceId);
       const sourceMeta = state.current.nodes.find((candidate) => candidate.id === op.sourceId);
@@ -7440,20 +7777,24 @@ function collectPageOps(): PageOps[] {
   }
   const pages: PageOps[] = [];
   for (const [pagePath, entries] of byPage) {
+    type DuplicateOp = Extract<Op, { type: "duplicateSection" | "duplicateGroupItem" }>;
     const duplicates = entries.filter(
-      (entry): entry is PendingOp & { op: Extract<Op, { type: "duplicateSection" }> } =>
-        entry.op.type === "duplicateSection",
+      (entry): entry is PendingOp & { op: DuplicateOp } =>
+        entry.op.type === "duplicateSection" || entry.op.type === "duplicateGroupItem",
     );
-    const owned = new Set(duplicates.flatMap((entry) => Object.values(entry.op.nodeMap)));
+    const owned = new Set(
+      duplicates.flatMap((entry) => [entry.op.createdId, ...Object.values(entry.op.nodeMap)]),
+    );
     const operations: Op[] = [];
     for (const entry of entries) {
       const op = entry.op;
-      if (op.type === "duplicateSection") {
-        const createdNodeIds = new Set(Object.values(op.nodeMap));
+      if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") {
+        const createdNodeIds = new Set([op.createdId, ...Object.values(op.nodeMap)]);
         const createdOperations = entries
           .map(({ op: candidate }) => candidate)
           .filter((candidate) => {
-            if (candidate.type === "duplicateSection") return false;
+            if (candidate.type === "duplicateSection" || candidate.type === "duplicateGroupItem")
+              return false;
             const ids =
               candidate.type === "toggleList"
                 ? candidate.nodeIds

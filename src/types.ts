@@ -112,7 +112,8 @@ export type PageOperation =
       originalIndex: number;
       sequence?: number;
     }
-  | DuplicateSectionOperation;
+  | DuplicateSectionOperation
+  | DuplicateGroupItemOperation;
 
 export interface DuplicateSectionOperation {
   type: "duplicateSection";
@@ -129,7 +130,29 @@ export interface DuplicateSectionOperation {
   assetRefs: AssetReference[];
 }
 
-export type SnapshotOperation = Exclude<PageOperation, DuplicateSectionOperation>;
+export interface DuplicateGroupItemOperation {
+  type: "duplicateGroupItem";
+  groupId: string;
+  sourceItemId: string;
+  sourceItemIndex: number;
+  groupSignature: string;
+  itemSignature: string;
+  createdId: string;
+  sequence: number;
+  insert: "after";
+  snapshotOperations: SnapshotOperation[];
+  nodeMap: Record<string, string>;
+  createdOperations?: SnapshotOperation[];
+  /** Client preview state only; the server never uses this as publish input. */
+  previewHtml?: string;
+  idMap: Record<string, string>;
+  assetRefs: AssetReference[];
+}
+
+export type SnapshotOperation = Exclude<
+  PageOperation,
+  DuplicateSectionOperation | DuplicateGroupItemOperation
+>;
 
 export interface AssetReference {
   assetId: string;
@@ -213,6 +236,7 @@ export interface GroupItemDescriptor {
   index: number;
   sourceStart: number;
   sourceEnd: number;
+  startTagEnd: number;
   signature: string;
 }
 
@@ -222,6 +246,7 @@ export interface GroupDescriptor {
   containerTag: "div";
   sourceStart: number;
   sourceEnd: number;
+  startTagEnd: number;
   sectionStart: number;
   sectionEnd: number;
   signature: string;
@@ -248,6 +273,7 @@ export interface PreviewNode {
 export interface PreparedPreview {
   html: string;
   nodes: Map<string, PreviewNode>;
+  groups: GroupDescriptor[];
 }
 
 export interface AuthConfig {

@@ -9,9 +9,9 @@ import {
   preparePreview,
 } from "../src/html.ts";
 import { digestBytes } from "../src/manifest.ts";
-import { createdNodeIdentity, duplicateHtmlId } from "../src/structural.ts";
+import { createdNodeIdentity, duplicateGroupHtmlId, duplicateHtmlId } from "../src/structural.ts";
 import { sourceTargetIdentity } from "../src/identity.ts";
-import type { PageChange, XyleDigest } from "../src/types.ts";
+import type { PageChange, SnapshotOperation, XyleDigest } from "../src/types.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -770,6 +770,88 @@ describe("safe Group discovery", () => {
     ["one item", `<section><div><article><h3>Only</h3><p>One</p></article></div></section>`],
   ])("rejects %s", (_name, source) => {
     expect(discover(source)).toEqual([]);
+  });
+});
+
+describe("Group item duplication", () => {
+  function operationFor(
+    source: string,
+    createdId: string,
+    snapshotOperations: SnapshotOperation[] = [],
+  ) {
+    const group = analyzeGroups(source, "/index.html")[0]!;
+    const item = group.items[0]!;
+    const nodeMap: Record<string, string> = { [item.id]: createdId };
+    for (const candidate of analyzePage(source).candidates.values()) {
+      const end = candidate.elementEnd ?? candidate.startTagEnd;
+      if (candidate.startTagStart < item.sourceStart || end > item.sourceEnd) continue;
+      nodeMap[candidate.id] = createdNodeIdentity(
+        createdId,
+        sourceTargetIdentity(
+          "/index.html",
+          candidate.kind,
+          candidate.startTagStart,
+          end,
+          candidate.tag,
+        ),
+      );
+    }
+    return {
+      type: "duplicateGroupItem" as const,
+      groupId: group.id,
+      sourceItemId: item.id,
+      sourceItemIndex: item.index,
+      groupSignature: group.signature,
+      itemSignature: item.signature,
+      createdId,
+      sequence: 1,
+      insert: "after" as const,
+      snapshotOperations,
+      nodeMap,
+      idMap: {},
+      assetRefs: [],
+    };
+  }
+
+  it("duplicates an item while freezing its snapshot before later source edits", async () => {
+    const source = `<main><section><div><article><h3>Original</h3><p>Before</p></article><article><h3>Other</h3><p>Other copy</p></article></div></section></main>`;
+    const group = analyzeGroups(source, "/index.html")[0]!;
+    const item = group.items[0]!;
+    const title = [...analyzePage(source).candidates.values()].find(
+      (candidate) => candidate.tag === "h3" && candidate.startTagStart > item.sourceStart,
+    )!;
+    const operation = operationFor(source, "x-12345678", [
+      { type: "text", nodeId: `${title.id}#0`, value: "Frozen title" },
+    ]);
+    const output = await patchAndGetText(source, [
+      operation,
+      { type: "text", nodeId: `${title.id}#0`, value: "Changed original" },
+    ]);
+    expect(output).toContain("<h3>Changed original</h3>");
+    expect(output).toContain("<h3>Frozen title</h3>");
+  });
+
+  it("remaps item-root HTML ids and local references", async () => {
+    const source = `<main><section><div><article id="card-a" aria-labelledby="title-a"><h3 id="title-a">A</h3><p>One</p></article><article id="card-b" aria-labelledby="title-b"><h3 id="title-b">B</h3><p>Two</p></article></div></section></main>`;
+    const createdId = "x-12345678";
+    const idMap = Object.fromEntries(
+      ["card-a", "title-a"].map((id) => [id, duplicateGroupHtmlId(createdId, id)]),
+    );
+    const operation = { ...operationFor(source, createdId), idMap };
+    const output = await patchAndGetText(source, [operation]);
+    expect(output).toContain(`id="${idMap["card-a"]}" aria-labelledby="${idMap["title-a"]}"`);
+    expect(output).toContain(`id="${idMap["title-a"]}">A</h3>`);
+    expect((output.match(new RegExp(`id="${idMap["card-a"]}"`, "g")) ?? []).length).toBe(1);
+  });
+
+  it("keeps repeated duplicates in sequence order", async () => {
+    const source = `<main><section><div><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article></div></section></main>`;
+    const first = operationFor(source, "x-12345678");
+    const second = { ...operationFor(source, "x-87654321"), sequence: 2 };
+    const output = await patchAndGetText(source, [first, second]);
+    expect(output.indexOf('data-xyle-group-item="')).toBe(-1);
+    expect(output.indexOf("<h3>A</h3>")).toBeLessThan(output.indexOf("<h3>B</h3>"));
+    expect(output.split("<h3>A</h3>").length - 1).toBe(3);
   });
 });
 

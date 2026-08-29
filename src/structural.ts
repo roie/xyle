@@ -25,6 +25,10 @@ export function duplicateHtmlId(createdId: string, originalId: string): string {
   return stableIdentity(["duplicate-html-id", createdId, originalId]);
 }
 
+export function duplicateGroupHtmlId(createdId: string, originalId: string): string {
+  return stableIdentity(["duplicate-group-html-id", createdId, originalId]);
+}
+
 export function rewriteFragmentReference(
   value: string,
   idMap: ReadonlyMap<string, string>,

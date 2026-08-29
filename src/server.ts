@@ -290,6 +290,7 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
             "sectionVisibility",
             "moveSection",
             "duplicateSection",
+            "duplicateGroupItem",
           ].includes((op as { type?: string }).type ?? ""),
       )
     )
@@ -317,7 +318,7 @@ async function materializeMediaOperations(
   const materialized = new Map<string, string>();
   const output: PageOperation[] = [];
   for (const operation of operations) {
-    if (operation.type === "duplicateSection") {
+    if (operation.type === "duplicateSection" || operation.type === "duplicateGroupItem") {
       const nested = await materializeMediaOperations(
         [...operation.snapshotOperations, ...(operation.createdOperations ?? [])],
         current,
@@ -655,6 +656,7 @@ export function createXyleHandler(
           baseDigest: file.digest,
           html: prepared.html,
           nodes: [...prepared.nodes.values()],
+          groups: prepared.groups,
         });
       }
 

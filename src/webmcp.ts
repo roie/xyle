@@ -1,4 +1,11 @@
-import type { CropRect, MediaCapabilities, Point, SeoField, SeoState } from "./types.ts";
+import type {
+  CropRect,
+  GroupDescriptor,
+  MediaCapabilities,
+  Point,
+  SeoField,
+  SeoState,
+} from "./types.ts";
 
 export interface EditableContent {
   id: string;
@@ -97,7 +104,8 @@ export interface ChangeInfo {
     | "toggleList"
     | "sectionVisibility"
     | "moveSection"
-    | "duplicateSection";
+    | "duplicateSection"
+    | "duplicateGroupItem";
   before: string;
   after: string;
   changeSetId?: string;
@@ -130,6 +138,7 @@ export interface ChangeSetUndoResult {
 
 export interface WebMcpBridge {
   listEditableContent(): EditableContent[];
+  listGroups?: () => GroupDescriptor[];
   getContent(id: string): ContentResult;
   listChanges(): ChangeInfo[];
   revertChange(changeId: string): UndoResult;
@@ -151,6 +160,10 @@ export interface WebMcpBridge {
     before: boolean,
   ) => { id: string; targetId: string; before: boolean };
   duplicateSection?: (id: string) => { id: string; sourceId: string };
+  duplicateGroupItem?: (
+    groupId: string,
+    itemId: string,
+  ) => { id: string; groupId: string; sourceItemId: string };
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -205,6 +218,13 @@ function parseIdInput(value: unknown, toolName: string): string {
     throw new Error(`${toolName} requires a string id`);
   }
   return value.id;
+}
+
+function parseGroupItemInput(value: unknown): { groupId: string; itemId: string } {
+  if (!isRecord(value) || typeof value.groupId !== "string" || typeof value.itemId !== "string") {
+    throw new Error("duplicate_group_item requires string groupId and itemId");
+  }
+  return { groupId: value.groupId, itemId: value.itemId };
 }
 
 function parseChangeIdInput(value: unknown): string {
@@ -517,6 +537,23 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
+    if (bridge.listGroups) {
+      await context.registerTool(
+        {
+          name: "list_groups",
+          description: "List source-backed repeating Groups and their safe items.",
+          inputSchema: { type: "object", properties: {} },
+          annotations: { readOnlyHint: true, untrustedContentHint: true },
+          execute: async (_input, context) => {
+            if (context?.signal?.aborted) {
+              throw new DOMException("Tool execution canceled", "AbortError");
+            }
+            return textResult(JSON.stringify(bridge.listGroups!()));
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
     await context.registerTool(
       {
         name: "get_content",
@@ -937,6 +974,32 @@ export async function registerWebMcpTools(
               throw new DOMException("Tool execution canceled", "AbortError");
             const parsed = parseIdInput(input, "duplicate_section");
             return textResult(JSON.stringify(bridge.duplicateSection!(parsed)));
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.duplicateGroupItem) {
+      await context.registerTool(
+        {
+          name: "duplicate_group_item",
+          description: "Duplicate one source-backed item in a safe Xyle Group.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              groupId: { type: "string", description: "The source-backed Group id." },
+              itemId: { type: "string", description: "The source-backed Group item id." },
+            },
+            required: ["groupId", "itemId"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseGroupItemInput(input);
+            return textResult(
+              JSON.stringify(bridge.duplicateGroupItem!(parsed.groupId, parsed.itemId)),
+            );
           },
         },
         { signal: controller.signal },

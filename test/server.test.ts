@@ -190,6 +190,23 @@ describe("page api", () => {
     expect(body.baseDigest).toMatch(/^sha256:/);
   });
 
+  it("returns source-backed Group descriptors without preview-only membership", async () => {
+    const cookie = await login();
+    const res = await fetch(`${base}/__xyle/api/page?path=/groups.html`, {
+      headers: { cookie },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      groups: Array<{ id: string; items: Array<{ id: string }> }>;
+    };
+    expect(body.groups).toHaveLength(1);
+    expect(body.groups[0]!.items).toHaveLength(2);
+    expect(body.groups[0]!.items.map((item) => item.id)).toEqual([
+      expect.stringMatching(/^x-[a-f0-9]{8}$/),
+      expect.stringMatching(/^x-[a-f0-9]{8}$/),
+    ]);
+  });
+
   it("rejects traversal and non-HTML paths", async () => {
     const cookie = await login();
     for (const path of ["../../etc/passwd", "/styles.css", "/does-not-exist.html"]) {

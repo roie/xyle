@@ -847,6 +847,8 @@ test.describe("WebMCP editor tools", () => {
       "Run this test in the dedicated Chrome WebMCP project",
     );
     await loginAndOpenEditor(page, "/index.html");
+    const groups = await invokeTool(page, "list_groups", {});
+    expect(Array.isArray(groups)).toBe(true);
     const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
       id: string;
       type: string;
@@ -884,5 +886,69 @@ test.describe("WebMCP editor tools", () => {
     await page.goto("/index.html");
     expect(await page.locator("[data-xyle-node]").count()).toBe(0);
     expect(await page.getByText("WebMCP duplicate edit").count()).toBe(1);
+  });
+
+  test("lists and duplicates a Group item through WebMCP", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/groups.html");
+    const groups = (await invokeTool(page, "list_groups", {})) as Array<{
+      id: string;
+      items: Array<{ id: string }>;
+    }>;
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.items).toHaveLength(2);
+    const groupId = groups[0]!.id;
+    const sourceItemId = groups[0]!.items[0]!.id;
+    const duplicate = (await invokeTool(page, "duplicate_group_item", {
+      groupId,
+      itemId: sourceItemId,
+    })) as { id: string; groupId: string; sourceItemId: string };
+    expect(duplicate).toEqual({
+      id: expect.stringMatching(/^x-[a-f0-9]{8}$/),
+      groupId,
+      sourceItemId,
+    });
+
+    const titleId = await page.evaluate((itemId) => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      return doc
+        .querySelector<HTMLElement>(`[data-xyle-group-item="${itemId}"]`)
+        ?.querySelector<HTMLElement>("h2[data-xyle-node]")
+        ?.getAttribute("data-xyle-node");
+    }, duplicate.id);
+    const imageId = await page.evaluate((itemId) => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      return doc
+        .querySelector<HTMLElement>(`[data-xyle-group-item="${itemId}"]`)
+        ?.querySelector<HTMLImageElement>("img[data-xyle-node]")
+        ?.getAttribute("data-xyle-node");
+    }, duplicate.id);
+    expect(titleId).toBeTruthy();
+    expect(imageId).toBeTruthy();
+    await invokeTool(page, "update_text", { id: titleId, text: "Duplicated service" });
+    await invokeTool(page, "update_media", {
+      id: imageId,
+      crop: { x: 0.1, y: 0.1, width: 0.7, height: 0.7 },
+      focus: { x: 0.6, y: 0.4 },
+      fit: "cover",
+    });
+    const listedAgain = (await invokeTool(page, "list_groups", {})) as typeof groups;
+    expect(listedAgain[0]!.items.map((item) => item.id)).toEqual(
+      groups[0]!.items.map((item) => item.id),
+    );
+
+    const publishResponse = page.waitForResponse((response) =>
+      response.url().includes("/__xyle/api/publish"),
+    );
+    await page.locator("#xyle-publish").click();
+    const publishResult = await publishResponse;
+    expect(publishResult.ok()).toBe(true);
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/groups.html");
+    await expect(page.locator("article")).toHaveCount(3);
+    await expect(page.getByText("Duplicated service")).toHaveCount(1);
   });
 });

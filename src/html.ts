@@ -18,6 +18,7 @@ import { mediaSourcePath, normalizeMediaState } from "./media-state.ts";
 import {
   STRUCTURAL_ID_REFERENCE_ATTRIBUTES,
   createdNodeIdentity,
+  duplicateGroupHtmlId,
   duplicateHtmlId,
   rewriteFragmentReference,
   rewriteIdTokens,
@@ -637,6 +638,7 @@ export function analyzeGroups(source: string, pagePath: string): GroupDescriptor
           index,
           sourceStart: location.startOffset,
           sourceEnd: location.endOffset,
+          startTagEnd: location.startTag!.endOffset,
           signature: raw.signature,
         };
       });
@@ -646,6 +648,7 @@ export function analyzeGroups(source: string, pagePath: string): GroupDescriptor
         containerTag: "div",
         sourceStart: containerLocation.startOffset,
         sourceEnd: containerLocation.endOffset,
+        startTagEnd: containerLocation.startTag!.endOffset,
         sectionStart: sectionLocation.startOffset,
         sectionEnd: sectionLocation.endOffset,
         signature: raw.signature,
@@ -936,6 +939,7 @@ export function preparePreview(
   ignoreSelectors: string[] = [],
 ): PreparedPreview {
   const analysis = analyzePage(source, ignoreSelectors);
+  const groups = analyzeGroups(source, pagePath);
   const nodes = new Map<string, PreviewNode>();
 
   for (const c of analysis.candidates.values()) {
@@ -982,6 +986,20 @@ export function preparePreview(
   for (const injection of analysis.injections) {
     patches.push({ start: injection.offset, end: injection.offset, replacement: injection.text });
   }
+  for (const group of groups) {
+    patches.push({
+      start: group.startTagEnd - 1,
+      end: group.startTagEnd - 1,
+      replacement: ` data-xyle-group="${group.id}"`,
+    });
+    for (const item of group.items) {
+      patches.push({
+        start: item.startTagEnd - 1,
+        end: item.startTagEnd - 1,
+        replacement: ` data-xyle-group-item="${item.id}"`,
+      });
+    }
+  }
   for (const removal of analysis.removals) {
     patches.push({ start: removal.start, end: removal.end, replacement: "" });
   }
@@ -1003,7 +1021,7 @@ export function preparePreview(
     html = html.slice(0, patch.start) + patch.replacement + html.slice(patch.end);
   }
 
-  return { html, nodes };
+  return { html, nodes, groups };
 }
 
 function assertFreshSource(bytes: Uint8Array, expected: XyleDigest): Promise<void> {
@@ -1075,6 +1093,103 @@ function duplicateSectionMarkup(
       throw new Error("duplicate section generated an HTML id collision");
     if (expectedMap[originalId] !== cloneId)
       throw new Error("duplicate section HTML id map is not deterministic");
+    idMap.set(originalId, cloneId);
+  }
+  const visit = (node: P5Node): void => {
+    if (!isElement(node)) return;
+    for (const attribute of node.attrs) {
+      const name = attribute.name.toLowerCase();
+      if (name === "id") {
+        const mapped = idMap.get(attribute.value);
+        if (mapped) attribute.value = mapped;
+      } else if (name === "href") {
+        attribute.value = rewriteFragmentReference(attribute.value, idMap);
+      } else if (STRUCTURAL_ID_REFERENCE_ATTRIBUTES.has(name)) {
+        attribute.value = rewriteIdTokens(attribute.value, idMap);
+      } else if (attribute.value.match(/#[A-Za-z][\w:.-]*/)) {
+        const local = [...attribute.value.matchAll(/#([A-Za-z][\w:.-]*)/g)].some((match) =>
+          idMap.has(match[1]!),
+        );
+        if (local) throw new Error(`unsupported local id reference in ${name}`);
+      }
+    }
+    node.childNodes.forEach(visit);
+  };
+  visit(roots[0]!);
+  return serialize(html as P5Element);
+}
+
+function remapSnapshotOperation(
+  operation: SnapshotOperation,
+  sourceToLocalMap: ReadonlyMap<string, string>,
+): SnapshotOperation {
+  if (operation.type === "toggleList") {
+    return {
+      ...operation,
+      nodeIds: operation.nodeIds.map((id) => {
+        const base = id.split("#")[0]!;
+        const local = sourceToLocalMap.get(base);
+        if (!local) throw new Error("snapshot operation targets an unknown descendant");
+        return local + id.slice(base.length);
+      }),
+    };
+  }
+  if (operation.type === "moveSection" || operation.type === "seo")
+    throw new Error("unsupported operation in duplicated Group item");
+  if (!("nodeId" in operation)) return operation;
+  const base = operation.nodeId.split("#")[0]!;
+  const local = sourceToLocalMap.get(base);
+  if (!local) throw new Error("snapshot operation targets an unknown descendant");
+  return {
+    ...operation,
+    ...(operation.type === "format" &&
+    operation.sourceStart !== undefined &&
+    operation.sourceEnd !== undefined
+      ? {
+          sourceStart: operation.sourceStart,
+          sourceEnd: operation.sourceEnd,
+        }
+      : {}),
+    nodeId: local + operation.nodeId.slice(base.length),
+  } as SnapshotOperation;
+}
+
+function firstBodyElement(markup: string): P5Element | null {
+  const document = parse(`<body>${markup}</body>`) as P5Document;
+  const html = document.childNodes.find((node) => isElement(node) && node.tagName === "html");
+  const body =
+    html && isElement(html)
+      ? html.childNodes.find((node) => isElement(node) && node.tagName === "body")
+      : null;
+  return body && isElement(body) ? (body.childNodes.find(isElement) ?? null) : null;
+}
+
+function duplicateGroupItemMarkup(
+  markup: string,
+  createdId: string,
+  documentIds: ReadonlySet<string>,
+  expectedMap: Record<string, string>,
+): string {
+  const fragment = parse(`<body>${markup}</body>`) as P5Document;
+  const body = fragment.childNodes.find((node) => isElement(node) && node.tagName === "html");
+  const html =
+    body && isElement(body)
+      ? body.childNodes.find((node) => isElement(node) && node.tagName === "body")
+      : null;
+  const roots = html && isElement(html) ? html.childNodes.filter(isElement) : [];
+  if (roots.length !== 1 || !["article", "div"].includes(roots[0]!.tagName))
+    throw new Error("duplicate snapshot must contain one Group item");
+  if (hasGroupUnsafeDescendant(roots[0]!))
+    throw new Error("duplicate Group item contains unsafe descendants");
+  const originalIds = allElementIds(roots[0]!);
+  if (new Set(originalIds).size !== originalIds.length)
+    throw new Error("Group item contains duplicate HTML ids");
+  const idMap = new Map<string, string>();
+  for (const originalId of originalIds) {
+    const cloneId = duplicateGroupHtmlId(createdId, originalId);
+    if (documentIds.has(cloneId)) throw new Error("Group item generated an HTML id collision");
+    if (expectedMap[originalId] !== cloneId)
+      throw new Error("Group item HTML id map is not deterministic");
     idMap.set(originalId, cloneId);
   }
   const visit = (node: P5Node): void => {
@@ -1197,6 +1312,7 @@ export async function patchHtml(
   }
   const encoder = new TextEncoder();
   const analysis = analyzePage(sourceText, options.ignoreSelectors ?? []);
+  const groups = analyzeGroups(sourceText, change.pagePath);
   const sourceDocument = parse(sourceText, { sourceCodeLocationInfo: true }) as P5Document;
   const seoAnalysis = findSeoTargets(sourceText);
 
@@ -1225,6 +1341,11 @@ export async function patchHtml(
   const duplicateSectionOps: {
     candidate: Candidate;
     op: PageOperation & { type: "duplicateSection" };
+  }[] = [];
+  const duplicateGroupItemOps: {
+    group: GroupDescriptor;
+    item: GroupDescriptor["items"][number];
+    op: PageOperation & { type: "duplicateGroupItem" };
   }[] = [];
   const seoOps: (PageOperation & { type: "seo" })[] = [];
   const patches: SourcePatch[] = [];
@@ -1392,6 +1513,36 @@ export async function patchHtml(
           (child) => child.sourceCodeLocation?.startOffset === candidate.startTagStart,
         );
         moveSectionOps.push({ candidate, op: { ...op, originalIndex } });
+        break;
+      }
+      case "duplicateGroupItem": {
+        const group = groups.find((candidate) => candidate.id === op.groupId);
+        const item = group?.items.find((candidate) => candidate.id === op.sourceItemId);
+        if (!group || !item) throw new Error("duplicate target is not a source-backed Group item");
+        if (
+          op.insert !== "after" ||
+          !/^x-[a-f0-9]{8}$/.test(op.createdId) ||
+          !Number.isInteger(op.sequence) ||
+          op.sequence < 1 ||
+          duplicateGroupItemOps.some((entry) => entry.op.sequence === op.sequence) ||
+          !Number.isInteger(op.sourceItemIndex) ||
+          op.sourceItemIndex !== item.index ||
+          op.groupSignature !== group.signature ||
+          op.itemSignature !== item.signature
+        ) {
+          throw new Error("invalid Group item duplication");
+        }
+        if (
+          !Array.isArray(op.snapshotOperations) ||
+          !Array.isArray(op.assetRefs) ||
+          !op.nodeMap ||
+          typeof op.nodeMap !== "object" ||
+          !op.idMap ||
+          typeof op.idMap !== "object"
+        ) {
+          throw new Error("invalid Group item duplication recipe");
+        }
+        duplicateGroupItemOps.push({ group, item, op });
         break;
       }
       case "duplicateSection": {
@@ -1960,6 +2111,7 @@ export async function patchHtml(
   }
   const generatedDuplicateIds = new Set<string>();
   const duplicateMarkupByStart = new Map<number, string>();
+  const duplicateGroupMarkupByEnd = new Map<number, string[]>();
   const consumedDuplicateStarts = new Set<number>();
   for (const { candidate, op } of duplicateSectionOps) {
     let snapshotText = sourceText;
@@ -2038,6 +2190,168 @@ export async function patchHtml(
         replacement: cloneMarkup,
       });
     }
+  }
+  for (const { item, op } of [...duplicateGroupItemOps].sort(
+    (left, right) => left.op.sequence - right.op.sequence,
+  )) {
+    const sourceMarkup = sourceText.slice(item.sourceStart, item.sourceEnd);
+    const originalRoot = firstBodyElement(sourceMarkup);
+    if (!originalRoot) throw new Error("duplicate Group item source mapping is ambiguous");
+    const originalIds = allElementIds(originalRoot);
+    if (new Set(originalIds).size !== originalIds.length)
+      throw new Error("Group item contains duplicate HTML ids");
+    const localAnalysis = analyzePage(sourceMarkup, options.ignoreSelectors ?? []);
+    const sourceToLocalMap = new Map<string, string>();
+    for (const [sourceId, createdId] of Object.entries(op.nodeMap)) {
+      if (sourceId === op.sourceItemId) continue;
+      const sourceNode = analysis.candidates.get(sourceId);
+      if (
+        !sourceNode ||
+        sourceNode.startTagStart < item.sourceStart ||
+        (sourceNode.elementEnd ?? sourceNode.startTagEnd) > item.sourceEnd
+      ) {
+        throw new Error("Group item node map crosses the item boundary");
+      }
+      const relativeStart = sourceNode.startTagStart - item.sourceStart;
+      const localNode = [...localAnalysis.candidates.values()].find(
+        (candidate) =>
+          candidate.startTagStart === relativeStart &&
+          candidate.kind === sourceNode.kind &&
+          candidate.tag === sourceNode.tag,
+      );
+      if (!localNode) throw new Error("Group item node map is not reproducible");
+      const expected = createdNodeIdentity(
+        op.createdId,
+        sourceTargetIdentity(
+          change.pagePath,
+          sourceNode.kind,
+          sourceNode.startTagStart,
+          sourceNode.elementEnd ?? sourceNode.startTagEnd,
+          sourceNode.tag,
+        ),
+      );
+      if (createdId !== expected) throw new Error("created Group item identity is invalid");
+      if (sourceToLocalMap.has(sourceId)) throw new Error("Group item node map is repeated");
+      sourceToLocalMap.set(sourceId, localNode.id);
+    }
+    const expectedSourceIds = [...analysis.candidates.values()]
+      .filter(
+        (candidate) =>
+          candidate.startTagStart >= item.sourceStart &&
+          (candidate.elementEnd ?? candidate.startTagEnd) <= item.sourceEnd,
+      )
+      .map((candidate) => candidate.id);
+    if (
+      Object.keys(op.nodeMap).length !== expectedSourceIds.length + 1 ||
+      op.nodeMap[op.sourceItemId] !== op.createdId ||
+      expectedSourceIds.some((sourceId) => !sourceToLocalMap.has(sourceId))
+    ) {
+      throw new Error("Group item node map is not reproducible");
+    }
+    const snapshotOperations = op.snapshotOperations.map((snapshot) => {
+      const remapped = remapSnapshotOperation(snapshot, sourceToLocalMap);
+      if (
+        remapped.type === "format" &&
+        remapped.sourceStart !== undefined &&
+        remapped.sourceEnd !== undefined
+      ) {
+        return {
+          ...remapped,
+          sourceStart: remapped.sourceStart - item.sourceStart,
+          sourceEnd: remapped.sourceEnd - item.sourceStart,
+        };
+      }
+      return remapped;
+    });
+    const snapshotBytes = await patchHtml(
+      encoder.encode(sourceMarkup),
+      {
+        pagePath: change.pagePath,
+        baseDigest: await digestBytes(encoder.encode(sourceMarkup)),
+        operations: snapshotOperations,
+      },
+      options,
+    );
+    let finalMarkup = new TextDecoder("utf-8", { fatal: true }).decode(snapshotBytes);
+    const createdToLocalMap = new Map<string, string>();
+    for (const [sourceId, createdId] of Object.entries(op.nodeMap)) {
+      if (sourceId === op.sourceItemId) continue;
+      const localId = sourceToLocalMap.get(sourceId);
+      if (!localId) throw new Error("created Group item mapping is not reproducible");
+      createdToLocalMap.set(createdId, localId);
+    }
+    const createdOperations = (op.createdOperations ?? []).map((created) =>
+      remapCreatedOperation(created, createdToLocalMap),
+    );
+    if (createdOperations.length > 0) {
+      const createdBytes = await patchHtml(
+        encoder.encode(finalMarkup),
+        {
+          pagePath: change.pagePath,
+          baseDigest: await digestBytes(encoder.encode(finalMarkup)),
+          operations: createdOperations,
+        },
+        options,
+      );
+      finalMarkup = new TextDecoder("utf-8", { fatal: true }).decode(createdBytes);
+    }
+    const snapshotRoot = firstBodyElement(
+      new TextDecoder("utf-8", { fatal: true }).decode(snapshotBytes),
+    );
+    if (!snapshotRoot) throw new Error("duplicate Group item source mapping is ambiguous");
+    const snapshotIds = allElementIds(snapshotRoot);
+    const finalRoot = firstBodyElement(finalMarkup);
+    if (!finalRoot) throw new Error("duplicate Group item source mapping is ambiguous");
+    const finalIds = allElementIds(finalRoot);
+    if (
+      new Set(snapshotIds).size !== new Set(finalIds).size ||
+      snapshotIds.some((id) => !finalIds.includes(id)) ||
+      finalIds.some((id) => !snapshotIds.includes(id))
+    ) {
+      throw new Error("created Group item operations cannot mutate HTML ids");
+    }
+    const expectedIdMap: Record<string, string> = {};
+    for (const originalId of snapshotIds) {
+      expectedIdMap[originalId] = duplicateGroupHtmlId(op.createdId, originalId);
+    }
+    if (
+      Object.keys(op.idMap).length !== Object.keys(expectedIdMap).length ||
+      Object.entries(expectedIdMap).some(
+        ([originalId, cloneId]) => op.idMap[originalId] !== cloneId,
+      )
+    ) {
+      throw new Error("Group item HTML id map is not reproducible");
+    }
+    const cloneMarkup = duplicateGroupItemMarkup(
+      finalMarkup,
+      op.createdId,
+      new Set([...allElementIds(sourceDocument), ...generatedDuplicateIds]),
+      op.idMap,
+    );
+    const cloneDocument = parse(`<body>${cloneMarkup}</body>`) as P5Document;
+    for (const id of allElementIds(cloneDocument)) generatedDuplicateIds.add(id);
+    const existing = duplicateGroupMarkupByEnd.get(item.sourceEnd) ?? [];
+    existing.push(cloneMarkup);
+    duplicateGroupMarkupByEnd.set(item.sourceEnd, existing);
+    const recipeAssets = new Set(
+      [...op.snapshotOperations, ...createdOperations].flatMap((snapshot) =>
+        snapshot.type === "media" && snapshot.value.source.kind === "staged"
+          ? [snapshot.value.source.assetId]
+          : [],
+      ),
+    );
+    if (
+      op.assetRefs.length !== recipeAssets.size ||
+      op.assetRefs.some((asset) => !recipeAssets.has(asset.assetId))
+    ) {
+      throw new Error("Group item asset reference is not owned by its recipe");
+    }
+  }
+  for (const [end, markups] of duplicateGroupMarkupByEnd) {
+    patches.push({ start: end, end, replacement: markups.join("") });
+  }
+  if (duplicateGroupItemOps.length > 0 && moveSectionOps.length > 0) {
+    throw new Error("Group item duplication cannot be combined with section movement");
   }
   for (const { candidate, op } of moveSectionOps) {
     const moveCandidate = moveAnalysis.candidates.get(op.nodeId) ?? candidate;
