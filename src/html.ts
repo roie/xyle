@@ -9,9 +9,11 @@ import type {
   XyleDigest,
   MediaState,
   SnapshotOperation,
+  GroupDescriptor,
+  GroupItemDescriptor,
 } from "./types.ts";
 import { digestBytes } from "./digest.ts";
-import { sourceTargetIdentity } from "./identity.ts";
+import { sourceTargetIdentity, stableIdentity } from "./identity.ts";
 import { mediaSourcePath, normalizeMediaState } from "./media-state.ts";
 import {
   STRUCTURAL_ID_REFERENCE_ATTRIBUTES,
@@ -385,6 +387,271 @@ function matchesIgnoreSelector(el: P5Element, selectors: string[]): boolean {
         return /^[a-z][a-z0-9-]*$/i.test(selector) && el.tagName === selector.toLowerCase();
       }),
   );
+}
+
+const GROUP_ITEM_TAGS = new Set(["article", "div"]);
+const GROUP_FORMATTING_TAGS = new Set(["b", "strong", "i", "em", "u", "span"]);
+const GROUP_CONTENT_TAGS = new Set([
+  "a",
+  "blockquote",
+  "dd",
+  "dt",
+  "figcaption",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "img",
+  "li",
+  "p",
+]);
+const GROUP_UNSAFE_TAGS = new Set([
+  "canvas",
+  "embed",
+  "form",
+  "iframe",
+  "input",
+  "object",
+  "option",
+  "script",
+  "section",
+  "select",
+  "svg",
+  "template",
+  "textarea",
+  "video",
+]);
+
+type ElementPath = string;
+
+interface GroupElementRecord {
+  element: P5Element;
+  path: ElementPath;
+  ancestors: P5Element[];
+}
+
+function elementChildren(element: P5Element): P5Element[] {
+  return element.childNodes.filter(isElement);
+}
+
+function hasMeaningfulDirectText(element: P5Element): boolean {
+  return element.childNodes.some(
+    (child) =>
+      child.nodeName === "#text" && String((child as { value?: string }).value ?? "").trim(),
+  );
+}
+
+function hasGroupUnsafeDescendant(element: P5Element): boolean {
+  const visit = (node: P5Node): boolean => {
+    if (!isElement(node)) return false;
+    return GROUP_UNSAFE_TAGS.has(node.tagName) || node.childNodes.some(visit);
+  };
+  return element.childNodes.some(visit);
+}
+
+function isFormattingOnlyWrapper(element: P5Element): boolean {
+  return (
+    GROUP_FORMATTING_TAGS.has(element.tagName) &&
+    element.attrs.every(
+      (attribute) =>
+        ["class", "id", "style"].includes(attribute.name) ||
+        attribute.name.startsWith("data-xyle-"),
+    )
+  );
+}
+
+function canonicalGroupSignature(element: P5Element): string {
+  const tag = element.tagName;
+  const children = elementChildren(element).map(canonicalGroupSignature).filter(Boolean).join(",");
+  if (isFormattingOnlyWrapper(element)) return children;
+  if (tag === "a") return `link[${children}]`;
+  if (tag === "img") return "image";
+  if (/^h[1-6]$/.test(tag)) return `heading:${tag}[${children}]`;
+  if (GROUP_CONTENT_TAGS.has(tag)) return `content:${tag}[${children}]`;
+  if (tag === "br") return "break";
+  return `${tag}[${children}]`;
+}
+
+function hasGroupContent(element: P5Element): boolean {
+  if (GROUP_CONTENT_TAGS.has(element.tagName)) return true;
+  return elementChildren(element).some(hasGroupContent);
+}
+
+function collectGroupElements(
+  element: P5Element,
+  path: ElementPath,
+  ancestors: P5Element[],
+): GroupElementRecord[] {
+  const records: GroupElementRecord[] = [];
+  for (const [index, child] of elementChildren(element).entries()) {
+    const childPath = path ? `${path}.${index}` : String(index);
+    records.push({ element: child, path: childPath, ancestors });
+    records.push(...collectGroupElements(child, childPath, [...ancestors, child]));
+  }
+  return records;
+}
+
+function isTransparentGroupWrapper(element: P5Element): boolean {
+  const children = elementChildren(element);
+  return (
+    element.tagName === "div" &&
+    children.length === 1 &&
+    !hasMeaningfulDirectText(element) &&
+    !hasGroupUnsafeDescendant(element)
+  );
+}
+
+function hasOnlyTransparentPath(section: P5Element, record: GroupElementRecord): boolean {
+  const sectionIndex = record.ancestors.indexOf(section);
+  if (sectionIndex < 0) return false;
+  return record.ancestors.slice(sectionIndex + 1).every(isTransparentGroupWrapper);
+}
+
+interface RawGroupDescriptor {
+  section: GroupElementRecord;
+  container: GroupElementRecord;
+  items: GroupElementRecord[];
+  signature: string;
+}
+
+function repeatingGroupItems(
+  container: P5Element,
+  records: GroupElementRecord[],
+): { items: GroupElementRecord[]; signature: string } | null {
+  if (
+    container.tagName !== "div" ||
+    hasMeaningfulDirectText(container) ||
+    hasGroupUnsafeDescendant(container)
+  )
+    return null;
+  const items = elementChildren(container).map((element) =>
+    records.find((candidate) => candidate.element === element),
+  );
+  if (
+    items.length < 2 ||
+    items.some(
+      (item) =>
+        !item ||
+        !GROUP_ITEM_TAGS.has(item.element.tagName) ||
+        hasMeaningfulDirectText(item.element) ||
+        hasGroupUnsafeDescendant(item.element) ||
+        !hasGroupContent(item.element),
+    )
+  )
+    return null;
+  const resolvedItems = items as GroupElementRecord[];
+  const signatures = resolvedItems.map((item) => canonicalGroupSignature(item.element));
+  if (new Set(signatures).size !== 1) return null;
+  return { items: resolvedItems, signature: signatures[0]! };
+}
+
+function rawGroupsForSection(section: GroupElementRecord): RawGroupDescriptor[] {
+  const records = collectGroupElements(section.element, "", [section.element]);
+  const groups: RawGroupDescriptor[] = [];
+  for (const record of records) {
+    const repeated = repeatingGroupItems(record.element, records);
+    if (!repeated || !hasOnlyTransparentPath(section.element, record)) continue;
+    const nestedRepeating = records.some((other) => {
+      if (other === record) return false;
+      const candidateLocation = record.element.sourceCodeLocation;
+      const otherLocation = other.element.sourceCodeLocation;
+      return (
+        !!candidateLocation &&
+        !!otherLocation &&
+        candidateLocation.startOffset < otherLocation.startOffset &&
+        candidateLocation.endOffset > otherLocation.endOffset &&
+        repeatingGroupItems(other.element, records) !== null
+      );
+    });
+    if (nestedRepeating) continue;
+    groups.push({
+      section,
+      container: record,
+      items: repeated.items,
+      signature: repeated.signature,
+    });
+  }
+  return groups;
+}
+
+/**
+ * Discover conservative repeating collections from an original source snapshot.
+ * The caller must retain these descriptors instead of re-analysing mutated preview HTML.
+ */
+export function analyzeGroups(source: string, pagePath: string): GroupDescriptor[] {
+  const document = parse(source, { sourceCodeLocationInfo: true }) as P5Document;
+  const sections: GroupElementRecord[] = [];
+  const visitSections = (node: P5Node, path: ElementPath, insideSection: boolean): void => {
+    if (!isElement(node)) return;
+    const loc = node.sourceCodeLocation;
+    const safe =
+      node.tagName === "section" &&
+      !insideSection &&
+      !!loc?.startTag &&
+      !!loc.endTag &&
+      !hasUnsafeStructuralDescendant(node);
+    if (safe) sections.push({ element: node, path, ancestors: [] });
+    for (const [index, child] of elementChildren(node).entries()) {
+      visitSections(
+        child,
+        path ? `${path}.${index}` : String(index),
+        insideSection || node.tagName === "section",
+      );
+    }
+  };
+  for (const [index, child] of document.childNodes.filter(isElement).entries()) {
+    visitSections(child, String(index), false);
+  }
+
+  const rawGroups = sections.flatMap((section) => rawGroupsForSection(section));
+  const nonOverlapping = rawGroups.filter(
+    (candidate) =>
+      !rawGroups.some(
+        (other) =>
+          other !== candidate &&
+          other.container.element.sourceCodeLocation!.startOffset <=
+            candidate.container.element.sourceCodeLocation!.startOffset &&
+          other.container.element.sourceCodeLocation!.endOffset >=
+            candidate.container.element.sourceCodeLocation!.endOffset,
+      ),
+  );
+  return nonOverlapping
+    .sort(
+      (left, right) =>
+        left.container.element.sourceCodeLocation!.startOffset -
+        right.container.element.sourceCodeLocation!.startOffset,
+    )
+    .map((raw) => {
+      const sectionLocation = raw.section.element.sourceCodeLocation!;
+      const containerLocation = raw.container.element.sourceCodeLocation!;
+      const sectionId = stableIdentity(["group-section", pagePath, raw.section.path]);
+      const groupId = stableIdentity(["group", pagePath, raw.section.path, raw.container.path]);
+      const items: GroupItemDescriptor[] = raw.items.map((item, index) => {
+        const location = item.element.sourceCodeLocation!;
+        return {
+          id: stableIdentity(["group-item", groupId, String(index), item.element.tagName]),
+          groupId,
+          tag: item.element.tagName as "article" | "div",
+          index,
+          sourceStart: location.startOffset,
+          sourceEnd: location.endOffset,
+          signature: raw.signature,
+        };
+      });
+      return {
+        id: groupId,
+        sectionId,
+        containerTag: "div",
+        sourceStart: containerLocation.startOffset,
+        sourceEnd: containerLocation.endOffset,
+        sectionStart: sectionLocation.startOffset,
+        sectionEnd: sectionLocation.endOffset,
+        signature: raw.signature,
+        items,
+      };
+    });
 }
 
 export function analyzePage(source: string, ignoreSelectors: string[] = []): PageAnalysis {

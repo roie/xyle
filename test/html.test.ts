@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyzeGroups,
   analyzePage,
   escapeHtmlAttr,
   escapeHtmlText,
@@ -679,6 +680,96 @@ describe("escaping helpers", () => {
   it("round-trips common entities", () => {
     expect(escapeHtmlText(`&<>"'`)).toBe(`&amp;&lt;&gt;"'`);
     expect(escapeHtmlAttr(`say "hi"`)).toBe("say &quot;hi&quot;");
+  });
+});
+
+describe("safe Group discovery", () => {
+  const discover = (source: string) => analyzeGroups(source, "/index.html");
+
+  it.each([
+    [
+      "article cards",
+      `<section><div class="cards"><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article></div></section>`,
+    ],
+    [
+      "div cards",
+      `<section><div><div><h3>A</h3><p>One</p></div><div><h3>B</h3><p>Two</p></div></div></section>`,
+    ],
+    [
+      "transparent wrappers",
+      `<section><div class="container"><div class="cards"><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article></div></div></section>`,
+    ],
+    [
+      "three items",
+      `<section><div><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article><article><h3>C</h3><p>Three</p></article></div></section>`,
+    ],
+    [
+      "inline formatting differences",
+      `<section><div><article><h3><strong>A</strong></h3><p><em>One</em></p></article><article><h3>B</h3><p><u>Two</u></p></article></div></section>`,
+    ],
+    [
+      "different content values",
+      `<section><div><article><a href="/a"><img src="/a.jpg" alt="A"></a><p>One</p></article><article><a href="/b"><img src="/b.jpg" alt="B"></a><p>Two</p></article></div></section>`,
+    ],
+  ])("accepts %s", (_name, source) => {
+    const groups = discover(source);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.items).toHaveLength(source.includes("Three") ? 3 : 2);
+  });
+
+  it("keeps Group and item identities stable across content and inline formatting edits", () => {
+    const before = discover(
+      `<section><div><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article></div></section>`,
+    )[0]!;
+    const after = discover(
+      `<section><div><article><h3><strong>Changed</strong></h3><p><em>Updated</em></p></article><article><h3>B changed</h3><p>Two changed</p></article></div></section>`,
+    )[0]!;
+    expect(after.id).toBe(before.id);
+    expect(after.items.map((item) => item.id)).toEqual(before.items.map((item) => item.id));
+    expect(after.signature).toBe(before.signature);
+  });
+
+  it.each([
+    [
+      "hero columns",
+      `<section><div><div><h1>Copy</h1><p>Text</p></div><div><img src="/hero.jpg"></div></div></section>`,
+    ],
+    [
+      "mixed item tags",
+      `<section><div><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article><aside><p>Note</p></aside></div></section>`,
+    ],
+    [
+      "ordinary unordered list",
+      `<section><div><ul><li><h3>A</h3><p>One</p></li></ul><ul><li><h3>B</h3><p>Two</p></li></ul></div></section>`,
+    ],
+    ["sibling rich text", `<section><div><p>One</p><p>Two</p></div></section>`],
+    [
+      "nested sections",
+      `<section><div><article><h3>A</h3><section><p>Nested</p></section></article><article><h3>B</h3><p>Two</p></article></div></section>`,
+    ],
+    [
+      "unsafe descendants",
+      `<section><div><article><h3>A</h3><form><input></form></article><article><h3>B</h3><form><input></form></article></div></section>`,
+    ],
+    [
+      "mixed direct text",
+      `<section><div>Do not group this<article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article></div></section>`,
+    ],
+    [
+      "incompatible signatures",
+      `<section><div><article><h3>A</h3><p>One</p></article><article><h3>B</h3><img src="/two.jpg"></article></div></section>`,
+    ],
+    [
+      "nested repeating candidates",
+      `<section><div class="outer"><div class="inner"><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article></div><div class="inner"><article><h3>C</h3><p>Three</p></article><article><h3>D</h3><p>Four</p></article></div></div></section>`,
+    ],
+    [
+      "ambiguous wrapper path",
+      `<section><div class="container">Important note<div class="cards"><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article></div></div></section>`,
+    ],
+    ["one item", `<section><div><article><h3>Only</h3><p>One</p></article></div></section>`],
+  ])("rejects %s", (_name, source) => {
+    expect(discover(source)).toEqual([]);
   });
 });
 

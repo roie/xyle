@@ -206,6 +206,28 @@ export interface PreviewSegment {
   textLength: number;
 }
 
+export interface GroupItemDescriptor {
+  id: string;
+  groupId: string;
+  tag: "article" | "div";
+  index: number;
+  sourceStart: number;
+  sourceEnd: number;
+  signature: string;
+}
+
+export interface GroupDescriptor {
+  id: string;
+  sectionId: string;
+  containerTag: "div";
+  sourceStart: number;
+  sourceEnd: number;
+  sectionStart: number;
+  sectionEnd: number;
+  signature: string;
+  items: GroupItemDescriptor[];
+}
+
 export interface PreviewNode {
   id: string;
   pagePath: string;
