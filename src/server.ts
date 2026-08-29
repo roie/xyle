@@ -37,6 +37,8 @@ export interface RuntimeContext {
   publicAssetRoot?: string;
   cspPolicies?: string[];
   cspKnown?: boolean;
+  /** Test-only fixture reset hook; production callers do not provide it. */
+  resetForTests?: () => Promise<void>;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -746,6 +748,12 @@ export function createXyleHandler(
         if (!bundle)
           return new Response("// editor bundle missing; run pnpm build", { status: 503 });
         return bundle;
+      }
+
+      if (pathname === "/__xyle/api/test/reset" && request.method === "POST") {
+        if (!context.resetForTests) return json({ error: "not found" }, 404);
+        await context.resetForTests();
+        return json({ ok: true });
       }
 
       if (pathname === "/__xyle/api/login" && request.method === "POST") {

@@ -8,32 +8,18 @@ test("applies and publishes the safe Split preset", async ({ page }) => {
       (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument?.body.dataset
         .xyleWired === "true",
   );
-  await page.evaluate(() => {
-    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-    const section = doc.querySelector("#layout-basic")!;
-    section.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  });
+  await page.frameLocator("#xyle-preview").locator("#layout-basic").press("Enter");
   await expect(page.locator(".xyle-layout-tools").first()).toBeVisible();
-  await page.locator(".xyle-layout-tools button", { hasText: "Split" }).click({ force: true });
+  await page.locator(".xyle-layout-tools button", { hasText: "Split" }).click();
   const preview = page.frameLocator("#xyle-preview");
   await expect(preview.locator("#layout-basic")).toHaveAttribute("data-xyle-layout", "split");
   await expect(preview.locator("#layout-basic h2")).toContainText("Safe layout");
-  await page.evaluate(() => {
-    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-    doc
-      .querySelector("#layout-basic")!
-      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  });
+  await page.frameLocator("#xyle-preview").locator("#layout-basic").press("Enter");
   await expect(page.locator(".xyle-layout-tools button", { hasText: "Swap order" })).toBeEnabled();
-  await page.locator(".xyle-layout-tools button", { hasText: "Swap order" }).click({ force: true });
+  await page.locator(".xyle-layout-tools button", { hasText: "Swap order" }).click();
   await expect(preview.locator("#layout-basic > div").nth(0)).toHaveClass(/layout-content/);
   await expect(preview.locator("#layout-basic > div").nth(1)).toHaveClass(/layout-image/);
-  await page.evaluate(() => {
-    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-    doc
-      .querySelector("#layout-unsafe")!
-      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  });
+  await page.frameLocator("#xyle-preview").locator("#layout-unsafe").press("Enter");
   await expect(page.locator(".xyle-layout-tools")).toHaveCount(0);
   await expect(preview.locator("#layout-unsafe")).not.toHaveAttribute("data-xyle-layout");
   const publishResponse = page.waitForResponse((response) =>

@@ -4,6 +4,8 @@ export const TEST_KEY = process.env.XYLE_TEST_KEY ?? "xyle-e2e-test-key-01234567
 
 /** Log in through the API and open the editor on a page. */
 export async function loginAndOpenEditor(page: Page, pagePath = "/index.html"): Promise<void> {
+  const reset = await page.request.post("/__xyle/api/test/reset");
+  if (!reset.ok()) throw new Error(`Fixture reset failed: ${reset.status()}`);
   await page.request.post("/__xyle/api/login", {
     data: { key: TEST_KEY },
   });
@@ -81,12 +83,10 @@ export async function flashText(page: Page): Promise<string> {
 }
 
 export async function clickNode(page: Page, nodeId: string): Promise<void> {
-  await page.evaluate((id) => {
-    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-    const el = doc.querySelector(`[data-xyle-node="${id}"]`) as HTMLElement;
-    el.scrollIntoView({ block: "center" });
-    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  }, nodeId);
+  await page
+    .frameLocator("#xyle-preview")
+    .locator(`[data-xyle-node="${nodeId}"]`)
+    .click();
 }
 
 /** Click-to-edit a candidate and wait until it becomes contenteditable. */

@@ -28,6 +28,7 @@ import {
   duplicateGroupHtmlId,
   duplicateHtmlId,
   replayGroupOrder,
+  rewriteIdTokens,
   type GroupOrderOperation,
 } from "./structural.ts";
 import { cropRectForFrame } from "./media-crop.ts";
@@ -809,6 +810,12 @@ const editorStyles = `
     font-size: 13px;
     font-weight: 600;
     line-height: 1;
+  }
+  .xyle-change-type {
+    margin-left: 0.55rem;
+    color: var(--xyle-ink);
+    font-size: 12px;
+    font-weight: 650;
   }
   .xyle-change-row-actions {
     display: flex;
@@ -2148,6 +2155,10 @@ function moveGroupItem(
 
 function showGroupItemTools(item: HTMLElement, itemDescriptor: GroupItemDescriptor): void {
   if (session || (toolbarIsInline() && activeToolsTarget !== item)) return;
+  if (selectedImage && selectedImage.el !== item) {
+    hideImageTools(selectedImage.el);
+    selectedImage = null;
+  }
   const overlay = shellOverlay();
   if (!overlay) return;
   const groupId = item.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
@@ -2881,11 +2892,6 @@ function isControlledBreak(node: Node): node is HTMLBRElement {
     (controlledBreaks.has(node as HTMLBRElement) ||
       (node as HTMLElement).hasAttribute("data-xyle-controlled-break"))
   );
-}
-
-function markControlledBreak(br: HTMLBRElement): void {
-  controlledBreaks.add(br);
-  br.setAttribute("data-xyle-controlled-break", "");
 }
 
 function isFormatWrapper(node: Node): node is HTMLElement {
@@ -5805,6 +5811,7 @@ function duplicateSection(nodeId: string): { id: string; sourceId: string } {
     nodeId,
     crypto.randomUUID(),
   ]);
+  duplicateSourceLabels.set(createdId, displayNameForElement(source));
   const clone = source.cloneNode(true) as HTMLElement;
   stripPreviewInstrumentation(clone, { keepNodeMarkers: true });
   const sourceIdValues = [
@@ -5944,6 +5951,7 @@ function duplicateGroupItem(
     itemId,
     crypto.randomUUID(),
   ]);
+  duplicateSourceLabels.set(createdId, displayNameForElement(source));
   const clone = source.cloneNode(true) as HTMLElement;
   stripPreviewInstrumentation(clone, { keepNodeMarkers: true });
   const sourceIdValues = [
@@ -5991,10 +5999,7 @@ function duplicateGroupItem(
       if (value)
         element.setAttribute(
           attribute,
-          value
-            .split(/\\s+/)
-            .map((token) => idMap.get(token) ?? token)
-            .join(" "),
+          rewriteIdTokens(value, idMap),
         );
     }
     const href = element.getAttribute("href");
@@ -6388,7 +6393,7 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
       elementId: op.createdId,
       type: op.type,
       before: "",
-      after: `duplicate of ${op.sourceId}`,
+      after: `Duplicated “${duplicateSourceLabels.get(op.createdId) ?? displayNameForNode(pagePath, op.sourceId)}”`,
       ...(entry.changeSetId
         ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
         : {}),
@@ -6400,7 +6405,7 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
       elementId: op.createdId,
       type: op.type,
       before: "",
-      after: `duplicate of ${op.sourceItemId}`,
+      after: `Duplicated “${duplicateSourceLabels.get(op.createdId) ?? displayNameForGroupItem(pagePath, op.groupId, op.sourceItemId)}”`,
       ...(entry.changeSetId
         ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
         : {}),
@@ -6412,7 +6417,9 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
       elementId: op.itemId,
       type: op.type,
       before: "",
-      after: `${op.position} ${op.targetItemId}`,
+      after: `Moved “${displayNameForGroupItem(pagePath, op.groupId, op.itemId)}” ${
+        op.position === "before" ? "earlier" : "later"
+      }`,
       ...(entry.changeSetId
         ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
         : {}),
@@ -6475,7 +6482,7 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
                 ? "visible"
                 : "hidden"
               : op.type === "moveSection"
-                ? `${op.before ? "before" : "after"} ${op.targetId}`
+                ? `Moved “${displayNameForNode(pagePath, op.nodeId)}” ${sectionMoveDirection(op)}`
                 : op.value,
     ...(entry.changeSetId
       ? {
@@ -6548,7 +6555,9 @@ function groupMoveChanges(): Array<UserChange & { order: number }> {
           elementId: item.id,
           type: "moveGroupItem",
           before: `position ${before + 1}`,
-          after: `position ${after + 1}`,
+          after: `Moved “${displayNameForGroupItem(current.pagePath, group.id, item.id)}” ${
+            after < before ? "earlier" : "later"
+          }`,
           ...(first.entry.changeSetId
             ? {
                 changeSetId: first.entry.changeSetId,
@@ -6577,6 +6586,7 @@ function buildUserChanges(): UserChange[] {
     if (!relevant.length || !region.currentHtml || region.currentHtml === region.originalHtml)
       continue;
     const first = relevant[0]!;
+    const richType = relevant.every(({ entry }) => entry.op.type === "text") ? "text" : "html";
     changes.push({
       order: first.index,
       pagePath: region.pagePath,
@@ -6585,7 +6595,7 @@ function buildUserChanges(): UserChange[] {
       info: {
         changeId: stableChangeId(region.pagePath, "rich", region.id),
         elementId: region.anchorId,
-        type: "html",
+        type: richType,
         before: region.originalHtml,
         after: region.currentHtml,
         ...(first.entry.changeSetId
@@ -6718,6 +6728,10 @@ function revertPendingOperation(index: number): void {
   updateDirtyUi();
 }
 
+function refreshChangesDrawerIfOpen(): void {
+  if (document.getElementById("xyle-changes-drawer")) openChangesDrawer();
+}
+
 function revertChange(changeId: string): UndoResult {
   const resolvedChangeId = changeIdAliases.get(changeId) ?? changeId;
   const change = buildUserChanges().find(
@@ -6745,6 +6759,7 @@ function revertChange(changeId: string): UndoResult {
     remove();
     pushHistory({ label: "Revert Group item order", assetPaths: [], undo: restore, redo: remove });
   } else if (change.opIndex !== undefined) revertPendingOperation(change.opIndex);
+  refreshChangesDrawerIfOpen();
   return { changeId, undone: true };
 }
 
@@ -7721,6 +7736,7 @@ function discardAll(): void {
   createdMedia.clear();
   originalSeo.clear();
   originalMarkups.clear();
+  duplicateSourceLabels.clear();
   originalFormats.clear();
   originalBlockTags.clear();
   originalListStates.clear();
@@ -7854,6 +7870,65 @@ function focusChange(pagePath: string, nodeId: string): void {
   };
   if (keepDrawerOpen) reveal();
   else void loadPage(pagePath, { pushHistory: true }).then(reveal);
+}
+
+function displayNameForElement(element: Element | null | undefined): string {
+  const heading = element?.querySelector("h1,h2,h3,h4,h5,h6");
+  const value = heading?.textContent ?? element?.textContent ?? "";
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, 80) : "Untitled section";
+}
+
+function displayNameForNode(pagePath: string, nodeId: string): string {
+  return pagePath === state.current?.pagePath
+    ? displayNameForElement(currentNodeElement(nodeId))
+    : "Untitled section";
+}
+
+function displayNameForGroupItem(pagePath: string, groupId: string, itemId: string): string {
+  if (pagePath !== state.current?.pagePath) return "Untitled item";
+  const element = previewDoc()?.querySelector<HTMLElement>(
+    `[data-xyle-group="${CSS.escape(groupId)}"] [data-xyle-group-item="${CSS.escape(itemId)}"]`,
+  );
+  return displayNameForElement(element);
+}
+
+function sectionMoveDirection(op: Extract<Op, { type: "moveSection" }>): "earlier" | "later" {
+  const element = currentNodeElement(op.nodeId);
+  const parent = element?.parentElement;
+  const currentIndex = element && parent ? sectionChildren(parent).indexOf(element) : op.originalIndex;
+  return currentIndex < op.originalIndex ? "earlier" : "later";
+}
+
+function changeTypeLabel(type: ChangeInfo["type"]): string {
+  switch (type) {
+    case "text":
+      return "Text";
+    case "href":
+      return "Link";
+    case "src":
+    case "alt":
+    case "media":
+      return "Image";
+    case "format":
+    case "formatBlock":
+    case "toggleList":
+    case "html":
+      return "Formatting";
+    case "sectionVisibility":
+    case "moveSection":
+    case "duplicateSection":
+      return "Section";
+    case "duplicateGroupItem":
+    case "moveGroupItem":
+      return "Group item";
+    case "setLayoutPreset":
+      return "Layout";
+    case "setRegionOrder":
+      return "Order";
+    case "seo":
+      return "SEO";
+  }
 }
 
 function opLabel(op: Op): string {
@@ -8128,7 +8203,10 @@ function openChangesDrawer(): void {
       number.className = "xyle-change-index";
       number.textContent = String(++changeNumber);
       number.setAttribute("aria-hidden", "true");
-      heading.append(number);
+      const type = document.createElement("span");
+      type.className = "xyle-change-type";
+      type.textContent = changeTypeLabel(change.info.type);
+      heading.append(number, type);
       const rowActions = document.createElement("div");
       rowActions.className = "xyle-change-row-actions";
       const locateButton = document.createElement("button");
@@ -8157,8 +8235,8 @@ function openChangesDrawer(): void {
       comparison.className = "xyle-change-comparison";
       // User-authored values are appended as text nodes so the privileged shell
       // never interprets edited content as markup.
-      const beforeValue = change.info.before.trim();
-      const afterValue = change.info.after.trim();
+      const beforeValue = change.info.before;
+      const afterValue = change.info.after;
       const diff = changeParts(beforeValue, afterValue);
       appendChangeValue(comparison, "Before", beforeValue, diff.before);
       const arrow = document.createElement("span");
@@ -8417,6 +8495,7 @@ const originalMedia = new Map<string, MediaState>();
 const createdMedia = new Map<string, MediaState>();
 const originalSeo = new Map<string, string>();
 const originalMarkups = new Map<string, string>();
+const duplicateSourceLabels = new Map<string, string>();
 const originalFormats = new Map<string, "bold" | "italic" | "underline" | "none">();
 const originalBlockTags = new Map<string, BlockTag>();
 const originalListStates = new Map<string, "plain" | "ul" | "ol">();
@@ -8718,18 +8797,10 @@ function setSegmentValue(el: HTMLElement, segIndex: number, value: string): void
     controlled.remove();
   }
 
-  const pieces = value.split("\n");
-  first.textContent = pieces[0] ?? "";
-  let cursor: Node = first;
-  const doc = el.ownerDocument;
-  for (const piece of pieces.slice(1)) {
-    const br = doc.createElement("br");
-    markControlledBreak(br);
-    const text = doc.createTextNode(piece);
-    parent.insertBefore(br, cursor.nextSibling);
-    parent.insertBefore(text, br.nextSibling);
-    cursor = text;
-  }
+  // Newlines in a text operation can be authored source whitespace. Preserve
+  // them as text; authored and user-inserted <br> segments are represented by
+  // their own rich-content operations.
+  first.textContent = value;
 }
 
 function textNodesForSlot(rootEl: HTMLElement, key: string): Text[] {
@@ -8933,6 +9004,7 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     createdMedia.clear();
     originalSeo.clear();
     originalMarkups.clear();
+    duplicateSourceLabels.clear();
     originalFormats.clear();
     originalBlockTags.clear();
     originalListStates.clear();

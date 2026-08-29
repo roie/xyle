@@ -17,7 +17,7 @@ test("discovers and duplicates a source-backed Group item through the human UI",
   await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
   await page
     .locator(".xyle-group-item-tools button", { hasText: "Duplicate item" })
-    .click({ force: true });
+    .click();
   await expect(items).toHaveCount(3, { timeout: 10_000 });
 
   const createdId = await page.evaluate((sourceId) => {
@@ -27,6 +27,44 @@ test("discovers and duplicates a source-backed Group item through the human UI",
       .find((id) => id && id !== sourceId);
   }, firstItemId);
   expect(createdId).toMatch(/^x-[a-f0-9]{8}$/);
+
+  const referenceState = await page.evaluate((itemId) => {
+    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+    const source = doc.querySelector<HTMLElement>("[data-xyle-group-item]")!;
+    const clone = doc.querySelector<HTMLElement>(`[data-xyle-group-item="${itemId}"]`)!;
+    const ids = [...clone.querySelectorAll<HTMLElement>("[id]")].map((element) => element.id);
+    const panel = clone.querySelector<HTMLElement>(".reference-fixture [aria-labelledby]")!;
+    const label = clone.querySelector<HTMLElement>("label")!;
+    const href = clone.querySelector<HTMLAnchorElement>("a[href^='#']")!;
+    return {
+      ids,
+      originalIds: [...source.querySelectorAll<HTMLElement>("[id]")].map((element) => element.id),
+      sectionReference: doc.querySelector("main > section")?.getAttribute("aria-labelledby"),
+      labelFor: label.getAttribute("for"),
+      labelledBy: panel.getAttribute("aria-labelledby"),
+      describedBy: panel.getAttribute("aria-describedby"),
+      controls: panel.getAttribute("aria-controls"),
+      owns: panel.getAttribute("aria-owns"),
+      active: panel.getAttribute("aria-activedescendant"),
+      form: panel.getAttribute("form"),
+      list: panel.getAttribute("list"),
+      headers: panel.getAttribute("headers"),
+      href: href.getAttribute("href"),
+    };
+  }, createdId);
+  expect(new Set(referenceState.ids).size).toBe(referenceState.ids.length);
+  expect(referenceState.ids.some((id) => referenceState.originalIds.includes(id))).toBe(false);
+  expect(referenceState.sectionReference).toBe("groups-title");
+  expect(referenceState.labelFor).toMatch(/^#?x-/);
+  expect(referenceState.labelledBy).not.toContain("service-a-title");
+  expect(referenceState.describedBy).toMatch(/^x-/);
+  expect(referenceState.controls).toMatch(/^x-/);
+  expect(referenceState.owns).toMatch(/^x-/);
+  expect(referenceState.active).toMatch(/^x-/);
+  expect(referenceState.form).toMatch(/^x-/);
+  expect(referenceState.list).toMatch(/^x-/);
+  expect(referenceState.headers).toMatch(/^x-/);
+  expect(referenceState.href).toMatch(/^#x-/);
 
   const originalTitleId = await page.evaluate(() => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
@@ -44,6 +82,7 @@ test("discovers and duplicates a source-backed Group item through the human UI",
   }, createdId);
   expect(titleId).toBeTruthy();
   const title = preview.locator(`[data-xyle-node="${titleId}"]`);
+  await title.evaluate((element) => element.scrollIntoView({ block: "start" }));
   await title.click();
   await page.keyboard.press("ControlOrMeta+A");
   await page.keyboard.insertText("Duplicated service");
@@ -58,6 +97,13 @@ test("discovers and duplicates a source-backed Group item through the human UI",
     "Original service",
   );
 
+  await page.locator("#xyle-changes").click();
+  const groupChange = page.locator('.xyle-change-row[aria-label*="Duplicate Group item"]').first();
+  await expect(groupChange.locator(".xyle-change-type")).toHaveText("Group item");
+  await expect(groupChange).toContainText('Duplicated “Leaks”');
+  await expect(groupChange).not.toContainText("service-a");
+  await page.locator("#xyle-changes-close").click();
+
   const publishResponse = page.waitForResponse((response) =>
     response.url().includes("/__xyle/api/publish"),
   );
@@ -69,6 +115,11 @@ test("discovers and duplicates a source-backed Group item through the human UI",
   await expect(page.getByText("Duplicated service")).toHaveCount(1);
   await expect(page.getByText("Original service")).toHaveCount(1);
   expect(await page.locator("[data-xyle-node]").count()).toBe(0);
+  const publishedClone = page.locator("article").nth(1);
+  const publishedPanel = publishedClone.locator(".reference-fixture [aria-labelledby]");
+  await expect(publishedPanel).toHaveAttribute("aria-describedby", /^x-/);
+  await expect(publishedPanel).toHaveAttribute("aria-controls", /^x-/);
+  await expect(publishedPanel.locator("xpath=..")).toContainText("Repair details");
 });
 
 test("moves an edited source-backed Group item through the human UI", async ({ page }) => {
@@ -94,7 +145,7 @@ test("moves an edited source-backed Group item through the human UI", async ({ p
   await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
   await page
     .locator(".xyle-group-item-tools button", { hasText: "Move earlier" })
-    .click({ force: true });
+    .click();
   await expect
     .poll(() => items.evaluateAll((elements) => elements.map((item) => item.textContent)))
     .toEqual([expect.stringContaining("Moved service"), expect.stringContaining("Leaks")]);

@@ -14,11 +14,51 @@
             <h2 id="service-a-title">Leaks</h2>
             <p>Fast fixture repairs.</p>
             <img src="/assets/hero-fallback.jpg" alt="Pipe repair" />
+            <div class="reference-fixture" hidden>
+              <label id="service-a-label" for="service-a-panel">Service details</label>
+              <div
+                id="service-a-panel"
+                aria-labelledby="service-a-title service-a-label"
+                aria-describedby="service-a-description"
+                aria-controls="service-a-active service-a-list"
+                aria-owns="service-a-active"
+                aria-activedescendant="service-a-active"
+                form="service-a-form"
+                list="service-a-list"
+                headers="service-a-title"
+              >
+                <span id="service-a-description">Repair details</span>
+                <span id="service-a-active">Active detail</span>
+                <a href="#service-a-panel">View details</a>
+              </div>
+              <div id="service-a-form"></div>
+              <div id="service-a-list"></div>
+            </div>
           </article>
           <article id="service-b" aria-labelledby="service-b-title">
             <h2 id="service-b-title">Water heaters</h2>
             <p>Reliable hot water service.</p>
             <img src="/assets/hero-fallback.jpg" alt="Water heater" />
+            <div class="reference-fixture" hidden>
+              <label id="service-b-label" for="service-b-panel">Service details</label>
+              <div
+                id="service-b-panel"
+                aria-labelledby="service-b-title service-b-label"
+                aria-describedby="service-b-description"
+                aria-controls="service-b-active service-b-list"
+                aria-owns="service-b-active"
+                aria-activedescendant="service-b-active"
+                form="service-b-form"
+                list="service-b-list"
+                headers="service-b-title"
+              >
+                <span id="service-b-description">Repair details</span>
+                <span id="service-b-active">Active detail</span>
+                <a href="#service-b-panel">View details</a>
+              </div>
+              <div id="service-b-form"></div>
+              <div id="service-b-list"></div>
+            </div>
           </article>
         </div>
       </section>

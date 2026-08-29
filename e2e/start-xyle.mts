@@ -24,7 +24,25 @@ await writeFile(
   }),
 );
 
-const { server, url } = await startXyleDevServer({ directory: root, port: PORT });
+const resetFixture = async (): Promise<void> => {
+  await rm(root, { recursive: true, force: true });
+  await mkdir(root, { recursive: true });
+  await cp(EXAMPLE, root, { recursive: true });
+  await mkdir(secretsDir, { recursive: true });
+  await writeFile(
+    join(secretsDir, "secrets.local.json"),
+    JSON.stringify({
+      editorKey: TEST_KEY,
+      sessionSecretB64: Buffer.from("xyle-test-session-secret-0123456789").toString("base64"),
+    }),
+  );
+};
+
+const { server, url } = await startXyleDevServer({
+  directory: root,
+  port: PORT,
+  resetForTests: resetFixture,
+});
 
 console.log(`xyle e2e server on ${url} (site copy in ${root})`);
 

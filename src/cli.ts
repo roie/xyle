@@ -122,6 +122,8 @@ export interface DevServerOptions {
   host?: string;
   port?: number;
   publicBaseUrl?: string;
+  /** Test-only fixture reset hook. */
+  resetForTests?: () => Promise<void>;
 }
 
 export async function startXyleDevServer(options: DevServerOptions): Promise<{
@@ -234,6 +236,7 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
     cspKnown: true,
     ignorePaths: state.ignorePaths,
     ignoreSelectors: state.ignoreSelectors,
+    ...(options.resetForTests ? { resetForTests: options.resetForTests } : {}),
   };
   handler = createXyleHandler(context);
 

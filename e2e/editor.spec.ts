@@ -129,10 +129,11 @@ test.describe("editor shell and preview", () => {
     });
     expect(geometry.tools.width).toBeGreaterThan(0);
     expect(geometry.tools.height).toBeGreaterThan(0);
-    expect(Math.abs(geometry.tools.left - geometry.target.left)).toBeLessThanOrEqual(8);
     const below = Math.abs(geometry.tools.top - (geometry.target.bottom + 6));
     const above = Math.abs(geometry.tools.bottom - (geometry.target.top - 6));
-    expect(Math.min(below, above)).toBeLessThanOrEqual(8);
+    const right = Math.abs(geometry.tools.left - (geometry.target.right + 8));
+    const left = Math.abs(geometry.tools.right - (geometry.target.left - 8));
+    expect(Math.min(below, above, right, left)).toBeLessThanOrEqual(8);
   });
 
   test("context tools dismiss when the pointer leaves a link", async ({ page }) => {
@@ -540,6 +541,8 @@ test.describe("changes drawer and undo", () => {
     const aboutGroup = groups.nth(1);
     const textRow = indexGroup.locator(".xyle-change-row").nth(0);
     const linkRow = indexGroup.locator(".xyle-change-row").nth(1);
+    await expect(textRow.locator(".xyle-change-type")).toHaveText("Text");
+    await expect(linkRow.locator(".xyle-change-type")).toHaveText("Link");
     await expect(textRow.locator(".xyle-change-before")).toContainText(originalText);
     await expect(textRow.locator(".xyle-change-after")).toContainText(updatedText);
     await expect(linkRow.locator(".xyle-change-before")).toContainText(originalHref);
@@ -547,6 +550,20 @@ test.describe("changes drawer and undo", () => {
     await expect(indexGroup.locator(".xyle-change-arrow")).toHaveCount(2);
     await expect(aboutGroup.locator(".xyle-change-before")).toContainText(originalAboutText);
     await expect(aboutGroup.locator(".xyle-change-after")).toContainText("GROUPED-ABOUT");
+  });
+
+  test("Changes drawer preserves exact whitespace in reviewed values", async ({ page }) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    await editNode(page, id!);
+    await focusCaret(page, id!, "end");
+    await page.keyboard.type("  exact spaces  ");
+    await clickOutsideCommit(page);
+
+    await page.locator("#xyle-changes").click();
+    const row = page.locator("#xyle-changes-drawer .xyle-change-row").first();
+    const after = await row.locator(".xyle-change-after").textContent();
+    expect(after).toContain("&nbsp; exact spaces&nbsp; ");
   });
 
   test("mobile Changes drawer traps focus and Escape restores its trigger", async ({ page }) => {
@@ -607,6 +624,9 @@ test.describe("changes drawer and undo", () => {
       1,
     );
     await page.click("#xyle-changes-drawer button:has-text('Revert')");
+    await expect(page.locator("#xyle-changes-drawer")).toBeVisible();
+    await expect(page.locator("#xyle-changes-drawer .xyle-change-row")).toHaveCount(0);
+    await expect(page.locator("#xyle-changes-count")).toHaveText("");
     await expect(page.locator("#xyle-dirty")).toBeHidden();
 
     const text = await textOf(page, id!);
