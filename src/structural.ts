@@ -45,3 +45,59 @@ export function rewriteIdTokens(value: string, idMap: ReadonlyMap<string, string
     .map((token) => idMap.get(token) ?? token)
     .join(" ");
 }
+
+export type GroupOrderOperation =
+  | {
+      type: "duplicateGroupItem";
+      sourceItemId: string;
+      createdId: string;
+      sequence: number;
+    }
+  | {
+      type: "moveGroupItem";
+      itemId: string;
+      targetItemId: string;
+      position: "before" | "after";
+      sequence: number;
+    };
+
+/** Replay Group ordering without interpreting CSS or content. */
+export function replayGroupOrder(
+  sourceItemIds: readonly string[],
+  operations: readonly GroupOrderOperation[],
+): string[] {
+  const sourceIds = new Set(sourceItemIds);
+  if (sourceIds.size !== sourceItemIds.length) throw new Error("Group source order is ambiguous");
+  const entries = sourceItemIds.map((id) => ({ id, originId: id }));
+  for (const operation of [...operations].sort((left, right) => left.sequence - right.sequence)) {
+    if (operation.type === "duplicateGroupItem") {
+      if (!sourceIds.has(operation.sourceItemId))
+        throw new Error("Group duplication source is not source-backed");
+      const insertAfter = entries.reduce(
+        (last, entry, index) => (entry.originId === operation.sourceItemId ? index : last),
+        -1,
+      );
+      if (insertAfter < 0) throw new Error("Group duplication source is unavailable");
+      entries.splice(insertAfter + 1, 0, {
+        id: operation.createdId,
+        originId: operation.sourceItemId,
+      });
+      continue;
+    }
+    if (
+      !sourceIds.has(operation.itemId) ||
+      !sourceIds.has(operation.targetItemId) ||
+      operation.itemId === operation.targetItemId
+    ) {
+      throw new Error("Group move must use distinct source-backed items");
+    }
+    const sourceIndex = entries.findIndex((entry) => entry.id === operation.itemId);
+    const targetIndex = entries.findIndex((entry) => entry.id === operation.targetItemId);
+    if (sourceIndex < 0 || targetIndex < 0) throw new Error("Group move target is unavailable");
+    const [source] = entries.splice(sourceIndex, 1);
+    if (!source) throw new Error("Group move source is unavailable");
+    const adjustedTargetIndex = entries.findIndex((entry) => entry.id === operation.targetItemId);
+    entries.splice(adjustedTargetIndex + (operation.position === "after" ? 1 : 0), 0, source);
+  }
+  return entries.map((entry) => entry.id);
+}

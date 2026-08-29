@@ -888,6 +888,113 @@ test.describe("WebMCP editor tools", () => {
     expect(await page.getByText("WebMCP duplicate edit").count()).toBe(1);
   });
 
+  test("reports conservative Group move capabilities", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/groups-layouts.html");
+    const groups = (await invokeTool(page, "list_groups", {})) as Array<{
+      id: string;
+      move: { supported: boolean; reason?: string };
+    }>;
+    const layouts = await page.evaluate(() => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      return [...doc.querySelectorAll<HTMLElement>("[data-xyle-group]")].map((group) => ({
+        id: group.dataset.xyleGroup,
+        className: group.className,
+      }));
+    });
+    const capabilityFor = (className: string) => {
+      const id = layouts.find((layout) => layout.className === className)?.id;
+      return groups.find((group) => group.id === id)?.move;
+    };
+    expect(capabilityFor("cards")).toEqual({ supported: true });
+    expect(capabilityFor("flex-cards")).toEqual({ supported: true });
+    expect(capabilityFor("grid-cards")).toEqual({ supported: true });
+    expect(capabilityFor("reverse-cards")?.supported).toBe(false);
+    expect(capabilityFor("explicit-cards")?.supported).toBe(false);
+  });
+
+  test("moves an edited Group item through WebMCP", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/groups-move.html");
+    const groups = (await invokeTool(page, "list_groups", {})) as Array<{
+      id: string;
+      move: { supported: boolean; reason?: string };
+      items: Array<{ id: string }>;
+    }>;
+    expect(groups[0]!.move).toEqual({ supported: true });
+    const groupId = groups[0]!.id;
+    const sourceItemId = groups[0]!.items[1]!.id;
+    const targetItemId = groups[0]!.items[0]!.id;
+    const titleId = await page.evaluate((itemId) => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      return doc
+        .querySelector<HTMLElement>(`[data-xyle-group-item="${itemId}"]`)
+        ?.querySelector<HTMLElement>("h2[data-xyle-node]")
+        ?.getAttribute("data-xyle-node");
+    }, sourceItemId);
+    const imageId = await page.evaluate((itemId) => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      return doc
+        .querySelector<HTMLElement>(`[data-xyle-group-item="${itemId}"]`)
+        ?.querySelector<HTMLImageElement>("img[data-xyle-node]")
+        ?.getAttribute("data-xyle-node");
+    }, sourceItemId);
+    expect(titleId).toBeTruthy();
+    expect(imageId).toBeTruthy();
+    await invokeTool(page, "update_text", { id: titleId, text: "Moved service" });
+    await invokeTool(page, "update_media", {
+      id: imageId,
+      crop: { x: 0.1, y: 0.1, width: 0.7, height: 0.7 },
+      focus: { x: 0.6, y: 0.4 },
+      fit: "cover",
+    });
+    const moved = await invokeTool(page, "move_group_item", {
+      groupId,
+      itemId: sourceItemId,
+      targetItemId,
+      position: "before",
+    });
+    expect(moved).toEqual({ id: sourceItemId, targetItemId, position: "before" });
+    const currentOrder = () =>
+      page.evaluate(() => {
+        const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+        return [...doc.querySelectorAll("[data-xyle-group-item] h2")].map(
+          (heading) => heading.textContent,
+        );
+      });
+    await expect.poll(currentOrder).toEqual(["Moved service", "Leaks"]);
+    await page.keyboard.press("Control+z");
+    await expect.poll(currentOrder).toEqual(["Leaks", "Moved service"]);
+    await page.keyboard.press("Control+Shift+z");
+    await expect.poll(currentOrder).toEqual(["Moved service", "Leaks"]);
+    const changes = (await invokeTool(page, "list_changes", {})) as Array<{
+      changeId: string;
+      type: string;
+    }>;
+    expect(changes.filter((change) => change.type === "moveGroupItem")).toHaveLength(1);
+    await invokeTool(page, "revert_change", {
+      changeId: changes.find((change) => change.type === "moveGroupItem")!.changeId,
+    });
+    await expect.poll(currentOrder).toEqual(["Leaks", "Water heaters"]);
+    await page.keyboard.press("Control+z");
+    await expect.poll(currentOrder).toEqual(["Moved service", "Leaks"]);
+    const publishResponse = page.waitForResponse((response) =>
+      response.url().includes("/__xyle/api/publish"),
+    );
+    await page.locator("#xyle-publish").click();
+    expect((await publishResponse).ok()).toBe(true);
+    await page.goto("/groups-move.html");
+    await expect(page.locator("article")).toHaveCount(2);
+    await expect(page.locator("article h2").first()).toContainText("Moved service");
+    await expect(page.locator("article img").first()).toHaveAttribute("src", /__media\//);
+  });
+
   test("lists and duplicates a Group item through WebMCP", async ({ page, browserName }) => {
     test.skip(
       browserName !== "chromium" || test.info().project.name !== "webmcp",

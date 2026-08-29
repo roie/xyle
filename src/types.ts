@@ -77,6 +77,11 @@ export interface MediaCapabilities {
   focusReason?: string;
 }
 
+export interface GroupMoveCapability {
+  supported: boolean;
+  reason?: string;
+}
+
 export type PageOperation =
   | { type: "text"; nodeId: string; value: string }
   | {
@@ -113,7 +118,8 @@ export type PageOperation =
       sequence?: number;
     }
   | DuplicateSectionOperation
-  | DuplicateGroupItemOperation;
+  | DuplicateGroupItemOperation
+  | MoveGroupItemOperation;
 
 export interface DuplicateSectionOperation {
   type: "duplicateSection";
@@ -149,9 +155,20 @@ export interface DuplicateGroupItemOperation {
   assetRefs: AssetReference[];
 }
 
+export interface MoveGroupItemOperation {
+  type: "moveGroupItem";
+  groupId: string;
+  itemId: string;
+  targetItemId: string;
+  position: "before" | "after";
+  sequence: number;
+  groupSignature: string;
+  itemSignature: string;
+}
+
 export type SnapshotOperation = Exclude<
   PageOperation,
-  DuplicateSectionOperation | DuplicateGroupItemOperation
+  DuplicateSectionOperation | DuplicateGroupItemOperation | MoveGroupItemOperation
 >;
 
 export interface AssetReference {
@@ -251,6 +268,8 @@ export interface GroupDescriptor {
   sectionEnd: number;
   signature: string;
   items: GroupItemDescriptor[];
+  /** Runtime-only capability; not serialized into publish operations. */
+  move?: GroupMoveCapability;
 }
 
 export interface PreviewNode {

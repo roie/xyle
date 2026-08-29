@@ -27,6 +27,8 @@ import {
   createdNodeIdentity,
   duplicateGroupHtmlId,
   duplicateHtmlId,
+  replayGroupOrder,
+  type GroupOrderOperation,
 } from "./structural.ts";
 import { cropRectForFrame } from "./media-crop.ts";
 import {
@@ -46,6 +48,8 @@ import type {
   DuplicateGroupItemOperation,
   GroupDescriptor,
   GroupItemDescriptor,
+  GroupMoveCapability,
+  MoveGroupItemOperation,
   SnapshotOperation,
 } from "./types.ts";
 
@@ -1531,7 +1535,8 @@ type Op =
       idMap: Record<string, string>;
       assetRefs: AssetReference[];
     }
-  | (DuplicateGroupItemOperation & { assetRefs: AssetReference[] });
+  | (DuplicateGroupItemOperation & { assetRefs: AssetReference[] })
+  | MoveGroupItemOperation;
 
 interface PageOps {
   pagePath: string;
@@ -1590,6 +1595,7 @@ interface UserChange {
   info: ChangeInfo;
   pagePath: string;
   opIndex?: number;
+  opIndexes?: number[];
   region?: RichContentRegion;
   label: string;
 }
@@ -1674,6 +1680,7 @@ async function boot(): Promise<void> {
     moveSection,
     duplicateSection,
     duplicateGroupItem,
+    moveGroupItem,
     updateText,
     updateLink,
   });
@@ -2010,20 +2017,106 @@ function groupItemForId(
   return groupForId(groupId)?.items.find((item) => item.id === itemId);
 }
 
+function groupItemsInDom(groupId: string): GroupItemDescriptor[] {
+  const group = groupForId(groupId);
+  const container = previewDoc()?.querySelector<HTMLElement>(
+    `[data-xyle-group="${CSS.escape(groupId)}"]`,
+  );
+  if (!group || !container) return [];
+  const byId = new Map(group.items.map((candidate) => [candidate.id, candidate]));
+  return [...container.children]
+    .map((element) => byId.get(element.getAttribute("data-xyle-group-item") ?? ""))
+    .filter((candidate): candidate is GroupItemDescriptor => !!candidate);
+}
+
+function moveGroupItem(
+  groupId: string,
+  itemId: string,
+  targetItemId: string,
+  position: "before" | "after",
+): { id: string; targetItemId: string; position: "before" | "after" } {
+  const current = state.current;
+  const group = current?.groups.find((candidate) => candidate.id === groupId);
+  const item = group?.items.find((candidate) => candidate.id === itemId);
+  const target = group?.items.find((candidate) => candidate.id === targetItemId);
+  if (!current || !group || !item || !target || item === target) {
+    throw new Error("Group moves require distinct source-backed items");
+  }
+  const capability = groupMoveCapability(group);
+  if (!capability.supported) throw new Error(capability.reason ?? "Group movement is unavailable");
+  const order = groupItemsInDom(groupId).map((candidate) => candidate.id);
+  if (
+    order.length !== group.items.length ||
+    !order.includes(itemId) ||
+    !order.includes(targetItemId)
+  ) {
+    throw new Error("Group item order is unavailable");
+  }
+  const sourceIndex = order.indexOf(itemId);
+  const targetIndex = order.indexOf(targetItemId);
+  const nextIndex =
+    targetIndex + (position === "after" ? 1 : 0) - (sourceIndex < targetIndex ? 1 : 0);
+  if (nextIndex === sourceIndex) throw new Error("Group item is already in that position");
+  const operation: Op = {
+    type: "moveGroupItem",
+    groupId,
+    itemId,
+    targetItemId,
+    position,
+    sequence: allocateStructuralSequence(),
+    groupSignature: group.signature,
+    itemSignature: item.signature,
+  };
+  applyGroupOrderToDom(groupId, operation);
+  applyOp(
+    current.pagePath,
+    operation,
+    position === "before" ? "Move Group item before" : "Move Group item after",
+  );
+  return { id: itemId, targetItemId, position };
+}
+
 function showGroupItemTools(item: HTMLElement, itemDescriptor: GroupItemDescriptor): void {
   if (session) return;
   const overlay = shellOverlay();
   if (!overlay) return;
+  const groupId = item.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
+  if (!groupId) return;
+  const group = groupForId(groupId);
+  if (!group) return;
   const tools = document.createElement("div");
   tools.className = "xyle-link-tools xyle-group-item-tools";
   tools.setAttribute("role", "toolbar");
   tools.setAttribute("aria-label", "Group item actions");
+  const capability = groupMoveCapability(group);
+  const order = groupItemsInDom(groupId);
+  const index = order.findIndex((candidate) => candidate.id === itemDescriptor.id);
+  const addMove = (
+    label: string,
+    target: GroupItemDescriptor | undefined,
+    position: "before" | "after",
+  ): void => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    if (!capability.supported || !target) {
+      button.disabled = true;
+      if (!capability.supported)
+        button.title = capability.reason ?? "Group movement is unavailable";
+    } else {
+      button.addEventListener("click", () => {
+        moveGroupItem(groupId, itemDescriptor.id, target.id, position);
+        closeContextTools(false);
+      });
+    }
+    tools.append(button);
+  };
+  addMove("Move earlier", order[index - 1], "before");
+  addMove("Move later", order[index + 1], "after");
   const duplicate = document.createElement("button");
   duplicate.type = "button";
   duplicate.textContent = "Duplicate item";
   duplicate.addEventListener("click", () => {
-    const groupId = item.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
-    if (!groupId) return;
     duplicateGroupItem(groupId, itemDescriptor.id);
     closeContextTools(false);
   });
@@ -4708,6 +4801,9 @@ function opKey(op: Op): string {
   if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") {
     return `${op.type}@${op.createdId}`;
   }
+  if (op.type === "moveGroupItem") {
+    return `${op.type}@${op.groupId}:${op.itemId}:${op.targetItemId}:${op.position}:${op.sequence}`;
+  }
   const target = op.type === "text" ? op.nodeId : `${op.nodeId}:${op.type}`;
   if (op.type === "format" && op.start !== undefined && op.end !== undefined) {
     return `${op.type}@${target}:${op.start}-${op.end}`;
@@ -4954,7 +5050,14 @@ function moveSection(
   );
   const originalIndex =
     previous?.op.type === "moveSection" ? previous.op.originalIndex : currentIndex;
-  const operation: Op = { type: "moveSection", nodeId, targetId, before, originalIndex };
+  const operation: Op = {
+    type: "moveSection",
+    nodeId,
+    targetId,
+    before,
+    originalIndex,
+    sequence: allocateStructuralSequence(),
+  };
   applyOpToDom(current.pagePath, operation);
   applyOp(current.pagePath, operation, before ? "Move section before" : "Move section after");
   return { id: nodeId, targetId, before };
@@ -5040,6 +5143,8 @@ function duplicateSection(nodeId: string): { id: string; sourceId: string } {
       ({ pagePath, op }) =>
         pagePath === current.pagePath &&
         op.type !== "duplicateSection" &&
+        op.type !== "duplicateGroupItem" &&
+        op.type !== "moveGroupItem" &&
         opTargetsElement(op, source),
     )
     .map(({ op }) => structuredClone(op) as SnapshotOperation);
@@ -5048,7 +5153,7 @@ function duplicateSection(nodeId: string): { id: string; sourceId: string } {
     type: "duplicateSection",
     sourceId: nodeId,
     createdId,
-    sequence: ++nextOpRevision,
+    sequence: allocateStructuralSequence(),
     insert: "after",
     snapshotOperations,
     nodeMap: { [nodeId]: createdId, ...Object.fromEntries(sourceNodeIds) },
@@ -5201,7 +5306,7 @@ function duplicateGroupItem(
     groupSignature: group.signature,
     itemSignature: item.signature,
     createdId,
-    sequence: ++nextOpRevision,
+    sequence: allocateStructuralSequence(),
     insert: "after",
     snapshotOperations,
     nodeMap: { [itemId]: createdId, ...Object.fromEntries(sourceNodeIds) },
@@ -5386,8 +5491,135 @@ function opTargetsElement(op: Op, root: HTMLElement): boolean {
   });
 }
 
+function groupMoveCapability(group: GroupDescriptor): GroupMoveCapability {
+  const doc = previewDoc();
+  const container = doc?.querySelector<HTMLElement>(`[data-xyle-group="${CSS.escape(group.id)}"]`);
+  if (!doc || !container) return { supported: false, reason: "Group layout is unavailable" };
+  const items = [...container.children].filter((child): child is HTMLElement =>
+    child.hasAttribute("data-xyle-group-item"),
+  );
+  const sourceIds = new Set(group.items.map((item) => item.id));
+  if (
+    items.length !== group.items.length ||
+    items.some((item) => !sourceIds.has(item.dataset.xyleGroupItem ?? ""))
+  ) {
+    return { supported: false, reason: "Move is disabled while the Group has unpublished items" };
+  }
+  const view = doc.defaultView;
+  if (!view) return { supported: false, reason: "Group layout is unavailable" };
+  const containerStyle = view.getComputedStyle(container);
+  if (
+    containerStyle.direction !== "ltr" ||
+    containerStyle.writingMode !== "horizontal-tb" ||
+    containerStyle.position === "absolute" ||
+    containerStyle.position === "fixed" ||
+    containerStyle.position === "sticky" ||
+    containerStyle.transform !== "none" ||
+    containerStyle.perspective !== "none"
+  ) {
+    return { supported: false, reason: "Group uses an ambiguous writing mode or transform" };
+  }
+  const styles = items.map((item) => view.getComputedStyle(item));
+  if (
+    styles.some(
+      (style) =>
+        style.display === "contents" ||
+        style.direction !== "ltr" ||
+        style.writingMode !== "horizontal-tb" ||
+        style.position !== "static" ||
+        style.float !== "none" ||
+        style.transform !== "none" ||
+        style.perspective !== "none" ||
+        style.order !== "0",
+    )
+  ) {
+    return { supported: false, reason: "Group items use unsupported positioning or order" };
+  }
+  const rects = items.map((item) => item.getBoundingClientRect());
+  if (rects.some((rect) => rect.width <= 0 || rect.height <= 0)) {
+    return { supported: false, reason: "Group items do not have reliable layout rectangles" };
+  }
+  for (let left = 0; left < rects.length; left += 1) {
+    for (let right = left + 1; right < rects.length; right += 1) {
+      const overlapWidth =
+        Math.min(rects[left]!.right, rects[right]!.right) -
+        Math.max(rects[left]!.left, rects[right]!.left);
+      const overlapHeight =
+        Math.min(rects[left]!.bottom, rects[right]!.bottom) -
+        Math.max(rects[left]!.top, rects[right]!.top);
+      if (overlapWidth > 0.5 && overlapHeight > 0.5) {
+        return { supported: false, reason: "Group items overlap" };
+      }
+    }
+  }
+  const display = containerStyle.display;
+  if (display === "flex" || display === "inline-flex") {
+    if (
+      !["row", "column"].includes(containerStyle.flexDirection) ||
+      containerStyle.flexWrap !== "nowrap"
+    ) {
+      return { supported: false, reason: "Group flex layout is ambiguous" };
+    }
+    const horizontal = containerStyle.flexDirection === "row";
+    const inOrder = rects.every((rect, index) => {
+      const previous = rects[index - 1];
+      return !previous || (horizontal ? rect.left >= previous.left : rect.top >= previous.top);
+    });
+    return inOrder
+      ? { supported: true }
+      : { supported: false, reason: "Group visual order does not follow document order" };
+  }
+  if (display === "grid" || display === "inline-grid") {
+    if (
+      containerStyle.gridAutoFlow.includes("dense") ||
+      containerStyle.gridTemplateAreas !== "none" ||
+      !["row", "column"].includes(containerStyle.gridAutoFlow)
+    ) {
+      return { supported: false, reason: "Group grid placement is ambiguous" };
+    }
+    if (
+      styles.some(
+        (style) =>
+          style.gridRowStart !== "auto" ||
+          style.gridRowEnd !== "auto" ||
+          style.gridColumnStart !== "auto" ||
+          style.gridColumnEnd !== "auto",
+      )
+    ) {
+      return { supported: false, reason: "Group uses explicit grid placement" };
+    }
+    const columnFlow = containerStyle.gridAutoFlow === "column";
+    const sorted = items
+      .map((item, index) => ({ item, rect: rects[index]! }))
+      .sort((left, right) =>
+        columnFlow
+          ? left.rect.left - right.rect.left || left.rect.top - right.rect.top
+          : left.rect.top - right.rect.top || left.rect.left - right.rect.left,
+      );
+    return sorted.every(({ item }, index) => item === items[index])
+      ? { supported: true }
+      : { supported: false, reason: "Group visual order does not follow document order" };
+  }
+  if (["block", "flow-root", "inline-block"].includes(display)) {
+    if (containerStyle.columnCount !== "auto" && containerStyle.columnCount !== "1") {
+      return { supported: false, reason: "Group uses unsupported CSS columns" };
+    }
+    const inOrder = rects.every((rect, index) => {
+      const previous = rects[index - 1];
+      return !previous || rect.top >= previous.bottom - 0.5;
+    });
+    return inOrder
+      ? { supported: true }
+      : { supported: false, reason: "Group visual order does not follow document order" };
+  }
+  return { supported: false, reason: "Group layout is not supported" };
+}
+
 function listGroups(): GroupDescriptor[] {
-  return state.current?.groups ?? [];
+  return (state.current?.groups ?? []).map((group) => ({
+    ...group,
+    move: groupMoveCapability(group),
+  }));
 }
 
 function listEditableContent(): EditableContent[] {
@@ -5448,6 +5680,18 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
         : {}),
     };
   }
+  if (op.type === "moveGroupItem") {
+    return {
+      changeId: changeId || stableChangeId(pagePath, "group-item-order", op.itemId),
+      elementId: op.itemId,
+      type: op.type,
+      before: "",
+      after: `${op.position} ${op.targetItemId}`,
+      ...(entry.changeSetId
+        ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
+        : {}),
+    };
+  }
   const [elementId] = op.nodeId.split("#");
   if (!elementId) throw new Error("Change target is missing");
   const domain =
@@ -5490,6 +5734,82 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
   };
 }
 
+function groupMoveChanges(): Array<UserChange & { order: number }> {
+  const current = state.current;
+  if (!current) return [];
+  const changes: Array<UserChange & { order: number }> = [];
+  for (const group of current.groups) {
+    const entries = state.ops
+      .map((entry, index) => ({ entry, index }))
+      .filter(
+        ({ entry }) =>
+          entry.pagePath === current.pagePath &&
+          ((entry.op.type === "moveGroupItem" && entry.op.groupId === group.id) ||
+            (entry.op.type === "duplicateGroupItem" && entry.op.groupId === group.id)),
+      );
+    const orderOperations: GroupOrderOperation[] = [];
+    for (const { entry } of entries) {
+      if (entry.op.type === "moveGroupItem") {
+        orderOperations.push({
+          type: "moveGroupItem",
+          itemId: entry.op.itemId,
+          targetItemId: entry.op.targetItemId,
+          position: entry.op.position,
+          sequence: entry.op.sequence,
+        });
+      } else if (entry.op.type === "duplicateGroupItem") {
+        orderOperations.push({
+          type: "duplicateGroupItem",
+          sourceItemId: entry.op.sourceItemId,
+          createdId: entry.op.createdId,
+          sequence: entry.op.sequence,
+        });
+      }
+    }
+    const finalSourceOrder = replayGroupOrder(
+      group.items.map((item) => item.id),
+      orderOperations,
+    ).filter((id) => group.items.some((item) => item.id === id));
+    for (const item of group.items) {
+      const moves = entries.filter(
+        ({ entry }) => entry.op.type === "moveGroupItem" && entry.op.itemId === item.id,
+      );
+      if (moves.length === 0) continue;
+      const withoutItemMoves = orderOperations.filter(
+        (operation) => operation.type !== "moveGroupItem" || operation.itemId !== item.id,
+      );
+      const baselineSourceOrder = replayGroupOrder(
+        group.items.map((candidate) => candidate.id),
+        withoutItemMoves,
+      ).filter((id) => group.items.some((candidate) => candidate.id === id));
+      const before = baselineSourceOrder.indexOf(item.id);
+      const after = finalSourceOrder.indexOf(item.id);
+      if (before < 0 || after < 0 || before === after) continue;
+      const first = moves[0]!;
+      changes.push({
+        order: first.index,
+        pagePath: current.pagePath,
+        opIndexes: moves.map(({ index }) => index),
+        label: "Group item order",
+        info: {
+          changeId: stableChangeId(current.pagePath, "group-item-order", item.id),
+          elementId: item.id,
+          type: "moveGroupItem",
+          before: `position ${before + 1}`,
+          after: `position ${after + 1}`,
+          ...(first.entry.changeSetId
+            ? {
+                changeSetId: first.entry.changeSetId,
+                changeSetLabel: first.entry.changeSetLabel,
+              }
+            : {}),
+        },
+      });
+    }
+  }
+  return changes;
+}
+
 function buildUserChanges(): UserChange[] {
   reconcileRichContent();
   const changes: Array<UserChange & { order: number }> = [];
@@ -5525,8 +5845,9 @@ function buildUserChanges(): UserChange[] {
       },
     });
   }
+  changes.push(...groupMoveChanges());
   for (const [index, entry] of state.ops.entries()) {
-    if (isRichContentOp(entry.op)) continue;
+    if (isRichContentOp(entry.op) || entry.op.type === "moveGroupItem") continue;
     changes.push({
       order: index,
       pagePath: entry.pagePath,
@@ -5655,7 +5976,23 @@ function revertChange(changeId: string): UndoResult {
   }
   const region = change.region ?? regionForNode(change.pagePath, change.info.elementId);
   if (region) revertRichContentRegion(region);
-  else if (change.opIndex !== undefined) revertPendingOperation(change.opIndex);
+  else if (change.opIndexes?.length) {
+    const removed = change.opIndexes
+      .map((index) => state.ops[index])
+      .filter((entry): entry is PendingOp => !!entry);
+    const restore = (): void => {
+      state.ops = [...state.ops, ...removed.filter((entry) => !state.ops.includes(entry))];
+      if (state.current?.pagePath === change.pagePath) renderPreview();
+      updateDirtyUi();
+    };
+    const remove = (): void => {
+      for (const entry of removed) removeOpsFor(entry.pagePath, opKey(entry.op));
+      if (state.current?.pagePath === change.pagePath) renderPreview();
+      updateDirtyUi();
+    };
+    remove();
+    pushHistory({ label: "Revert Group item order", assetPaths: [], undo: restore, redo: remove });
+  } else if (change.opIndex !== undefined) revertPendingOperation(change.opIndex);
   return { changeId, undone: true };
 }
 
@@ -6682,7 +7019,12 @@ function refreshMarkers(): void {
   });
   const byPageOp = state.ops.filter((o) => o.pagePath === state.current!.pagePath);
   for (const { op } of byPageOp) {
-    if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") continue;
+    if (
+      op.type === "duplicateSection" ||
+      op.type === "duplicateGroupItem" ||
+      op.type === "moveGroupItem"
+    )
+      continue;
     const baseId = op.nodeId.split("#")[0]!;
     const el = doc.querySelector(`[data-xyle-node="${baseId}"]`) as HTMLElement | null;
     if (!el) continue;
@@ -6785,6 +7127,8 @@ function opLabel(op: Op): string {
       return "Duplicate section";
     case "duplicateGroupItem":
       return "Duplicate Group item";
+    case "moveGroupItem":
+      return "Move Group item";
   }
 }
 
@@ -6813,6 +7157,7 @@ function originalValue(pagePath: string, op: Op): string {
   if (op.type === "sectionVisibility") return op.before ? "visible" : "hidden";
   if (op.type === "moveSection") return "original position";
   if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") return "";
+  if (op.type === "moveGroupItem") return "";
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
 
@@ -7066,6 +7411,53 @@ function openChangesDrawer(): void {
   closeButton.focus();
 }
 
+function groupOrderOperations(groupId: string, extra?: GroupOrderOperation): GroupOrderOperation[] {
+  const operations: GroupOrderOperation[] = [];
+  for (const { pagePath, op } of state.ops) {
+    if (pagePath !== state.current?.pagePath) continue;
+    if (op.type === "duplicateGroupItem" && op.groupId === groupId) {
+      operations.push({
+        type: "duplicateGroupItem",
+        sourceItemId: op.sourceItemId,
+        createdId: op.createdId,
+        sequence: op.sequence,
+      });
+    } else if (op.type === "moveGroupItem" && op.groupId === groupId) {
+      operations.push({
+        type: "moveGroupItem",
+        itemId: op.itemId,
+        targetItemId: op.targetItemId,
+        position: op.position,
+        sequence: op.sequence,
+      });
+    }
+  }
+  if (extra) operations.push(extra);
+  return operations;
+}
+
+function applyGroupOrderToDom(groupId: string, extra?: GroupOrderOperation): void {
+  const current = state.current;
+  const doc = previewDoc();
+  const group = current?.groups.find((candidate) => candidate.id === groupId);
+  const container = doc?.querySelector<HTMLElement>(`[data-xyle-group="${CSS.escape(groupId)}"]`);
+  if (!current || !group || !container) return;
+  const order = replayGroupOrder(
+    group.items.map((item) => item.id),
+    groupOrderOperations(groupId, extra),
+  );
+  const elements = new Map(
+    [...container.children]
+      .map((element) => [element.getAttribute("data-xyle-group-item"), element] as const)
+      .filter((entry): entry is [string, Element] => !!entry[0]),
+  );
+  const ordered = order
+    .map((id) => elements.get(id))
+    .filter((element): element is Element => !!element);
+  if (ordered.length !== order.length) return;
+  container.replaceChildren(...ordered);
+}
+
 function applyOpToDom(pagePath: string, op: Op): void {
   if (pagePath !== state.current?.pagePath) return;
   const doc = previewDoc();
@@ -7111,6 +7503,11 @@ function applyOpToDom(pagePath: string, op: Op): void {
   }
   if (op.type === "duplicateGroupItem") {
     applyGroupItemDuplicateToDom(pagePath, op);
+    applyGroupOrderToDom(op.groupId);
+    return;
+  }
+  if (op.type === "moveGroupItem") {
+    applyGroupOrderToDom(op.groupId);
     return;
   }
   if (op.type === "duplicateSection") {
@@ -7195,6 +7592,9 @@ function revertOpInDom(pagePath: string, op: Op): void {
     const current = state.current;
     if (current)
       removeCreatedSubtreeState(current, new Set([op.createdId, ...Object.values(op.nodeMap)]));
+    applyGroupOrderToDom(op.groupId);
+  } else if (op.type === "moveGroupItem") {
+    applyGroupOrderToDom(op.groupId);
   } else if (op.type === "duplicateSection") {
     currentNodeElement(op.createdId)?.remove();
     const current = state.current;
@@ -7244,6 +7644,10 @@ const originalListStates = new Map<string, "plain" | "ul" | "ol">();
 const pendingRevisions = new Map<string, number>();
 const opRevisions = new WeakMap<object, number>();
 let nextOpRevision = 0;
+
+function allocateStructuralSequence(): number {
+  return ++nextOpRevision;
+}
 
 function segmentIdentity(pagePath: string, id: string): string {
   return `${pagePath}@${id}`;
@@ -7613,6 +8017,8 @@ function restoreOpsIntoDom(): void {
     } else if (op.type === "sectionVisibility") {
       const el = currentNodeElement(op.nodeId);
       if (el) el.hidden = !op.visible;
+    } else if (op.type === "moveGroupItem") {
+      applyGroupOrderToDom(op.groupId);
     } else if (op.type === "moveSection") {
       const source = currentNodeElement(op.nodeId);
       const target = currentNodeElement(op.targetId);
@@ -7815,6 +8221,8 @@ function collectPageOps(): PageOps[] {
           createdOperations,
           assetRefs: [...new Map(assetRefs.map((asset) => [asset.assetId, asset])).values()],
         });
+      } else if (op.type === "moveGroupItem") {
+        operations.push(op);
       } else {
         const ids = op.type === "toggleList" ? op.nodeIds : "nodeId" in op ? [op.nodeId] : [];
         if (ids.some((id) => owned.has(id.split("#")[0]!))) continue;

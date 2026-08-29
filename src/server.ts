@@ -291,6 +291,7 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
             "moveSection",
             "duplicateSection",
             "duplicateGroupItem",
+            "moveGroupItem",
           ].includes((op as { type?: string }).type ?? ""),
       )
     )

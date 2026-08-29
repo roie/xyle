@@ -70,3 +70,40 @@ test("discovers and duplicates a source-backed Group item through the human UI",
   await expect(page.getByText("Original service")).toHaveCount(1);
   expect(await page.locator("[data-xyle-node]").count()).toBe(0);
 });
+
+test("moves an edited source-backed Group item through the human UI", async ({ page }) => {
+  await loginAndOpenEditor(page, "/groups-move.html");
+  const preview = page.frameLocator("#xyle-preview");
+  const items = preview.locator("[data-xyle-group-item]");
+  const sourceItemId = await items.nth(1).getAttribute("data-xyle-group-item");
+  expect(sourceItemId).toBeTruthy();
+  const titleId = await page.evaluate((itemId) => {
+    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+    return doc
+      .querySelector<HTMLElement>(`[data-xyle-group-item="${itemId}"]`)
+      ?.querySelector<HTMLElement>("h2[data-xyle-node]")
+      ?.getAttribute("data-xyle-node");
+  }, sourceItemId);
+  expect(titleId).toBeTruthy();
+  await editNode(page, titleId!);
+  await setSelection(page, { nodeId: titleId!, selectAll: true });
+  await page.keyboard.insertText("Moved service");
+  await clickOutsideToCommit(page);
+
+  await items.nth(1).focus();
+  await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
+  await page
+    .locator(".xyle-group-item-tools button", { hasText: "Move earlier" })
+    .click({ force: true });
+  await expect
+    .poll(() => items.evaluateAll((elements) => elements.map((item) => item.textContent)))
+    .toEqual([expect.stringContaining("Moved service"), expect.stringContaining("Leaks")]);
+
+  const publishResponse = page.waitForResponse((response) =>
+    response.url().includes("/__xyle/api/publish"),
+  );
+  await page.locator("#xyle-publish").click();
+  expect((await publishResponse).ok()).toBe(true);
+  await page.goto("/groups-move.html");
+  await expect(page.locator("article h2").first()).toContainText("Moved service");
+});

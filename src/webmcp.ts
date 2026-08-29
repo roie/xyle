@@ -105,7 +105,8 @@ export interface ChangeInfo {
     | "sectionVisibility"
     | "moveSection"
     | "duplicateSection"
-    | "duplicateGroupItem";
+    | "duplicateGroupItem"
+    | "moveGroupItem";
   before: string;
   after: string;
   changeSetId?: string;
@@ -164,6 +165,12 @@ export interface WebMcpBridge {
     groupId: string,
     itemId: string,
   ) => { id: string; groupId: string; sourceItemId: string };
+  moveGroupItem?: (
+    groupId: string,
+    itemId: string,
+    targetItemId: string,
+    position: "before" | "after",
+  ) => { id: string; targetItemId: string; position: "before" | "after" };
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -225,6 +232,31 @@ function parseGroupItemInput(value: unknown): { groupId: string; itemId: string 
     throw new Error("duplicate_group_item requires string groupId and itemId");
   }
   return { groupId: value.groupId, itemId: value.itemId };
+}
+
+function parseMoveGroupItemInput(value: unknown): {
+  groupId: string;
+  itemId: string;
+  targetItemId: string;
+  position: "before" | "after";
+} {
+  if (
+    !isRecord(value) ||
+    typeof value.groupId !== "string" ||
+    typeof value.itemId !== "string" ||
+    typeof value.targetItemId !== "string" ||
+    (value.position !== "before" && value.position !== "after")
+  ) {
+    throw new Error(
+      "move_group_item requires string groupId, itemId, targetItemId, and position before or after",
+    );
+  }
+  return {
+    groupId: value.groupId,
+    itemId: value.itemId,
+    targetItemId: value.targetItemId,
+    position: value.position,
+  };
 }
 
 function parseChangeIdInput(value: unknown): string {
@@ -999,6 +1031,42 @@ export async function registerWebMcpTools(
             const parsed = parseGroupItemInput(input);
             return textResult(
               JSON.stringify(bridge.duplicateGroupItem!(parsed.groupId, parsed.itemId)),
+            );
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.moveGroupItem) {
+      await context.registerTool(
+        {
+          name: "move_group_item",
+          description:
+            "Move one source-backed Group item before or after another source-backed item.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              groupId: { type: "string", description: "The source-backed Group id." },
+              itemId: { type: "string", description: "The source-backed item to move." },
+              targetItemId: { type: "string", description: "The source-backed destination item." },
+              position: { type: "string", enum: ["before", "after"] },
+            },
+            required: ["groupId", "itemId", "targetItemId", "position"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseMoveGroupItemInput(input);
+            return textResult(
+              JSON.stringify(
+                bridge.moveGroupItem!(
+                  parsed.groupId,
+                  parsed.itemId,
+                  parsed.targetItemId,
+                  parsed.position,
+                ),
+              ),
             );
           },
         },

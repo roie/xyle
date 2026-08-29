@@ -9,7 +9,12 @@ import {
   preparePreview,
 } from "../src/html.ts";
 import { digestBytes } from "../src/manifest.ts";
-import { createdNodeIdentity, duplicateGroupHtmlId, duplicateHtmlId } from "../src/structural.ts";
+import {
+  createdNodeIdentity,
+  duplicateGroupHtmlId,
+  duplicateHtmlId,
+  replayGroupOrder,
+} from "../src/structural.ts";
 import { sourceTargetIdentity } from "../src/identity.ts";
 import type { PageChange, SnapshotOperation, XyleDigest } from "../src/types.ts";
 
@@ -770,6 +775,44 @@ describe("safe Group discovery", () => {
     ["one item", `<section><div><article><h3>Only</h3><p>One</p></article></div></section>`],
   ])("rejects %s", (_name, source) => {
     expect(discover(source)).toEqual([]);
+  });
+});
+
+describe("Group order replay", () => {
+  it("replays duplicate and move operations by their shared sequence", () => {
+    expect(
+      replayGroupOrder(
+        ["a", "b", "c"],
+        [
+          {
+            type: "moveGroupItem",
+            itemId: "c",
+            targetItemId: "a",
+            position: "before",
+            sequence: 2,
+          },
+          { type: "duplicateGroupItem", sourceItemId: "a", createdId: "a-copy", sequence: 1 },
+        ],
+      ),
+    ).toEqual(["c", "a", "a-copy", "b"]);
+  });
+
+  it("does not create a visible move when the moved item returns to its prior order", () => {
+    expect(
+      replayGroupOrder(
+        ["a", "b"],
+        [
+          {
+            type: "moveGroupItem",
+            itemId: "b",
+            targetItemId: "a",
+            position: "before",
+            sequence: 1,
+          },
+          { type: "moveGroupItem", itemId: "b", targetItemId: "a", position: "after", sequence: 2 },
+        ],
+      ),
+    ).toEqual(["a", "b"]);
   });
 });
 

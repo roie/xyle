@@ -20,6 +20,8 @@ import {
   createdNodeIdentity,
   duplicateGroupHtmlId,
   duplicateHtmlId,
+  replayGroupOrder,
+  type GroupOrderOperation,
   rewriteFragmentReference,
   rewriteIdTokens,
 } from "./structural.ts";
@@ -1347,6 +1349,12 @@ export async function patchHtml(
     item: GroupDescriptor["items"][number];
     op: PageOperation & { type: "duplicateGroupItem" };
   }[] = [];
+  const moveGroupItemOps: {
+    group: GroupDescriptor;
+    item: GroupDescriptor["items"][number];
+    op: PageOperation & { type: "moveGroupItem" };
+  }[] = [];
+  const structuralSequences = new Set<number>();
   const seoOps: (PageOperation & { type: "seo" })[] = [];
   const patches: SourcePatch[] = [];
   const htmlTargets = new Set(
@@ -1482,6 +1490,14 @@ export async function patchHtml(
         }
         if (typeof op.before !== "boolean")
           throw new Error(`invalid section move for ${candidate.id}`);
+        if (
+          op.sequence !== undefined &&
+          (!Number.isInteger(op.sequence) ||
+            op.sequence < 1 ||
+            structuralSequences.has(op.sequence))
+        ) {
+          throw new Error(`invalid section move for ${candidate.id}`);
+        }
         if (moveSectionOps.length > 0) throw new Error("only one section move is allowed per task");
         const parent = elementAtSourceRange(
           sourceDocument,
@@ -1513,6 +1529,7 @@ export async function patchHtml(
           (child) => child.sourceCodeLocation?.startOffset === candidate.startTagStart,
         );
         moveSectionOps.push({ candidate, op: { ...op, originalIndex } });
+        if (op.sequence !== undefined) structuralSequences.add(op.sequence);
         break;
       }
       case "duplicateGroupItem": {
@@ -1524,7 +1541,7 @@ export async function patchHtml(
           !/^x-[a-f0-9]{8}$/.test(op.createdId) ||
           !Number.isInteger(op.sequence) ||
           op.sequence < 1 ||
-          duplicateGroupItemOps.some((entry) => entry.op.sequence === op.sequence) ||
+          structuralSequences.has(op.sequence) ||
           !Number.isInteger(op.sourceItemIndex) ||
           op.sourceItemIndex !== item.index ||
           op.groupSignature !== group.signature ||
@@ -1543,6 +1560,29 @@ export async function patchHtml(
           throw new Error("invalid Group item duplication recipe");
         }
         duplicateGroupItemOps.push({ group, item, op });
+        structuralSequences.add(op.sequence);
+        break;
+      }
+      case "moveGroupItem": {
+        const group = groups.find((candidate) => candidate.id === op.groupId);
+        const item = group?.items.find((candidate) => candidate.id === op.itemId);
+        const target = group?.items.find((candidate) => candidate.id === op.targetItemId);
+        if (
+          !group ||
+          !item ||
+          !target ||
+          item.id === target.id ||
+          (op.position !== "before" && op.position !== "after") ||
+          !Number.isInteger(op.sequence) ||
+          op.sequence < 1 ||
+          structuralSequences.has(op.sequence) ||
+          op.groupSignature !== group.signature ||
+          op.itemSignature !== item.signature
+        ) {
+          throw new Error("invalid Group item move");
+        }
+        moveGroupItemOps.push({ group, item, op });
+        structuralSequences.add(op.sequence);
         break;
       }
       case "duplicateSection": {
@@ -1571,7 +1611,13 @@ export async function patchHtml(
           !duplicateChildren.every(safeSectionSibling)
         )
           throw new Error("section parent contains unsupported sibling content");
-        if (op.insert !== "after" || !/^x-[a-f0-9]{8}$/.test(op.createdId)) {
+        if (
+          op.insert !== "after" ||
+          !/^x-[a-f0-9]{8}$/.test(op.createdId) ||
+          !Number.isInteger(op.sequence) ||
+          op.sequence < 1 ||
+          structuralSequences.has(op.sequence)
+        ) {
           throw new Error("invalid section duplication");
         }
         if (
@@ -1659,6 +1705,7 @@ export async function patchHtml(
           throw new Error("only one section duplication is allowed per task");
         }
         duplicateSectionOps.push({ candidate, op });
+        structuralSequences.add(op.sequence);
         break;
       }
       case "seo": {
@@ -2092,7 +2139,11 @@ export async function patchHtml(
   const movedParentRanges: Array<{ start: number; end: number }> = [];
   if (moveSectionOps.length > 0) {
     const contentOperations = change.operations.filter(
-      (operation) => operation.type !== "duplicateSection" && operation.type !== "moveSection",
+      (operation) =>
+        operation.type !== "duplicateSection" &&
+        operation.type !== "moveSection" &&
+        operation.type !== "duplicateGroupItem" &&
+        operation.type !== "moveGroupItem",
     );
     if (contentOperations.length > 0) {
       const contentBytes = await patchHtml(
@@ -2112,6 +2163,7 @@ export async function patchHtml(
   const generatedDuplicateIds = new Set<string>();
   const duplicateMarkupByStart = new Map<number, string>();
   const duplicateGroupMarkupByEnd = new Map<number, string[]>();
+  const duplicateGroupMarkupById = new Map<string, string>();
   const consumedDuplicateStarts = new Set<number>();
   for (const { candidate, op } of duplicateSectionOps) {
     let snapshotText = sourceText;
@@ -2333,6 +2385,7 @@ export async function patchHtml(
     const existing = duplicateGroupMarkupByEnd.get(item.sourceEnd) ?? [];
     existing.push(cloneMarkup);
     duplicateGroupMarkupByEnd.set(item.sourceEnd, existing);
+    duplicateGroupMarkupById.set(op.createdId, cloneMarkup);
     const recipeAssets = new Set(
       [...op.snapshotOperations, ...createdOperations].flatMap((snapshot) =>
         snapshot.type === "media" && snapshot.value.source.kind === "staged"
@@ -2347,11 +2400,167 @@ export async function patchHtml(
       throw new Error("Group item asset reference is not owned by its recipe");
     }
   }
+  const movedGroupIds = new Set(moveGroupItemOps.map(({ group }) => group.id));
+  if (moveGroupItemOps.length > 0) {
+    const groupsToMove = [
+      ...new Map(moveGroupItemOps.map(({ group }) => [group.id, group])).values(),
+    ];
+    for (const group of groupsToMove) {
+      const container = elementAtSourceRange(sourceDocument, group.sourceStart, group.sourceEnd);
+      const containerLocation = container?.sourceCodeLocation;
+      if (!container || !containerLocation?.startTag || !containerLocation.endTag) {
+        throw new Error("Group source mapping is ambiguous");
+      }
+      const sourceMarkups = new Map<string, string>();
+      for (const item of group.items) {
+        const sourceMarkup = sourceText.slice(item.sourceStart, item.sourceEnd);
+        const itemAnalysis = analyzePage(sourceMarkup, options.ignoreSelectors ?? []);
+        const ownedSourceIds = new Set(
+          [...analysis.candidates.values()]
+            .filter(
+              (candidate) =>
+                candidate.startTagStart >= item.sourceStart &&
+                (candidate.elementEnd ?? candidate.startTagEnd) <= item.sourceEnd,
+            )
+            .map((candidate) => candidate.id),
+        );
+        const contentOperations = change.operations
+          .filter((operation) => {
+            if (
+              operation.type === "duplicateSection" ||
+              operation.type === "duplicateGroupItem" ||
+              operation.type === "moveGroupItem" ||
+              operation.type === "moveSection" ||
+              operation.type === "seo" ||
+              operation.type === "sectionVisibility"
+            ) {
+              return false;
+            }
+            const ids = operation.type === "toggleList" ? operation.nodeIds : [operation.nodeId];
+            return ids.some((id) => ownedSourceIds.has(id.split("#")[0]!));
+          })
+          .map((operation) => {
+            const remapped = remapSnapshotOperation(
+              operation as SnapshotOperation,
+              new Map(
+                [...analysis.candidates.values()]
+                  .filter((candidate) => ownedSourceIds.has(candidate.id))
+                  .map((candidate) => {
+                    const local = [...itemAnalysis.candidates.values()].find(
+                      (localCandidate) =>
+                        localCandidate.startTagStart ===
+                          candidate.startTagStart - item.sourceStart &&
+                        localCandidate.kind === candidate.kind &&
+                        localCandidate.tag === candidate.tag,
+                    );
+                    return [candidate.id, local?.id] as const;
+                  })
+                  .filter((entry): entry is [string, string] => !!entry[1]),
+              ),
+            );
+            if (
+              remapped.type === "format" &&
+              remapped.sourceStart !== undefined &&
+              remapped.sourceEnd !== undefined
+            ) {
+              return {
+                ...remapped,
+                sourceStart: remapped.sourceStart - item.sourceStart,
+                sourceEnd: remapped.sourceEnd - item.sourceStart,
+              };
+            }
+            return remapped;
+          });
+        const effectiveBytes =
+          contentOperations.length > 0
+            ? await patchHtml(
+                encoder.encode(sourceMarkup),
+                {
+                  pagePath: change.pagePath,
+                  baseDigest: await digestBytes(encoder.encode(sourceMarkup)),
+                  operations: contentOperations,
+                },
+                options,
+              )
+            : encoder.encode(sourceMarkup);
+        sourceMarkups.set(
+          item.id,
+          new TextDecoder("utf-8", { fatal: true }).decode(effectiveBytes),
+        );
+      }
+      const groupOperations: GroupOrderOperation[] = [
+        ...duplicateGroupItemOps
+          .filter(({ group: candidate }) => candidate.id === group.id)
+          .map(({ op }) => ({
+            type: "duplicateGroupItem" as const,
+            sourceItemId: op.sourceItemId,
+            createdId: op.createdId,
+            sequence: op.sequence,
+          })),
+        ...moveGroupItemOps
+          .filter(({ group: candidate }) => candidate.id === group.id)
+          .map(({ op }) => ({
+            type: "moveGroupItem" as const,
+            itemId: op.itemId,
+            targetItemId: op.targetItemId,
+            position: op.position,
+            sequence: op.sequence,
+          })),
+      ];
+      const markups = new Map(sourceMarkups);
+      for (const operation of groupOperations) {
+        if (operation.type === "duplicateGroupItem") {
+          const markup = duplicateGroupMarkupById.get(operation.createdId);
+          if (!markup) throw new Error("Group duplicate source mapping is unavailable");
+          markups.set(operation.createdId, markup);
+        }
+      }
+      const order = replayGroupOrder(
+        group.items.map((item) => item.id),
+        groupOperations,
+      );
+      const firstItem = group.items[0];
+      const lastItem = group.items.at(-1);
+      if (!firstItem || !lastItem) throw new Error("Group item order is unavailable");
+      const separator = sourceText.slice(firstItem.sourceEnd, group.items[1]!.sourceStart);
+      const prefix = sourceText.slice(group.startTagEnd, firstItem.sourceStart);
+      const trailing = sourceText.slice(lastItem.sourceEnd, containerLocation.endTag.startOffset);
+      const replacement =
+        prefix +
+        order
+          .map((id) => {
+            const markup = markups.get(id);
+            if (!markup) throw new Error("Group item order is unavailable");
+            return markup;
+          })
+          .join(separator) +
+        trailing;
+      patches.push({
+        start: containerLocation.startTag.endOffset,
+        end: containerLocation.endTag.startOffset,
+        replacement,
+      });
+      movedParentRanges.push({
+        start: containerLocation.startTag.endOffset,
+        end: containerLocation.endTag.startOffset,
+      });
+    }
+  }
+  const movedGroupItemEnds = new Set(
+    [...movedGroupIds].flatMap(
+      (groupId) =>
+        groups.find((group) => group.id === groupId)?.items.map((item) => item.sourceEnd) ?? [],
+    ),
+  );
   for (const [end, markups] of duplicateGroupMarkupByEnd) {
+    if (movedGroupItemEnds.has(end)) continue;
     patches.push({ start: end, end, replacement: markups.join("") });
   }
-  if (duplicateGroupItemOps.length > 0 && moveSectionOps.length > 0) {
-    throw new Error("Group item duplication cannot be combined with section movement");
+  if (
+    (duplicateGroupItemOps.length > 0 || moveGroupItemOps.length > 0) &&
+    moveSectionOps.length > 0
+  ) {
+    throw new Error("Group item operations cannot be combined with section movement");
   }
   for (const { candidate, op } of moveSectionOps) {
     const moveCandidate = moveAnalysis.candidates.get(op.nodeId) ?? candidate;
