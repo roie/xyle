@@ -11,6 +11,7 @@ import { mediaSourcePath } from "./media-state.ts";
 import type {
   MediaState,
   PageOperation,
+  SnapshotOperation,
   PublishedSnapshot,
   Publisher,
   SiteFile,
@@ -288,6 +289,7 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
             "toggleList",
             "sectionVisibility",
             "moveSection",
+            "duplicateSection",
           ].includes((op as { type?: string }).type ?? ""),
       )
     )
@@ -315,6 +317,38 @@ async function materializeMediaOperations(
   const materialized = new Map<string, string>();
   const output: PageOperation[] = [];
   for (const operation of operations) {
+    if (operation.type === "duplicateSection") {
+      const nested = await materializeMediaOperations(
+        [...operation.snapshotOperations, ...(operation.createdOperations ?? [])],
+        current,
+        root,
+        submitted,
+      );
+      assets.push(...nested.assets);
+      const split = nested.operations.filter(
+        (
+          nestedOperation,
+        ): nestedOperation is Exclude<PageOperation, { type: "duplicateSection" }> =>
+          nestedOperation.type !== "duplicateSection",
+      );
+      const remainingStagedAssets = new Set(
+        split.flatMap((nestedOperation) =>
+          nestedOperation.type === "media" && nestedOperation.value.source.kind === "staged"
+            ? [nestedOperation.value.source.assetId]
+            : [],
+        ),
+      );
+      output.push({
+        ...operation,
+        snapshotOperations: split.slice(
+          0,
+          operation.snapshotOperations.length,
+        ) as SnapshotOperation[],
+        createdOperations: split.slice(operation.snapshotOperations.length) as SnapshotOperation[],
+        assetRefs: operation.assetRefs.filter((asset) => remainingStagedAssets.has(asset.assetId)),
+      });
+      continue;
+    }
     if (operation.type !== "media" || !operation.value.crop) {
       output.push(operation);
       continue;

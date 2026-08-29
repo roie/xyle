@@ -96,7 +96,8 @@ export interface ChangeInfo {
     | "seo"
     | "toggleList"
     | "sectionVisibility"
-    | "moveSection";
+    | "moveSection"
+    | "duplicateSection";
   before: string;
   after: string;
   changeSetId?: string;
@@ -149,6 +150,7 @@ export interface WebMcpBridge {
     targetId: string,
     before: boolean,
   ) => { id: string; targetId: string; before: boolean };
+  duplicateSection?: (id: string) => { id: string; sourceId: string };
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }
@@ -914,6 +916,27 @@ export async function registerWebMcpTools(
             return textResult(
               JSON.stringify(bridge.moveSection!(parsed.id, parsed.targetId, parsed.before)),
             );
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.duplicateSection) {
+      await context.registerTool(
+        {
+          name: "duplicate_section",
+          description: "Duplicate one safe Xyle section immediately after itself.",
+          inputSchema: {
+            type: "object",
+            properties: { id: { type: "string", description: "The safe section to duplicate." } },
+            required: ["id"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseIdInput(input, "duplicate_section");
+            return textResult(JSON.stringify(bridge.duplicateSection!(parsed)));
           },
         },
         { signal: controller.signal },

@@ -22,6 +22,11 @@ import {
 } from "./webmcp.ts";
 import { cleanInlineHtml, inlineFormatState, toggleInlineFormat } from "./formatting.ts";
 import { stableIdentity } from "./identity.ts";
+import {
+  STRUCTURAL_ID_REFERENCE_ATTRIBUTES,
+  createdNodeIdentity,
+  duplicateHtmlId,
+} from "./structural.ts";
 import { cropRectForFrame } from "./media-crop.ts";
 import {
   clampUnit,
@@ -36,6 +41,8 @@ import type {
   CropRect,
   SeoField,
   SeoState,
+  AssetReference,
+  SnapshotOperation,
 } from "./types.ts";
 
 const editorStyles = `
@@ -1504,6 +1511,20 @@ type Op =
       targetId: string;
       before: boolean;
       originalIndex: number;
+      sequence?: number;
+    }
+  | {
+      type: "duplicateSection";
+      sourceId: string;
+      createdId: string;
+      sequence: number;
+      insert: "after";
+      snapshotOperations: SnapshotOperation[];
+      nodeMap: Record<string, string>;
+      createdOperations?: SnapshotOperation[];
+      previewHtml?: string;
+      idMap: Record<string, string>;
+      assetRefs: AssetReference[];
     };
 
 interface PageOps {
@@ -1643,6 +1664,7 @@ async function boot(): Promise<void> {
     updateList: toggleListFormatting,
     updateSectionVisibility,
     moveSection,
+    duplicateSection,
     updateText,
     updateLink,
   });
@@ -1870,6 +1892,7 @@ function beginCandidateHover(el: HTMLElement): void {
   }
   hoveredCandidate = el;
   el.classList.add("xyle-hover");
+  el.setAttribute("data-xyle-generated-hover", "");
   if (!session && !activeTools) setInteractionMode("hover");
   refreshEditabilityOverlay();
 }
@@ -1879,6 +1902,7 @@ function endCandidateHover(el: HTMLElement): void {
   hoverClearTimer = window.setTimeout(() => {
     if (hoveredCandidate !== el || activeToolsTarget === el || session?.el === el) return;
     el.classList.remove("xyle-hover");
+    el.removeAttribute("data-xyle-generated-hover");
     hoveredCandidate = null;
     if (!session && !activeTools) setInteractionMode("idle");
     refreshEditabilityOverlay();
@@ -1962,7 +1986,10 @@ function handlePreviewNavigation(anchor: HTMLAnchorElement): void {
 
 function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
   if (!meta) return;
-  if (el.tabIndex < 0) el.tabIndex = 0;
+  if (!el.hasAttribute("tabindex")) {
+    el.tabIndex = 0;
+    el.setAttribute("data-xyle-generated-tabindex", "");
+  }
   el.addEventListener("mouseenter", () => beginCandidateHover(el));
   el.addEventListener("mouseleave", () => endCandidateHover(el));
   el.addEventListener("focus", () => {
@@ -1999,6 +2026,15 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
     tools.className = "xyle-link-tools xyle-section-tools";
     tools.setAttribute("role", "toolbar");
     tools.setAttribute("aria-label", "Section actions");
+
+    const duplicate = document.createElement("button");
+    duplicate.type = "button";
+    duplicate.textContent = "Duplicate section";
+    duplicate.addEventListener("click", () => {
+      duplicateSection(meta.id);
+      closeContextTools(false);
+    });
+    tools.append(duplicate);
 
     const visibility = document.createElement("button");
     visibility.type = "button";
@@ -2126,6 +2162,7 @@ interface EditSession {
   baselineHtml: string;
   baselineSkeleton: string;
   baselineAuthoredBreakCount: number;
+  authoredContentEditable: string | null;
 }
 
 let session: EditSession | null = null;
@@ -2315,6 +2352,7 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
     baselineHtml,
     baselineSkeleton: skeleton(el),
     baselineAuthoredBreakCount: authoredBreakCount(el),
+    authoredContentEditable: el.getAttribute("contenteditable"),
   };
   const activeSession = session;
 
@@ -2326,6 +2364,7 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
   // DOM type omits the editor's writable assignment.
   (el as unknown as { contentEditable: string }).contentEditable = "true";
   el.classList.add("xyle-editing");
+  el.setAttribute("data-xyle-generated-editing", "");
   setInteractionMode("editing");
   refreshEditabilityOverlay();
   el.focus({ preventScroll: true });
@@ -2828,9 +2867,12 @@ function endEdit(recordChanges: boolean): void {
   s.el.removeEventListener("paste", onPaste, true);
   if (activeTools?.classList.contains("xyle-format-tools")) closeContextTools(false);
   s.el.classList.remove("xyle-editing");
+  s.el.removeAttribute("data-xyle-generated-editing");
   refreshEditabilityOverlay();
-  // SAFETY: contentEditable is set explicitly when ending an edit session.
-  (s.el as unknown as { contentEditable: string }).contentEditable = "false";
+  // Restore authored contenteditable state; do not leave editor instrumentation
+  // in the preview for later structural snapshots.
+  if (s.authoredContentEditable === null) s.el.removeAttribute("contenteditable");
+  else s.el.setAttribute("contenteditable", s.authoredContentEditable);
 
   if (recordChanges && !structureAllowed(skeleton(s.el), s.baselineSkeleton)) {
     flash("That change was reverted to protect your page structure.");
@@ -3240,7 +3282,8 @@ function rememberOriginalMedia(
   const key = segmentIdentity(pagePath, nodeId);
   const existing = originalMedia.get(key);
   if (existing) return existing;
-  const state = mediaStateFromImage(img);
+  const created = createdMedia.get(key);
+  const state = created ?? mediaStateFromImage(img);
   originalMedia.set(key, state);
   return state;
 }
@@ -4227,11 +4270,12 @@ function assetPathsFor(...ops: Array<Op | undefined>): string[] {
   return [
     ...new Set(
       ops
-        .filter(
-          (op): op is Extract<Op, { type: "src" | "media" }> =>
-            op?.type === "src" || op?.type === "media",
-        )
-        .map((op) => (op.type === "src" ? op.value : mediaSourcePath(op.value.source)))
+        .flatMap((op) => {
+          if (op?.type === "duplicateSection") return op.assetRefs.map((asset) => asset.assetId);
+          if (op?.type === "src") return [op.value];
+          if (op?.type === "media") return [mediaSourcePath(op.value.source)];
+          return [];
+        })
         .filter((path) => state.assets.has(path)),
     ),
   ];
@@ -4239,7 +4283,13 @@ function assetPathsFor(...ops: Array<Op | undefined>): string[] {
 
 function cleanupUnreachableAssets(includeHistory = true): void {
   const reachable = new Set([
-    ...state.ops.flatMap(({ op }) => (op.type === "src" ? [op.value] : [])),
+    ...state.ops.flatMap(({ op }) => {
+      if (op.type === "src") return [op.value];
+      if (op.type === "media" && op.value.source.kind === "staged")
+        return [op.value.source.assetId];
+      if (op.type === "duplicateSection") return op.assetRefs.map((asset) => asset.assetId);
+      return [];
+    }),
     ...stagedMediaLibrary.keys(),
   ]);
   if (includeHistory) {
@@ -4381,19 +4431,36 @@ function richRegionById(id: string): RichContentRegion | undefined {
   return richContentRegions.get(resolveRichRegionId(id));
 }
 
-function stripEditorMarkup(root: Element): void {
-  root.removeAttribute("data-xyle-node");
-  root.removeAttribute("data-xyle-format");
-  root.removeAttribute("data-xyle-controlled-break");
-  root.removeAttribute("tabindex");
-  for (const element of root.querySelectorAll(
-    "[data-xyle-node], [data-xyle-format], [data-xyle-controlled-break]",
-  )) {
-    element.removeAttribute("data-xyle-node");
-    element.removeAttribute("data-xyle-format");
-    element.removeAttribute("data-xyle-controlled-break");
-    element.removeAttribute("tabindex");
+function stripPreviewInstrumentation(
+  root: Element,
+  options: { keepNodeMarkers?: boolean } = {},
+): void {
+  const elements = [root, ...root.querySelectorAll("*")];
+  for (const element of elements) {
+    const generatedTabIndex = element.hasAttribute("data-xyle-generated-tabindex");
+    const generatedHover = element.hasAttribute("data-xyle-generated-hover");
+    const generatedEditing = element.hasAttribute("data-xyle-generated-editing");
+    if (generatedTabIndex) element.removeAttribute("tabindex");
+    if (generatedHover) element.classList.remove("xyle-hover");
+    if (generatedEditing) {
+      element.classList.remove("xyle-editing");
+      element.removeAttribute("contenteditable");
+    }
+    for (const attribute of [
+      ...(options.keepNodeMarkers ? [] : ["data-xyle-node"]),
+      "data-xyle-format",
+      "data-xyle-controlled-break",
+      "data-xyle-generated-tabindex",
+      "data-xyle-generated-hover",
+      "data-xyle-generated-editing",
+    ]) {
+      element.removeAttribute(attribute);
+    }
   }
+}
+
+function stripEditorMarkup(root: Element): void {
+  stripPreviewInstrumentation(root);
 }
 
 function cleanRichFragment(elements: Element[]): string {
@@ -4439,6 +4506,26 @@ function serializeRichRegion(doc: Document, nodeIds: string[]): string {
 function sourceRichRegionHtml(pagePath: string, nodeIds: string[]): string {
   const current = state.current;
   if (!current || current.pagePath !== pagePath) return "";
+  const createdId = nodeIds
+    .map((nodeId) =>
+      state.ops.find(
+        ({ op }) =>
+          op.type === "duplicateSection" &&
+          (op.createdId === nodeId || Object.values(op.nodeMap).includes(nodeId)),
+      ),
+    )
+    .find(
+      (entry): entry is PendingOp & { op: Extract<Op, { type: "duplicateSection" }> } => !!entry,
+    )?.op.createdId;
+  if (createdId) {
+    const duplicate = state.ops.find(
+      ({ op }) => op.type === "duplicateSection" && op.createdId === createdId,
+    )?.op;
+    if (duplicate?.type === "duplicateSection" && duplicate.previewHtml) {
+      const snapshot = new DOMParser().parseFromString(duplicate.previewHtml, "text/html");
+      return serializeRichRegion(snapshot, nodeIds);
+    }
+  }
   const base = new DOMParser().parseFromString(current.html, "text/html");
   return serializeRichRegion(base, nodeIds);
 }
@@ -4531,6 +4618,7 @@ function reconcileRichContent(pagePath?: string): void {
 }
 
 function opKey(op: Op): string {
+  if (op.type === "duplicateSection") return `${op.type}@${op.createdId}`;
   const target = op.type === "text" ? op.nodeId : `${op.nodeId}:${op.type}`;
   if (op.type === "format" && op.start !== undefined && op.end !== undefined) {
     return `${op.type}@${target}:${op.start}-${op.end}`;
@@ -4783,6 +4871,225 @@ function moveSection(
   return { id: nodeId, targetId, before };
 }
 
+function duplicateSection(nodeId: string): { id: string; sourceId: string } {
+  const current = state.current;
+  const source = currentNodeElement(nodeId);
+  if (!current || !source || source.tagName !== "SECTION" || !sectionMeta(nodeId))
+    throw new Error("Only safe sections can be duplicated");
+  if (state.ops.some(({ op }) => op.type === "duplicateSection" && op.createdId === nodeId))
+    throw new Error("Created sections cannot be duplicated yet");
+  if (source.querySelector("section, script, form, iframe, video, canvas"))
+    throw new Error("Only safe sections can be duplicated");
+  const parent = source.parentElement;
+  if (!parent || sectionChildren(parent).length !== parent.children.length)
+    throw new Error("Section parent contains unsupported sibling content");
+  const createdId = stableIdentity([
+    "created-section",
+    current.pagePath,
+    nodeId,
+    crypto.randomUUID(),
+  ]);
+  const clone = source.cloneNode(true) as HTMLElement;
+  stripPreviewInstrumentation(clone, { keepNodeMarkers: true });
+  const sourceIdValues = [
+    ...(source.id ? [source.id] : []),
+    ...[...source.querySelectorAll<HTMLElement>("[id]")]
+      .map((element) => element.id)
+      .filter(Boolean),
+  ];
+  if (new Set(sourceIdValues).size !== sourceIdValues.length)
+    throw new Error("Duplicate section contains duplicate HTML ids");
+  const sourceIds = new Set(sourceIdValues);
+  const idMap = new Map<string, string>();
+  const documentIds = new Set(
+    [...source.ownerDocument.querySelectorAll<HTMLElement>("[id]")]
+      .map((element) => element.id)
+      .filter(Boolean),
+  );
+  for (const id of sourceIds) {
+    const cloneId = duplicateHtmlId(createdId, id);
+    if (documentIds.has(cloneId))
+      throw new Error("Duplicate section generated an HTML id collision");
+    idMap.set(id, cloneId);
+  }
+  const sourceNodeIds = new Map<string, string>();
+  source.querySelectorAll<HTMLElement>("[data-xyle-node]").forEach((element) => {
+    const originalId = element.dataset.xyleNode;
+    if (!originalId) return;
+    const meta = current.nodes.find((candidate) => candidate.id === originalId);
+    const logicalKey = meta?.stableTargetId ?? originalId;
+    sourceNodeIds.set(originalId, createdNodeIdentity(createdId, logicalKey));
+  });
+  const rewrite = (element: HTMLElement): void => {
+    if (element.id && idMap.has(element.id)) element.id = idMap.get(element.id)!;
+    const nodeId = element.dataset.xyleNode;
+    if (nodeId && sourceNodeIds.has(nodeId)) element.dataset.xyleNode = sourceNodeIds.get(nodeId)!;
+    for (const attribute of STRUCTURAL_ID_REFERENCE_ATTRIBUTES) {
+      const value = element.getAttribute(attribute);
+      if (value)
+        element.setAttribute(
+          attribute,
+          value
+            .split(/\s+/)
+            .map((token) => idMap.get(token) ?? token)
+            .join(" "),
+        );
+    }
+    const href = element.getAttribute("href");
+    if (href?.startsWith("#") && idMap.has(href.slice(1)))
+      element.setAttribute("href", `#${idMap.get(href.slice(1))}`);
+    for (const child of [...element.children] as HTMLElement[]) rewrite(child);
+  };
+  rewrite(clone);
+  clone.dataset.xyleNode = createdId;
+  source.after(clone);
+  const sourceMeta = current.nodes.find((candidate) => candidate.id === nodeId)!;
+  registerCreatedSectionNodes(current, sourceMeta, clone, nodeId, createdId, sourceNodeIds);
+
+  const snapshotOperations = state.ops
+    .filter(
+      ({ pagePath, op }) =>
+        pagePath === current.pagePath &&
+        op.type !== "duplicateSection" &&
+        opTargetsElement(op, source),
+    )
+    .map(({ op }) => structuredClone(op) as SnapshotOperation);
+  registerCreatedMediaStates(current.pagePath, clone, sourceNodeIds, snapshotOperations);
+  const operation: Op = {
+    type: "duplicateSection",
+    sourceId: nodeId,
+    createdId,
+    sequence: ++nextOpRevision,
+    insert: "after",
+    snapshotOperations,
+    nodeMap: { [nodeId]: createdId, ...Object.fromEntries(sourceNodeIds) },
+    previewHtml: new XMLSerializer().serializeToString(clone),
+    idMap: Object.fromEntries(idMap),
+    assetRefs: [
+      ...new Set(
+        snapshotOperations.flatMap((snapshot) =>
+          snapshot.type === "media" && snapshot.value.source.kind === "staged"
+            ? [snapshot.value.source.assetId]
+            : [],
+        ),
+      ),
+    ].map((assetId) => ({ assetId })),
+  };
+  applyOp(current.pagePath, operation, "Duplicate section");
+  return { id: createdId, sourceId: nodeId };
+}
+
+function registerCreatedSectionNodes(
+  current: PageData,
+  sourceMeta: NodeMeta,
+  clone: HTMLElement,
+  sourceId: string,
+  createdId: string,
+  sourceNodeIds: ReadonlyMap<string, string>,
+): void {
+  const createdToSource = new Map(
+    [...sourceNodeIds.entries()].map(([originalId, createdNodeId]) => [createdNodeId, originalId]),
+  );
+  const elements = [clone, ...clone.querySelectorAll<HTMLElement>("[data-xyle-node]")];
+  const createdNodes: NodeMeta[] = [];
+  for (const element of elements) {
+    const id = element.dataset.xyleNode;
+    if (!id) continue;
+    const originalId = id === createdId ? sourceId : createdToSource.get(id);
+    const original =
+      originalId === sourceId
+        ? sourceMeta
+        : originalId
+          ? current.nodes.find((candidate) => candidate.id === originalId)
+          : undefined;
+    if (!original) continue;
+    const {
+      sourceStart: _sourceStart,
+      sourceEnd: _sourceEnd,
+      elementStart: _elementStart,
+      elementEnd: _elementEnd,
+      contentStart: _contentStart,
+      segments: _segments,
+      ...createdMeta
+    } = original;
+    void _sourceStart;
+    void _sourceEnd;
+    void _elementStart;
+    void _elementEnd;
+    void _contentStart;
+    void _segments;
+    createdNodes.push({
+      ...createdMeta,
+      id,
+      pagePath: current.pagePath,
+      stableTargetId: id,
+      ...(original.segments
+        ? { segmentCount: original.segmentCount ?? original.segments.length }
+        : {}),
+    });
+  }
+  const createdIds = new Set(createdNodes.map((node) => node.id));
+  current.nodes = current.nodes.filter((node) => !createdIds.has(node.id));
+  current.nodes.push(...createdNodes);
+  for (const node of createdNodes) {
+    const element = clone.ownerDocument.querySelector<HTMLElement>(
+      `[data-xyle-node="${CSS.escape(node.id)}"]`,
+    );
+    if (element) wireCandidate(element, node);
+  }
+}
+
+function registerCreatedMediaStates(
+  pagePath: string,
+  clone: HTMLElement,
+  sourceNodeIds: ReadonlyMap<string, string>,
+  sourceOperations: readonly SnapshotOperation[] = [],
+): void {
+  const sourceToCreated = new Map(sourceNodeIds);
+  for (const operation of sourceOperations) {
+    if (operation.type !== "media") continue;
+    const createdNodeId = sourceToCreated.get(operation.nodeId);
+    if (!createdNodeId) continue;
+    const image = clone.querySelector<HTMLImageElement>(
+      `[data-xyle-node="${CSS.escape(createdNodeId)}"]`,
+    );
+    if (!(image instanceof HTMLImageElement)) continue;
+    const media = normalizeMediaState(operation.value);
+    createdMedia.set(segmentIdentity(pagePath, createdNodeId), media);
+    applyMediaStateToDom(image, media);
+  }
+}
+
+function removeCreatedSectionState(
+  current: PageData,
+  op: Extract<Op, { type: "duplicateSection" }>,
+): void {
+  const createdIds = new Set([op.createdId, ...Object.values(op.nodeMap)]);
+  current.nodes = current.nodes.filter((node) => !createdIds.has(node.id));
+  for (const id of createdIds) {
+    createdMedia.delete(segmentIdentity(current.pagePath, id));
+    originalMedia.delete(segmentIdentity(current.pagePath, id));
+  }
+}
+
+function opTargetsElement(op: Op, root: HTMLElement): boolean {
+  const ids =
+    op.type === "toggleList"
+      ? op.nodeIds
+      : op.type === "duplicateSection"
+        ? [op.sourceId]
+        : "nodeId" in op
+          ? [op.nodeId]
+          : [];
+  return ids.some((id) => {
+    const baseId = id.split("#")[0]!;
+    return (
+      root.dataset.xyleNode === baseId ||
+      Boolean(root.querySelector(`[data-xyle-node="${CSS.escape(baseId)}"]`))
+    );
+  });
+}
+
 function listEditableContent(): EditableContent[] {
   const current = state.current;
   if (!current) return [];
@@ -4817,6 +5124,18 @@ function listEditableContent(): EditableContent[] {
 }
 
 function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: PendingOp): ChangeInfo {
+  if (op.type === "duplicateSection") {
+    return {
+      changeId: changeId || stableChangeId(pagePath, "section-duplicate", op.createdId),
+      elementId: op.createdId,
+      type: op.type,
+      before: "",
+      after: `duplicate of ${op.sourceId}`,
+      ...(entry.changeSetId
+        ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
+        : {}),
+    };
+  }
   const [elementId] = op.nodeId.split("#");
   if (!elementId) throw new Error("Change target is missing");
   const domain =
@@ -4966,20 +5285,33 @@ function revertRichContentRegion(region: RichContentRegion): void {
 function revertPendingOperation(index: number): void {
   const entry = state.ops[index];
   if (!entry) return;
+  const duplicate = entry.op.type === "duplicateSection" ? entry.op : null;
+  const dependent = duplicate
+    ? state.ops.filter(({ pagePath, op }) => {
+        if (pagePath !== entry.pagePath || op.type === "duplicateSection") return false;
+        const createdIds = new Set(Object.values(duplicate.nodeMap));
+        const ids = op.type === "toggleList" ? op.nodeIds : "nodeId" in op ? [op.nodeId] : [];
+        return ids.some((id) => createdIds.has(id.split("#")[0]!));
+      })
+    : [];
+  const removed = [entry, ...dependent];
   const restore = (): void => {
-    if (
-      state.ops.some(
-        (candidate) =>
-          candidate.pagePath === entry.pagePath && opKey(candidate.op) === opKey(entry.op),
-      )
-    )
-      return;
-    state.ops.splice(Math.min(index, state.ops.length), 0, entry);
+    for (const candidate of removed) {
+      if (
+        !state.ops.some(
+          (active) =>
+            active.pagePath === candidate.pagePath && opKey(active.op) === opKey(candidate.op),
+        )
+      ) {
+        state.ops.push(candidate);
+      }
+    }
     applyOpToDom(entry.pagePath, entry.op);
+    for (const candidate of dependent) applyOpToDom(candidate.pagePath, candidate.op);
     updateDirtyUi();
   };
   const remove = (): void => {
-    removeOpsFor(entry.pagePath, opKey(entry.op));
+    for (const candidate of removed) removeOpsFor(candidate.pagePath, opKey(candidate.op));
     revertOpInDom(entry.pagePath, entry.op);
     updateDirtyUi();
   };
@@ -5971,6 +6303,7 @@ function discardAll(): void {
   originalSegments.clear();
   originalAttrs.clear();
   originalMedia.clear();
+  createdMedia.clear();
   originalSeo.clear();
   originalMarkups.clear();
   originalFormats.clear();
@@ -6029,6 +6362,7 @@ function refreshMarkers(): void {
   });
   const byPageOp = state.ops.filter((o) => o.pagePath === state.current!.pagePath);
   for (const { op } of byPageOp) {
+    if (op.type === "duplicateSection") continue;
     const baseId = op.nodeId.split("#")[0]!;
     const el = doc.querySelector(`[data-xyle-node="${baseId}"]`) as HTMLElement | null;
     if (!el) continue;
@@ -6125,6 +6459,8 @@ function opLabel(op: Op): string {
       return "Section visibility";
     case "moveSection":
       return "Section order";
+    case "duplicateSection":
+      return "Duplicate section";
   }
 }
 
@@ -6152,6 +6488,7 @@ function originalValue(pagePath: string, op: Op): string {
   if (op.type === "seo") return originalSeo.get(seoIdentity(pagePath, op.field)) ?? "";
   if (op.type === "sectionVisibility") return op.before ? "visible" : "hidden";
   if (op.type === "moveSection") return "original position";
+  if (op.type === "duplicateSection") return "";
   return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) ?? "";
 }
 
@@ -6448,6 +6785,30 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) el.hidden = !op.visible;
     return;
   }
+  if (op.type === "duplicateSection") {
+    const current = state.current;
+    const source = currentNodeElement(op.sourceId);
+    const sourceMeta = current?.nodes.find((candidate) => candidate.id === op.sourceId);
+    if (!current || !source || !sourceMeta || !op.previewHtml) return;
+    const parsed = new DOMParser().parseFromString(op.previewHtml, "text/html");
+    const parsedClone = parsed.body.firstElementChild;
+    if (!(parsedClone instanceof HTMLElement)) return;
+    const clone = document.importNode(parsedClone, true) as HTMLElement;
+    source.after(clone);
+    const sourceNodeMap = new Map(
+      Object.entries(op.nodeMap).map(([originalId, createdNodeId]) => [originalId, createdNodeId]),
+    );
+    registerCreatedSectionNodes(
+      current,
+      sourceMeta,
+      clone,
+      op.sourceId,
+      op.createdId,
+      sourceNodeMap,
+    );
+    registerCreatedMediaStates(pagePath, clone, sourceNodeMap, op.snapshotOperations);
+    return;
+  }
   if (op.type === "moveSection") {
     const source = currentNodeElement(op.nodeId);
     const target = currentNodeElement(op.targetId);
@@ -6499,6 +6860,10 @@ function revertOpInDom(pagePath: string, op: Op): void {
   } else if (op.type === "sectionVisibility") {
     const el = currentNodeElement(op.nodeId);
     if (el) el.hidden = !op.before;
+  } else if (op.type === "duplicateSection") {
+    currentNodeElement(op.createdId)?.remove();
+    const current = state.current;
+    if (current) removeCreatedSectionState(current, op);
   } else if (op.type === "moveSection") {
     const source = currentNodeElement(op.nodeId);
     const parent = source?.parentElement;
@@ -6535,6 +6900,7 @@ function revertOpInDom(pagePath: string, op: Op): void {
 const originalSegments = new Map<string, string>();
 const originalAttrs = new Map<string, string>();
 const originalMedia = new Map<string, MediaState>();
+const createdMedia = new Map<string, MediaState>();
 const originalSeo = new Map<string, string>();
 const originalMarkups = new Map<string, string>();
 const originalFormats = new Map<string, "bold" | "italic" | "underline" | "none">();
@@ -6881,6 +7247,32 @@ function restoreOpsIntoDom(): void {
       applyBlockFormatToDom(pagePath, op);
     } else if (op.type === "toggleList") {
       applyToggleListToDom(pagePath, op, op.after);
+    } else if (op.type === "duplicateSection") {
+      const source = currentNodeElement(op.sourceId);
+      const sourceMeta = state.current.nodes.find((candidate) => candidate.id === op.sourceId);
+      if (source && sourceMeta && op.previewHtml) {
+        const parsed = new DOMParser().parseFromString(op.previewHtml, "text/html");
+        const parsedClone = parsed.body.firstElementChild;
+        if (parsedClone instanceof HTMLElement) {
+          const clone = document.importNode(parsedClone, true) as HTMLElement;
+          source.after(clone);
+          const sourceNodeMap = new Map(
+            Object.entries(op.nodeMap).map(([originalId, createdNodeId]) => [
+              originalId,
+              createdNodeId,
+            ]),
+          );
+          registerCreatedSectionNodes(
+            state.current,
+            sourceMeta,
+            clone,
+            op.sourceId,
+            op.createdId,
+            sourceNodeMap,
+          );
+          registerCreatedMediaStates(pagePath, clone, sourceNodeMap, op.snapshotOperations);
+        }
+      }
     } else if (op.type === "sectionVisibility") {
       const el = currentNodeElement(op.nodeId);
       if (el) el.hidden = !op.visible;
@@ -6938,23 +7330,29 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
   button.disabled = true;
   label.textContent = "Publishing…";
 
+  const pages = collectPageOps();
   const form = new FormData();
   form.set(
     "metadata",
     JSON.stringify({
       baseSnapshotDigest: state.publishedSnapshotDigest,
-      pages: collectPageOps(),
+      pages,
     }),
   );
   const referencedAssets = new Set(
-    state.ops.flatMap(({ op }) => {
-      if (op.type === "src") return [op.value];
-      if (op.type === "media") {
-        const source = op.value.source;
-        return source.kind === "staged" ? [source.assetId] : [];
-      }
-      return [];
-    }),
+    pages.flatMap((page) =>
+      page.operations.flatMap((op) => {
+        if (op.type === "src") return state.assets.has(op.value) ? [op.value] : [];
+        if (op.type === "media") {
+          const source = op.value.source;
+          return source.kind === "staged" ? [source.assetId] : [];
+        }
+        if (op.type === "duplicateSection") {
+          return op.assetRefs.map((asset) => asset.assetId);
+        }
+        return [];
+      }),
+    ),
   );
   for (const path of referencedAssets) {
     const asset = state.assets.get(path);
@@ -7005,6 +7403,7 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     originalSegments.clear();
     originalAttrs.clear();
     originalMedia.clear();
+    createdMedia.clear();
     originalSeo.clear();
     originalMarkups.clear();
     originalFormats.clear();
@@ -7033,14 +7432,54 @@ function commitActiveEditsAndCollect(): boolean {
 }
 
 function collectPageOps(): PageOps[] {
-  const byPage = new Map<string, Op[]>();
-  for (const { pagePath, op } of state.ops) {
-    const list = byPage.get(pagePath) ?? [];
-    list.push(op);
-    byPage.set(pagePath, list);
+  const byPage = new Map<string, PendingOp[]>();
+  for (const entry of state.ops) {
+    const list = byPage.get(entry.pagePath) ?? [];
+    list.push(entry);
+    byPage.set(entry.pagePath, list);
   }
   const pages: PageOps[] = [];
-  for (const [pagePath, operations] of byPage) {
+  for (const [pagePath, entries] of byPage) {
+    const duplicates = entries.filter(
+      (entry): entry is PendingOp & { op: Extract<Op, { type: "duplicateSection" }> } =>
+        entry.op.type === "duplicateSection",
+    );
+    const owned = new Set(duplicates.flatMap((entry) => Object.values(entry.op.nodeMap)));
+    const operations: Op[] = [];
+    for (const entry of entries) {
+      const op = entry.op;
+      if (op.type === "duplicateSection") {
+        const createdNodeIds = new Set(Object.values(op.nodeMap));
+        const createdOperations = entries
+          .map(({ op: candidate }) => candidate)
+          .filter((candidate) => {
+            if (candidate.type === "duplicateSection") return false;
+            const ids =
+              candidate.type === "toggleList"
+                ? candidate.nodeIds
+                : "nodeId" in candidate
+                  ? [candidate.nodeId]
+                  : [];
+            return ids.some((id) => createdNodeIds.has(id.split("#")[0]!));
+          })
+          .map((candidate) => structuredClone(candidate) as SnapshotOperation);
+        const assetRefs = [...op.assetRefs];
+        for (const candidate of [...op.snapshotOperations, ...createdOperations]) {
+          if (candidate.type === "media" && candidate.value.source.kind === "staged") {
+            assetRefs.push({ assetId: candidate.value.source.assetId });
+          }
+        }
+        operations.push({
+          ...op,
+          createdOperations,
+          assetRefs: [...new Map(assetRefs.map((asset) => [asset.assetId, asset])).values()],
+        });
+      } else {
+        const ids = op.type === "toggleList" ? op.nodeIds : "nodeId" in op ? [op.nodeId] : [];
+        if (ids.some((id) => owned.has(id.split("#")[0]!))) continue;
+        operations.push(op);
+      }
+    }
     const baseDigest =
       pagePath === state.current?.pagePath
         ? state.current.baseDigest

@@ -110,7 +110,31 @@ export type PageOperation =
       targetId: string;
       before: boolean;
       originalIndex: number;
-    };
+      sequence?: number;
+    }
+  | DuplicateSectionOperation;
+
+export interface DuplicateSectionOperation {
+  type: "duplicateSection";
+  sourceId: string;
+  createdId: string;
+  sequence: number;
+  insert: "after";
+  snapshotOperations: SnapshotOperation[];
+  nodeMap: Record<string, string>;
+  createdOperations?: SnapshotOperation[];
+  /** Client preview state only; the server never uses this as publish input. */
+  previewHtml?: string;
+  idMap: Record<string, string>;
+  assetRefs: AssetReference[];
+}
+
+export type SnapshotOperation = Exclude<PageOperation, DuplicateSectionOperation>;
+
+export interface AssetReference {
+  assetId: string;
+  digest?: XyleDigest;
+}
 
 export interface PageChange {
   pagePath: string;

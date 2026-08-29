@@ -8,10 +8,18 @@ import type {
   PreviewNode,
   XyleDigest,
   MediaState,
+  SnapshotOperation,
 } from "./types.ts";
 import { digestBytes } from "./digest.ts";
 import { sourceTargetIdentity } from "./identity.ts";
 import { mediaSourcePath, normalizeMediaState } from "./media-state.ts";
+import {
+  STRUCTURAL_ID_REFERENCE_ATTRIBUTES,
+  createdNodeIdentity,
+  duplicateHtmlId,
+  rewriteFragmentReference,
+  rewriteIdTokens,
+} from "./structural.ts";
 
 type P5Document = DefaultTreeAdapterTypes.Document;
 type P5Node = DefaultTreeAdapterTypes.Node;
@@ -761,6 +769,98 @@ interface SourcePatch {
   replacement: string;
 }
 
+function allElementIds(root: P5Node): string[] {
+  const ids: string[] = [];
+  const visit = (node: P5Node): void => {
+    if (!isElement(node)) return;
+    const id = attrValue(node, "id");
+    if (id) ids.push(id);
+    node.childNodes.forEach(visit);
+  };
+  visit(root);
+  return ids;
+}
+
+function duplicateSectionMarkup(
+  markup: string,
+  createdId: string,
+  documentIds: ReadonlySet<string>,
+  expectedMap: Record<string, string>,
+): string {
+  const fragment = parse(`<body>${markup}</body>`) as P5Document;
+  const body = fragment.childNodes.find((node) => isElement(node) && node.tagName === "html");
+  const html =
+    body && isElement(body)
+      ? body.childNodes.find((node) => isElement(node) && node.tagName === "body")
+      : null;
+  const roots = html && isElement(html) ? html.childNodes.filter(isElement) : [];
+  if (roots.length !== 1 || roots[0]!.tagName !== "section")
+    throw new Error("duplicate snapshot must contain one section");
+  if (hasUnsafeStructuralDescendant(roots[0]!))
+    throw new Error("duplicate snapshot contains unsafe descendants");
+  const originalIds = allElementIds(roots[0]!);
+  if (new Set(originalIds).size !== originalIds.length)
+    throw new Error("duplicate section contains duplicate HTML ids");
+  const idMap = new Map<string, string>();
+  for (const originalId of originalIds) {
+    const cloneId = duplicateHtmlId(createdId, originalId);
+    if (documentIds.has(cloneId))
+      throw new Error("duplicate section generated an HTML id collision");
+    if (expectedMap[originalId] !== cloneId)
+      throw new Error("duplicate section HTML id map is not deterministic");
+    idMap.set(originalId, cloneId);
+  }
+  const visit = (node: P5Node): void => {
+    if (!isElement(node)) return;
+    for (const attribute of node.attrs) {
+      const name = attribute.name.toLowerCase();
+      if (name === "id") {
+        const mapped = idMap.get(attribute.value);
+        if (mapped) attribute.value = mapped;
+      } else if (name === "href") {
+        attribute.value = rewriteFragmentReference(attribute.value, idMap);
+      } else if (STRUCTURAL_ID_REFERENCE_ATTRIBUTES.has(name)) {
+        attribute.value = rewriteIdTokens(attribute.value, idMap);
+      } else if (attribute.value.match(/#[A-Za-z][\w:.-]*/)) {
+        const local = [...attribute.value.matchAll(/#([A-Za-z][\w:.-]*)/g)].some((match) =>
+          idMap.has(match[1]!),
+        );
+        if (local) throw new Error(`unsupported local id reference in ${name}`);
+      }
+    }
+    node.childNodes.forEach(visit);
+  };
+  visit(roots[0]!);
+  return serialize(html as P5Element);
+}
+
+function remapCreatedOperation(
+  operation: SnapshotOperation,
+  createdToLocalMap: ReadonlyMap<string, string>,
+): SnapshotOperation {
+  if (operation.type === "toggleList") {
+    return {
+      ...operation,
+      nodeIds: operation.nodeIds.map((id) => {
+        const base = id.split("#")[0]!;
+        const local = createdToLocalMap.get(base);
+        if (!local) throw new Error("created operation targets an unknown descendant");
+        return local + id.slice(base.length);
+      }),
+    };
+  }
+  if (operation.type === "moveSection" || operation.type === "seo")
+    throw new Error("unsupported operation in created section");
+  if (!("nodeId" in operation)) return operation;
+  const base = operation.nodeId.split("#")[0]!;
+  const local = createdToLocalMap.get(base);
+  if (!local) throw new Error("created operation targets an unknown descendant");
+  return {
+    ...operation,
+    nodeId: local + operation.nodeId.slice(base.length),
+  } as SnapshotOperation;
+}
+
 function renderTextMarkup(text: string, multilineAllowed: boolean): string {
   if (!multilineAllowed && text.includes("\n")) {
     throw new Error("line breaks are not allowed in single-line elements");
@@ -854,6 +954,10 @@ export async function patchHtml(
   const moveSectionOps: {
     candidate: Candidate;
     op: PageOperation & { type: "moveSection" };
+  }[] = [];
+  const duplicateSectionOps: {
+    candidate: Candidate;
+    op: PageOperation & { type: "duplicateSection" };
   }[] = [];
   const seoOps: (PageOperation & { type: "seo" })[] = [];
   const patches: SourcePatch[] = [];
@@ -974,16 +1078,17 @@ export async function patchHtml(
       case "moveSection": {
         const candidate = analysis.candidates.get(op.nodeId);
         const target = analysis.candidates.get(op.targetId);
+        const createdTarget = !target && /^x-[a-f0-9]{8}$/.test(op.targetId);
         if (
           !candidate ||
           candidate.kind !== "section" ||
-          !target ||
-          target.kind !== "section" ||
-          candidate.id === target.id ||
+          (!target && !createdTarget) ||
+          (target && (target.kind !== "section" || candidate.id === target.id)) ||
           candidate.parentStart === undefined ||
           candidate.parentEnd === undefined ||
-          candidate.parentStart !== target.parentStart ||
-          candidate.parentEnd !== target.parentEnd
+          (target &&
+            (candidate.parentStart !== target.parentStart ||
+              candidate.parentEnd !== target.parentEnd))
         ) {
           throw new Error("sections must be safe siblings in one parent");
         }
@@ -1009,9 +1114,10 @@ export async function patchHtml(
           !sectionChildren.some(
             (child) => child.sourceCodeLocation?.startOffset === candidate.startTagStart,
           ) ||
-          !sectionChildren.some(
-            (child) => child.sourceCodeLocation?.startOffset === target.startTagStart,
-          )
+          (target &&
+            !sectionChildren.some(
+              (child) => child.sourceCodeLocation?.startOffset === target.startTagStart,
+            ))
         ) {
           throw new Error("section sibling source mapping is ambiguous");
         }
@@ -1019,6 +1125,122 @@ export async function patchHtml(
           (child) => child.sourceCodeLocation?.startOffset === candidate.startTagStart,
         );
         moveSectionOps.push({ candidate, op: { ...op, originalIndex } });
+        break;
+      }
+      case "duplicateSection": {
+        const candidate = analysis.candidates.get(op.sourceId);
+        if (!candidate || candidate.kind !== "section" || candidate.elementEnd === undefined) {
+          throw new Error("duplicate target is not a safe section");
+        }
+        if (candidate.parentStart === undefined || candidate.parentEnd === undefined) {
+          throw new Error("duplicate section parent mapping is unavailable");
+        }
+        const duplicateParent = elementAtSourceRange(
+          sourceDocument,
+          candidate.parentStart,
+          candidate.parentEnd,
+        );
+        const duplicateChildren = duplicateParent?.childNodes.filter(isElement) ?? [];
+        const safeSectionSibling = (child: P5Element): boolean =>
+          [...analysis.candidates.values()].some(
+            (item) =>
+              item.kind === "section" &&
+              item.startTagStart === child.sourceCodeLocation?.startOffset,
+          );
+        if (
+          !duplicateParent ||
+          duplicateChildren.length === 0 ||
+          !duplicateChildren.every(safeSectionSibling)
+        )
+          throw new Error("section parent contains unsupported sibling content");
+        if (op.insert !== "after" || !/^x-[a-f0-9]{8}$/.test(op.createdId)) {
+          throw new Error("invalid section duplication");
+        }
+        if (
+          !Array.isArray(op.snapshotOperations) ||
+          !Array.isArray(op.assetRefs) ||
+          !op.nodeMap ||
+          typeof op.nodeMap !== "object"
+        ) {
+          throw new Error("invalid section duplication recipe");
+        }
+        const createdNodeIds = Object.values(op.nodeMap);
+        if (
+          new Set(createdNodeIds).size !== createdNodeIds.length ||
+          createdNodeIds.some((id) => !/^x-[a-f0-9]{8}$/.test(id))
+        ) {
+          throw new Error("created descendant identity is invalid");
+        }
+        for (const [sourceId, createdNodeId] of Object.entries(op.nodeMap)) {
+          const sourceNode = analysis.candidates.get(sourceId);
+          if (!sourceNode) throw new Error("created node mapping targets an invalid source node");
+          if (sourceNode.kind === "section") {
+            if (sourceId !== candidate.id || createdNodeId !== op.createdId)
+              throw new Error("created section identity is invalid");
+            continue;
+          }
+          const logicalNodeKey = sourceTargetIdentity(
+            change.pagePath,
+            sourceNode.kind,
+            sourceNode.startTagStart,
+            sourceNode.elementEnd ?? sourceNode.startTagEnd,
+            sourceNode.tag,
+          );
+          if (createdNodeIdentity(op.createdId, logicalNodeKey) !== createdNodeId)
+            throw new Error("created descendant identity is not reproducible");
+        }
+        const ownedNodeIds = new Set(
+          [...analysis.candidates.values()]
+            .filter(
+              (owned) =>
+                owned.startTagStart >= candidate.startTagStart &&
+                (owned.elementEnd ?? owned.startTagEnd) <= candidate.elementEnd!,
+            )
+            .map((owned) => owned.id),
+        );
+        ownedNodeIds.add(candidate.id);
+        for (const snapshot of op.snapshotOperations) {
+          if (snapshot.type === "toggleList") {
+            if (snapshot.nodeIds.some((id) => !ownedNodeIds.has(id.split("#")[0]!)))
+              throw new Error("snapshot operation crosses the duplicated section boundary");
+          } else if (snapshot.type === "moveSection" || snapshot.type === "seo") {
+            throw new Error("unsupported snapshot operation in duplicated section");
+          } else if ("nodeId" in snapshot && !ownedNodeIds.has(snapshot.nodeId.split("#")[0]!)) {
+            throw new Error("snapshot operation crosses the duplicated section boundary");
+          }
+        }
+        const inverseNodeMap = new Map(
+          Object.entries(op.nodeMap).map(([sourceId, createdNodeId]) => [createdNodeId, sourceId]),
+        );
+        const createdOperations = op.createdOperations ?? [];
+        const recipeOperations = [...op.snapshotOperations, ...createdOperations];
+        const recipeAssets = new Set(
+          recipeOperations.flatMap((operation) =>
+            operation.type === "media" && operation.value.source.kind === "staged"
+              ? [operation.value.source.assetId]
+              : [],
+          ),
+        );
+        if (
+          op.assetRefs.some((asset) => !recipeAssets.has(asset.assetId)) ||
+          op.assetRefs.length !== recipeAssets.size
+        ) {
+          throw new Error("duplicate asset reference is not owned by its recipe");
+        }
+        for (const created of createdOperations) {
+          if (created.type === "toggleList") {
+            if (created.nodeIds.some((id) => !inverseNodeMap.has(id.split("#")[0]!)))
+              throw new Error("created operation crosses the duplicated section boundary");
+          } else if (created.type === "moveSection" || created.type === "seo") {
+            throw new Error("unsupported operation in created section");
+          } else if ("nodeId" in created && !inverseNodeMap.has(created.nodeId.split("#")[0]!)) {
+            throw new Error("created operation crosses the duplicated section boundary");
+          }
+        }
+        if (duplicateSectionOps.length > 0) {
+          throw new Error("only one section duplication is allowed per task");
+        }
+        duplicateSectionOps.push({ candidate, op });
         break;
       }
       case "seo": {
@@ -1446,48 +1668,228 @@ export async function patchHtml(
       });
     }
   }
+  let moveSourceText = sourceText;
+  let moveAnalysis = analysis;
+  let moveDocument = sourceDocument;
+  const movedParentRanges: Array<{ start: number; end: number }> = [];
+  if (moveSectionOps.length > 0) {
+    const contentOperations = change.operations.filter(
+      (operation) => operation.type !== "duplicateSection" && operation.type !== "moveSection",
+    );
+    if (contentOperations.length > 0) {
+      const contentBytes = await patchHtml(
+        encoder.encode(sourceText),
+        {
+          pagePath: change.pagePath,
+          baseDigest: await digestBytes(encoder.encode(sourceText)),
+          operations: contentOperations,
+        },
+        options,
+      );
+      moveSourceText = new TextDecoder("utf-8", { fatal: true }).decode(contentBytes);
+      moveAnalysis = analyzePage(moveSourceText, options.ignoreSelectors ?? []);
+      moveDocument = parse(moveSourceText, { sourceCodeLocationInfo: true }) as P5Document;
+    }
+  }
+  const generatedDuplicateIds = new Set<string>();
+  const duplicateMarkupByStart = new Map<number, string>();
+  const consumedDuplicateStarts = new Set<number>();
+  for (const { candidate, op } of duplicateSectionOps) {
+    let snapshotText = sourceText;
+    // Snapshot operations are replayed against the original source document to
+    // build the frozen duplicate template. Created-subtree operations are
+    // replayed against an isolated section fragment below; mixing them here
+    // would incorrectly mutate the original section.
+    const recipe = [...op.snapshotOperations];
+    if (recipe.length > 0) {
+      const snapshotBytes = await patchHtml(
+        encoder.encode(sourceText),
+        {
+          pagePath: change.pagePath,
+          baseDigest: await digestBytes(encoder.encode(sourceText)),
+          operations: recipe,
+        },
+        options,
+      );
+      snapshotText = new TextDecoder("utf-8", { fatal: true }).decode(snapshotBytes);
+    }
+    const snapshotAnalysis = analyzePage(snapshotText, options.ignoreSelectors ?? []);
+    const snapshotCandidate = snapshotAnalysis.candidates.get(op.sourceId);
+    if (!snapshotCandidate || snapshotCandidate.elementEnd === undefined) {
+      throw new Error("duplicate snapshot source mapping is ambiguous");
+    }
+    const sourceMarkup = snapshotText.slice(
+      snapshotCandidate.startTagStart,
+      snapshotCandidate.elementEnd,
+    );
+    const localAnalysis = analyzePage(sourceMarkup, options.ignoreSelectors ?? []);
+    const createdToLocalMap = new Map<string, string>();
+    for (const [sourceId, createdId] of Object.entries(op.nodeMap)) {
+      const sourceNode = snapshotAnalysis.candidates.get(sourceId);
+      if (!sourceNode) throw new Error("duplicate snapshot node mapping is ambiguous");
+      const relativeStart = sourceNode.startTagStart - snapshotCandidate.startTagStart;
+      const localNode = [...localAnalysis.candidates.values()].find(
+        (node) =>
+          node.startTagStart === relativeStart &&
+          node.kind === sourceNode.kind &&
+          node.tag === sourceNode.tag,
+      );
+      if (!localNode) throw new Error("duplicate created node mapping is ambiguous");
+      if (createdToLocalMap.has(createdId))
+        throw new Error("duplicate created node identity is repeated");
+      createdToLocalMap.set(createdId, localNode.id);
+    }
+    let finalMarkup = sourceMarkup;
+    const createdOperations = (op.createdOperations ?? []).map((operation) =>
+      remapCreatedOperation(operation, createdToLocalMap),
+    );
+    if (createdOperations.length > 0) {
+      const createdBytes = await patchHtml(
+        encoder.encode(sourceMarkup),
+        {
+          pagePath: change.pagePath,
+          baseDigest: await digestBytes(encoder.encode(sourceMarkup)),
+          operations: createdOperations,
+        },
+        options,
+      );
+      finalMarkup = new TextDecoder("utf-8", { fatal: true }).decode(createdBytes);
+    }
+    const cloneMarkup = duplicateSectionMarkup(
+      finalMarkup,
+      op.createdId,
+      new Set([...allElementIds(sourceDocument), ...generatedDuplicateIds]),
+      op.idMap,
+    );
+    const cloneDocument = parse(`<body>${cloneMarkup}</body>`) as P5Document;
+    for (const id of allElementIds(cloneDocument)) generatedDuplicateIds.add(id);
+    duplicateMarkupByStart.set(candidate.startTagStart, cloneMarkup);
+    if (moveSectionOps.length === 0) {
+      patches.push({
+        start: candidate.elementEnd!,
+        end: candidate.elementEnd!,
+        replacement: cloneMarkup,
+      });
+    }
+  }
   for (const { candidate, op } of moveSectionOps) {
+    const moveCandidate = moveAnalysis.candidates.get(op.nodeId) ?? candidate;
     const parent =
-      candidate.parentStart !== undefined && candidate.parentEnd !== undefined
-        ? elementAtSourceRange(sourceDocument, candidate.parentStart, candidate.parentEnd)
+      moveCandidate.parentStart !== undefined && moveCandidate.parentEnd !== undefined
+        ? elementAtSourceRange(moveDocument, moveCandidate.parentStart, moveCandidate.parentEnd)
         : null;
-    const target = analysis.candidates.get(op.targetId);
+    const target = moveAnalysis.candidates.get(op.targetId);
+    const targetDuplicate = duplicateSectionOps.find((entry) => entry.op.createdId === op.targetId);
     if (
       !parent ||
-      !target ||
+      (!target && !targetDuplicate) ||
       !parent.sourceCodeLocation?.startTag ||
-      !parent.sourceCodeLocation.endTag
+      !parent.sourceCodeLocation.endTag ||
+      (target &&
+        (moveCandidate.parentStart !== target.parentStart ||
+          moveCandidate.parentEnd !== target.parentEnd)) ||
+      (targetDuplicate &&
+        (candidate.parentStart !== targetDuplicate.candidate.parentStart ||
+          candidate.parentEnd !== targetDuplicate.candidate.parentEnd))
     ) {
       throw new Error("section parent source mapping is ambiguous");
     }
     const children = parent.childNodes.filter(isElement);
     const sourceChild = children.find(
-      (child) => child.sourceCodeLocation?.startOffset === candidate.startTagStart,
+      (child) => child.sourceCodeLocation?.startOffset === moveCandidate.startTagStart,
     );
-    const targetChild = children.find(
-      (child) => child.sourceCodeLocation?.startOffset === target.startTagStart,
-    );
-    if (!sourceChild || !targetChild)
-      throw new Error("section sibling source mapping is ambiguous");
-    const sourceIndex = children.indexOf(sourceChild);
-    const targetIndex = children.indexOf(targetChild);
-    const order = [...children];
-    order.splice(sourceIndex, 1);
-    let insertAt = targetIndex + (op.before ? 0 : 1);
-    if (sourceIndex < insertAt) insertAt -= 1;
-    order.splice(insertAt, 0, sourceChild);
+    if (!sourceChild) throw new Error("section sibling source mapping is ambiguous");
+    const targetChild = target
+      ? children.find((child) => child.sourceCodeLocation?.startOffset === target.startTagStart)
+      : undefined;
+    if (target && !targetChild) throw new Error("section sibling source mapping is ambiguous");
+    const duplicateEntry = targetDuplicate
+      ? [...duplicateMarkupByStart.entries()].find(
+          ([start]) => start === targetDuplicate.candidate.startTagStart,
+        )
+      : [...duplicateMarkupByStart.entries()].find(([start]) => {
+          const duplicateCandidate = [...analysis.candidates.values()].find(
+            (item) => item.kind === "section" && item.startTagStart === start,
+          );
+          return (
+            duplicateCandidate?.parentStart === candidate.parentStart &&
+            duplicateCandidate?.parentEnd === candidate.parentEnd
+          );
+        });
+    type VirtualChild = { source: P5Element } | { markup: string };
+    const order: VirtualChild[] = children.map((child) => ({ source: child }));
+    const duplicateItem: VirtualChild | undefined = duplicateEntry
+      ? { markup: duplicateEntry[1] }
+      : undefined;
+    if (duplicateEntry && duplicateItem) {
+      const duplicateIndex = order.findIndex(
+        (item) => "source" in item && item.source === sourceChild,
+      );
+      if (duplicateIndex < 0) throw new Error("duplicate section source mapping is ambiguous");
+      order.splice(duplicateIndex + 1, 0, duplicateItem);
+      consumedDuplicateStarts.add(duplicateEntry[0]);
+    }
+    const sourceItem = order.find((item) => "source" in item && item.source === sourceChild);
+    const targetItem = target
+      ? order.find((item) => "source" in item && item.source === targetChild)
+      : duplicateItem;
+    if (!sourceItem || !targetItem) throw new Error("section sibling source mapping is ambiguous");
+    const currentIndex = order.indexOf(sourceItem);
+    const currentTargetIndex = order.indexOf(targetItem);
+    order.splice(currentIndex, 1);
+    let insertAt = currentTargetIndex + (op.before ? 0 : 1);
+    if (currentIndex < insertAt) insertAt -= 1;
+    order.splice(insertAt, 0, sourceItem);
     const contentStart = parent.sourceCodeLocation.startTag.endOffset;
     const contentEnd = parent.sourceCodeLocation.endTag.startOffset;
-    const blocks = children.map((child, index) => {
+    const baseParent =
+      candidate.parentStart !== undefined && candidate.parentEnd !== undefined
+        ? elementAtSourceRange(sourceDocument, candidate.parentStart, candidate.parentEnd)
+        : null;
+    if (!baseParent?.sourceCodeLocation?.startTag || !baseParent.sourceCodeLocation.endTag)
+      throw new Error("section parent source mapping is ambiguous");
+    movedParentRanges.push({
+      start: baseParent.sourceCodeLocation.startTag.endOffset,
+      end: baseParent.sourceCodeLocation.endTag.startOffset,
+    });
+    const blocks = new Map<P5Element, string>();
+    children.forEach((child, index) => {
       const location = child.sourceCodeLocation;
       if (!location) throw new Error("section sibling source mapping is ambiguous");
       const blockStart =
         index === 0 ? contentStart : children[index - 1]!.sourceCodeLocation!.endOffset;
-      return sourceText.slice(blockStart, location.endOffset);
+      blocks.set(
+        child,
+        moveSourceText.slice(blockStart, location.startOffset) +
+          moveSourceText.slice(location.startOffset, location.endOffset),
+      );
     });
-    const trailing = sourceText.slice(children.at(-1)!.sourceCodeLocation!.endOffset, contentEnd);
-    const replacement = order.map((child) => blocks[children.indexOf(child)]).join("") + trailing;
-    patches.push({ start: contentStart, end: contentEnd, replacement });
+    const trailing = moveSourceText.slice(
+      children.at(-1)!.sourceCodeLocation!.endOffset,
+      contentEnd,
+    );
+    const replacement =
+      order.map((item) => ("source" in item ? blocks.get(item.source) : item.markup)).join("") +
+      trailing;
+    patches.push({
+      start: baseParent.sourceCodeLocation.startTag.endOffset,
+      end: baseParent.sourceCodeLocation.endTag.startOffset,
+      replacement,
+    });
+  }
+  if (moveSectionOps.length > 0) {
+    for (const [start, replacement] of duplicateMarkupByStart) {
+      if (consumedDuplicateStarts.has(start)) continue;
+      const duplicate = duplicateSectionOps.find(
+        (entry) => entry.candidate.startTagStart === start,
+      );
+      if (!duplicate) throw new Error("duplicate section source mapping is ambiguous");
+      patches.push({
+        start: duplicate.candidate.elementEnd!,
+        end: duplicate.candidate.elementEnd!,
+        replacement,
+      });
+    }
   }
   for (const { candidate, op } of mediaOps) {
     const source = mediaSourcePath(op.value.source);
@@ -1647,6 +2049,17 @@ export async function patchHtml(
     }
   }
 
+  for (const range of movedParentRanges) {
+    for (let index = patches.length - 1; index >= 0; index -= 1) {
+      const patch = patches[index]!;
+      if (
+        patch.start >= range.start &&
+        patch.end <= range.end &&
+        (patch.start > range.start || patch.end < range.end)
+      )
+        patches.splice(index, 1);
+    }
+  }
   patches.sort((a, b) => b.start - a.start);
   for (let i = 1; i < patches.length; i++) {
     const prev = patches[i - 1]!;

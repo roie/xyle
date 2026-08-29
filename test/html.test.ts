@@ -8,6 +8,8 @@ import {
   preparePreview,
 } from "../src/html.ts";
 import { digestBytes } from "../src/manifest.ts";
+import { createdNodeIdentity, duplicateHtmlId } from "../src/structural.ts";
+import { sourceTargetIdentity } from "../src/identity.ts";
 import type { PageChange, XyleDigest } from "../src/types.ts";
 
 const enc = new TextEncoder();
@@ -710,6 +712,117 @@ describe("safe structural patches", () => {
     ]);
     expect(shown).toContain('<section id="first">');
     expect(shown).not.toContain('<section id="first" hidden>');
+  });
+
+  it("duplicates a safe section after its source with deterministic id remapping", async () => {
+    const [first] = sectionIds();
+    const createdId = "x-12345678";
+    const duplicateSource = source.replace(
+      '<section id="first"><h2>First</h2>',
+      '<section id="first"><h2>First</h2><a href="#first">First</a>',
+    );
+    const duplicated = await patchAndGetText(duplicateSource, [
+      {
+        type: "duplicateSection",
+        sourceId: first!,
+        createdId,
+        sequence: 1,
+        insert: "after",
+        snapshotOperations: [],
+        nodeMap: {},
+        idMap: { first: duplicateHtmlId(createdId, "first") },
+        assetRefs: [],
+      },
+    ]);
+    const cloneId = duplicateHtmlId(createdId, "first");
+    expect((duplicated.match(new RegExp(`id="${cloneId}"`, "g")) ?? []).length).toBe(1);
+    expect(duplicated).toContain(`href="#${cloneId}"`);
+    expect(duplicated.indexOf(`id="first"`)).toBeLessThan(duplicated.indexOf(`id="${cloneId}"`));
+  });
+
+  it("replays edits scoped to the created duplicate", async () => {
+    const duplicateSource = "<main><section><h2>First</h2></section></main>";
+    const sourceText = [...analyzePage(duplicateSource).candidates.values()].find(
+      (candidate) => candidate.kind === "text",
+    )!;
+    const createdTextId = createdNodeIdentity(
+      "x-12345678",
+      sourceTargetIdentity(
+        "/index.html",
+        sourceText.kind,
+        sourceText.startTagStart,
+        sourceText.elementEnd ?? sourceText.startTagEnd,
+        sourceText.tag,
+      ),
+    );
+    const duplicated = await patchAndGetText(duplicateSource, [
+      {
+        type: "duplicateSection",
+        sourceId: "s1",
+        createdId: "x-12345678",
+        sequence: 1,
+        insert: "after",
+        snapshotOperations: [{ type: "text", nodeId: "n1#0", value: "Snapshot" }],
+        nodeMap: { n1: createdTextId },
+        createdOperations: [{ type: "text", nodeId: `${createdTextId}#0`, value: "Second" }],
+        idMap: {},
+        assetRefs: [],
+      },
+    ]);
+    expect(duplicated).toBe(
+      "<main><section><h2>First</h2></section><section><h2>Second</h2></section></main>",
+    );
+  });
+
+  it("rejects duplicate sections with repeated HTML ids", async () => {
+    const repeated =
+      '<main><section id="first"><div id="same"></div><p id="same">x</p></section></main>';
+    const [first] = [...analyzePage(repeated).candidates.values()]
+      .filter((candidate) => candidate.kind === "section")
+      .map((candidate) => candidate.id);
+    await expect(
+      patchSource(repeated, [
+        {
+          type: "duplicateSection",
+          sourceId: first!,
+          createdId: "x-12345678",
+          sequence: 1,
+          insert: "after",
+          snapshotOperations: [],
+          nodeMap: {},
+          idMap: { first: duplicateHtmlId("x-12345678", "first") },
+          assetRefs: [],
+        },
+      ]),
+    ).rejects.toThrow(/duplicate HTML ids/);
+  });
+
+  it("replays a duplicate before moving its original", async () => {
+    const [first, second] = sectionIds();
+    const duplicated = await patchAndGetText(source, [
+      {
+        type: "duplicateSection",
+        sourceId: first!,
+        createdId: "x-12345678",
+        sequence: 1,
+        insert: "after",
+        snapshotOperations: [],
+        nodeMap: {},
+        idMap: { first: duplicateHtmlId("x-12345678", "first") },
+        assetRefs: [],
+      },
+      {
+        type: "moveSection",
+        nodeId: first!,
+        targetId: second!,
+        before: false,
+        originalIndex: 0,
+        sequence: 2,
+      },
+    ]);
+    const cloneId = duplicateHtmlId("x-12345678", "first");
+    expect(duplicated.indexOf(`id="${cloneId}"`)).toBeLessThan(duplicated.indexOf('id="second"'));
+    expect(duplicated.lastIndexOf('id="first"')).toBeGreaterThan(duplicated.indexOf('id="second"'));
   });
 
   it("moves only safe sibling sections while preserving their contents", async () => {

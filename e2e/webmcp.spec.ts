@@ -837,4 +837,52 @@ test.describe("WebMCP editor tools", () => {
     await invokeTool(page, "revert_change", { changeId: moveEntry!.changeId });
     await expect.poll(sectionOrder).toEqual(originalOrder);
   });
+
+  test("duplicates a safe section and edits its created descendant through WebMCP", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+    }>;
+    const sourceSection = content.find((item) => item.type === "section");
+    expect(sourceSection?.id).toBeTruthy();
+    const duplicate = (await invokeTool(page, "duplicate_section", { id: sourceSection!.id })) as {
+      id: string;
+      sourceId: string;
+    };
+    expect(duplicate.sourceId).toBe(sourceSection!.id);
+
+    const createdText = await page.evaluate((createdId) => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      const root = doc.querySelector(`[data-xyle-node="${createdId}"]`);
+      return root
+        ? [...root.querySelectorAll("[data-xyle-node]")]
+            .map((element) => ({
+              id: element.getAttribute("data-xyle-node"),
+              tag: element.tagName,
+            }))
+            .find((element) => element.id !== createdId && /^(H1|H2|H3|P)$/.test(element.tag))
+        : undefined;
+    }, duplicate.id);
+    expect(createdText?.id).toBeTruthy();
+    await expect(
+      invokeTool(page, "update_text", { id: createdText!.id, text: "WebMCP duplicate edit" }),
+    ).resolves.toMatchObject({ id: createdText!.id, text: "WebMCP duplicate edit" });
+
+    const changes = (await invokeTool(page, "list_changes", {})) as Array<{ type: string }>;
+    expect(changes.some((change) => change.type === "duplicateSection")).toBe(true);
+    expect(changes.some((change) => change.type === "html")).toBe(true);
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/index.html");
+    expect(await page.locator("[data-xyle-node]").count()).toBe(0);
+    expect(await page.getByText("WebMCP duplicate edit").count()).toBe(1);
+  });
 });
