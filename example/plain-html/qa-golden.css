@@ -1,0 +1,29 @@
+.qa-layout {
+  margin: 2rem 0;
+  padding: 1.5rem;
+  border: 1px solid #d6d2c8;
+}
+
+.qa-layout > div {
+  min-height: 8rem;
+}
+
+.qa-small-image {
+  width: 120px;
+  height: 90px;
+}
+
+.qa-cards {
+  display: flex;
+  gap: 1rem;
+}
+
+.qa-cards article {
+  flex: 1;
+  padding: 1rem;
+  border: 1px solid #d6d2c8;
+}
+
+.qa-unsupported {
+  margin-top: 1rem;
+}

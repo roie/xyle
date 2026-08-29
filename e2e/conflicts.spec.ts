@@ -137,7 +137,7 @@ test.describe("conflicts and recovery", () => {
     expect(await (await page.request.get("/contact.html")).text()).toContain(tokenB.trim());
   });
 
-  test("multiline pending text restores after navigating away and back", async ({ page }) => {
+  test("deferred line-break editing reports a clear no-op", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const id = await findNodeByText(page, "Do the small jobs well");
     await editNode(page, id!);
@@ -145,26 +145,10 @@ test.describe("conflicts and recovery", () => {
     for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Shift+Enter");
     await clickOutsideCommit(page);
-    const before = await htmlOf(page, id!);
-    expect(before).toContain("<br");
-    const pending = await currentOps(page);
-    expect(pending).toHaveLength(1);
-    expect(pending[0]?.op.value).toContain("\n");
 
-    await page.frameLocator("#xyle-preview").locator('nav a[href="/"]').click();
-    await page.getByRole("button", { name: "Follow" }).click();
-    await page.frameLocator("#xyle-preview").locator('nav a[href="/about.html"]').click();
-    await page.getByRole("button", { name: "Follow" }).click();
-    await page.waitForFunction(() => {
-      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
-      return doc?.body?.textContent?.includes("Do the small jobs well");
-    });
-
-    const restoredId = await findNodeByText(page, "Do the small jobs well");
-    const restoredOps = await currentOps(page);
-    expect(restoredOps).toHaveLength(1);
-    expect(String(restoredOps[0]?.op.nodeId).startsWith(`${restoredId}#`)).toBe(true);
-    await expect.poll(async () => htmlOf(page, restoredId!)).toBe(before);
+    await expect(page.locator("#xyle-flash")).toContainText("Line-break editing is deferred");
+    expect(await htmlOf(page, id!)).not.toContain("<br");
+    expect(await currentOps(page)).toHaveLength(0);
   });
 
   test("published content survives a server restart", async ({ page }, info) => {

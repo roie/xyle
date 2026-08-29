@@ -68,11 +68,11 @@ test("duplicates a safe section through its complete independent lifecycle", asy
     .first();
   await cropImage(page, originalImage, "22", "65");
 
-  await page.evaluate(() => {
-    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-    const section = doc.querySelector("main > section.work-standard[data-xyle-node]")!;
-    section.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  });
+  const sourceSection = page
+    .frameLocator("#xyle-preview")
+    .locator("main > section.work-standard[data-xyle-node]")
+    .first();
+  await sourceSection.press("Enter");
   await page.getByRole("button", { name: "Duplicate section" }).click();
 
   await expect.poll(async () => (await sectionState(page)).length).toBe(2);
@@ -104,11 +104,7 @@ test("duplicates a safe section through its complete independent lifecycle", asy
   expect(independent[1]!.position).toBe("78% 31%");
 
   const orderBeforeMove = independent.map((section) => section.id);
-  await page.evaluate(() => {
-    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-    const section = doc.querySelector("main > section.work-standard[data-xyle-node]")!;
-    section.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  });
+  await sourceSection.press("Enter");
   await page.getByRole("button", { name: "Move down" }).click();
   await expect
     .poll(async () => (await sectionState(page)).map((section) => section.id))
@@ -185,7 +181,7 @@ test("duplicates a safe section through its complete independent lifecycle", asy
   expect(published.uniqueIds).toBe(true);
   expect(published.hasEditorMarkup).toBe(false);
 
-  await loginAndOpenEditor(page, "/index.html");
+  await loginAndOpenEditor(page, "/index.html", { resetFixture: false });
   await expect(page.locator("#xyle-dirty")).toBeHidden();
   expect(await sectionState(page)).toHaveLength(2);
 });

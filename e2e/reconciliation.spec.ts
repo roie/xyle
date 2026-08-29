@@ -1,7 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { loginAndOpenEditor, opsCount } from "./helpers.ts";
 
-async function openSectionTools(page: import("@playwright/test").Page, selector: string): Promise<void> {
+async function openSectionTools(
+  page: import("@playwright/test").Page,
+  selector: string,
+): Promise<void> {
   const section = page.frameLocator("#xyle-preview").locator(selector);
   await section.press("Enter");
   await expect(page.locator(".xyle-section-tools")).toBeVisible();

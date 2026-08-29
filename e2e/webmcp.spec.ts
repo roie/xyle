@@ -106,7 +106,7 @@ test.describe("WebMCP editor tools", () => {
       {
         changeId: headingChangeId,
         elementId: heading!.id,
-        type: "html",
+        type: "text",
         before: expect.stringContaining(originalText),
         after: expect.stringContaining(updatedText),
       },
@@ -394,7 +394,7 @@ test.describe("WebMCP editor tools", () => {
     await clickOutsideToCommit(page);
     await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toHaveCount(0);
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
-      { type: "html", after: expect.stringContaining("Plumbing you can depend on?") },
+      { type: "text", after: expect.stringContaining("Plumbing you can depend on?") },
     ]);
   });
 
@@ -487,7 +487,7 @@ test.describe("WebMCP editor tools", () => {
     }>;
     const ctaChange = changes.find((change) => change.elementId === cta!.id);
     expect(ctaChange?.changeId).toBeTruthy();
-    expect(ctaChange?.type).toBe("html");
+    expect(ctaChange?.type).toBe("text");
     expect(ctaChange?.after).toContain("Start editing");
 
     await invokeTool(page, "revert_change", { changeId: ctaChange!.changeId });
@@ -596,11 +596,11 @@ test.describe("WebMCP editor tools", () => {
     })) as { changeSetId: string; label: string; changes: Array<{ changeSetId?: string }> };
     expect(result.label).toBe("Improve the hero");
     expect(result.changeSetId).toMatch(/^changeset-\d+$/);
-    expect(result.changes).toHaveLength(5);
+    expect(result.changes).toHaveLength(4);
     expect(new Set(result.changes.map((change) => change.changeSetId))).toEqual(
       new Set([result.changeSetId]),
     );
-    expect(await opsCount(page)).toBe(5);
+    expect(await opsCount(page)).toBe(4);
     await expect(
       page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${image!.id}"]`),
     ).toHaveAttribute("src", replacementSrc);
@@ -880,7 +880,7 @@ test.describe("WebMCP editor tools", () => {
 
     const changes = (await invokeTool(page, "list_changes", {})) as Array<{ type: string }>;
     expect(changes.some((change) => change.type === "duplicateSection")).toBe(true);
-    expect(changes.some((change) => change.type === "html")).toBe(true);
+    expect(changes.some((change) => change.type === "text")).toBe(true);
     await page.locator("#xyle-publish").click();
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     await page.goto("/index.html");

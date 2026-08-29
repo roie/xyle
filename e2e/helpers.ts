@@ -3,9 +3,15 @@ import { expect, type Page, type TestInfo } from "@playwright/test";
 export const TEST_KEY = process.env.XYLE_TEST_KEY ?? "xyle-e2e-test-key-0123456789abcdef";
 
 /** Log in through the API and open the editor on a page. */
-export async function loginAndOpenEditor(page: Page, pagePath = "/index.html"): Promise<void> {
-  const reset = await page.request.post("/__xyle/api/test/reset");
-  if (!reset.ok()) throw new Error(`Fixture reset failed: ${reset.status()}`);
+export async function loginAndOpenEditor(
+  page: Page,
+  pagePath = "/index.html",
+  options: { resetFixture?: boolean } = {},
+): Promise<void> {
+  if (options.resetFixture !== false) {
+    const reset = await page.request.post("/__xyle/api/test/reset");
+    if (!reset.ok()) throw new Error(`Fixture reset failed: ${reset.status()}`);
+  }
   await page.request.post("/__xyle/api/login", {
     data: { key: TEST_KEY },
   });
@@ -83,10 +89,7 @@ export async function flashText(page: Page): Promise<string> {
 }
 
 export async function clickNode(page: Page, nodeId: string): Promise<void> {
-  await page
-    .frameLocator("#xyle-preview")
-    .locator(`[data-xyle-node="${nodeId}"]`)
-    .click();
+  await page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${nodeId}"]`).click();
 }
 
 /** Click-to-edit a candidate and wait until it becomes contenteditable. */

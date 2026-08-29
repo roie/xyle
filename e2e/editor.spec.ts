@@ -409,7 +409,9 @@ test.describe("editing affordances", () => {
     expect(ops.map((entry) => entry.op.type)).toEqual(["href"]);
   });
 
-  test("inline editor keeps ownership across real pointer and focus transfer", async ({ page }, info) => {
+  test("inline editor keeps ownership across real pointer and focus transfer", async ({
+    page,
+  }, info) => {
     await loginAndOpenEditor(page, "/index.html");
     const link = page.frameLocator("#xyle-preview").locator("a.cta");
     await link.click();

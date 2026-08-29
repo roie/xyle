@@ -2709,13 +2709,20 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
       tools.append(orderTools);
     }
 
+    const parent = section.parentElement;
+    const siblings = parent ? sectionChildren(parent) : [];
+    const structuralIntegrity = !!parent && siblings.length === parent.children.length;
+    const structuralReason = "Section actions require supported sibling sections";
     const duplicate = document.createElement("button");
     duplicate.type = "button";
     duplicate.textContent = "Duplicate section";
-    duplicate.addEventListener("click", () => {
-      duplicateSection(meta.id);
-      closeContextTools(false);
-    });
+    duplicate.disabled = !structuralIntegrity;
+    if (!structuralIntegrity) duplicate.title = structuralReason;
+    else
+      duplicate.addEventListener("click", () => {
+        duplicateSection(meta.id);
+        closeContextTools(false);
+      });
     tools.append(duplicate);
 
     const visibility = document.createElement("button");
@@ -2727,17 +2734,19 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
     });
     tools.append(visibility);
 
-    const siblings = sectionChildren(section.parentElement!);
     const index = siblings.indexOf(section);
     const addMove = (label: string, target: HTMLElement | undefined, before: boolean): void => {
       if (!target) return;
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = label;
-      button.addEventListener("click", () => {
-        moveSection(meta.id, target.getAttribute("data-xyle-node")!, before);
-        closeContextTools(false);
-      });
+      button.disabled = !structuralIntegrity;
+      if (!structuralIntegrity) button.title = structuralReason;
+      else
+        button.addEventListener("click", () => {
+          moveSection(meta.id, target.getAttribute("data-xyle-node")!, before);
+          closeContextTools(false);
+        });
       tools.append(button);
     };
     addMove("Move up", siblings[index - 1], true);
@@ -3086,12 +3095,7 @@ function onPaste(event: ClipboardEvent): void {
 
 function onKeyDown(event: KeyboardEvent): void {
   if (!session) return;
-  if (
-    event.key.length === 1 &&
-    !event.ctrlKey &&
-    !event.metaKey &&
-    !event.altKey
-  ) {
+  if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
     rememberNonCollapsedSelection();
     pendingKeyboardSelection = lastNonCollapsedSelection?.cloneRange() ?? null;
     if (pendingKeyboardSelection) {
@@ -3745,7 +3749,12 @@ function toolbarExclusionRects(): ViewportRect[] {
 }
 
 function rectanglesOverlap(left: ViewportRect, right: ViewportRect): boolean {
-  return left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top;
+  return (
+    left.left < right.right &&
+    left.right > right.left &&
+    left.top < right.bottom &&
+    left.bottom > right.top
+  );
 }
 
 function positionContextTools(
@@ -3789,23 +3798,32 @@ function positionContextTools(
     height,
   });
   const usable = candidates.find(
-    (candidate) => inViewport(candidate) && !obstacles.some((obstacle) => rectanglesOverlap(toRect(candidate), obstacle)),
+    (candidate) =>
+      inViewport(candidate) &&
+      !obstacles.some((obstacle) => rectanglesOverlap(toRect(candidate), obstacle)),
   );
   let chosen = usable ?? candidates[0] ?? { left: centeredLeft, top: below };
   if (!usable) {
     const clamped = candidates.map((candidate) => ({
-      left: Math.min(Math.max(candidate.left, margin), Math.max(margin, viewportWidth - width - margin)),
-      top: Math.min(Math.max(candidate.top, margin), Math.max(margin, viewportHeight - height - margin)),
+      left: Math.min(
+        Math.max(candidate.left, margin),
+        Math.max(margin, viewportWidth - width - margin),
+      ),
+      top: Math.min(
+        Math.max(candidate.top, margin),
+        Math.max(margin, viewportHeight - height - margin),
+      ),
     }));
-    chosen = clamped
-      .map((candidate) => ({
-        candidate,
-        overlap: obstacles.reduce(
-          (total, obstacle) => total + (rectanglesOverlap(toRect(candidate), obstacle) ? 1 : 0),
-          0,
-        ),
-      }))
-      .sort((a, b) => a.overlap - b.overlap)[0]?.candidate ?? chosen;
+    chosen =
+      clamped
+        .map((candidate) => ({
+          candidate,
+          overlap: obstacles.reduce(
+            (total, obstacle) => total + (rectanglesOverlap(toRect(candidate), obstacle) ? 1 : 0),
+            0,
+          ),
+        }))
+        .sort((a, b) => a.overlap - b.overlap)[0]?.candidate ?? chosen;
   }
   // Context controls use viewport coordinates because they are fixed overlays.
   // Adding document scroll offsets would double-count scrolling inside srcdoc.
@@ -3825,10 +3843,7 @@ function positionInlineToolEditor(
   const sideLeft = targetRect.right + 8;
   const side = {
     left: sideLeft,
-    top: Math.min(
-      Math.max(targetRect.top, 8),
-      Math.max(8, viewportHeight - toolRect.height - 8),
-    ),
+    top: Math.min(Math.max(targetRect.top, 8), Math.max(8, viewportHeight - toolRect.height - 8)),
   };
   const sideRect: ViewportRect = {
     ...side,
@@ -5996,11 +6011,7 @@ function duplicateGroupItem(
     if (nodeId && sourceNodeIds.has(nodeId)) element.dataset.xyleNode = sourceNodeIds.get(nodeId)!;
     for (const attribute of STRUCTURAL_ID_REFERENCE_ATTRIBUTES) {
       const value = element.getAttribute(attribute);
-      if (value)
-        element.setAttribute(
-          attribute,
-          rewriteIdTokens(value, idMap),
-        );
+      if (value) element.setAttribute(attribute, rewriteIdTokens(value, idMap));
     }
     const href = element.getAttribute("href");
     if (href?.startsWith("#") && idMap.has(href.slice(1)))
@@ -7896,7 +7907,8 @@ function displayNameForGroupItem(pagePath: string, groupId: string, itemId: stri
 function sectionMoveDirection(op: Extract<Op, { type: "moveSection" }>): "earlier" | "later" {
   const element = currentNodeElement(op.nodeId);
   const parent = element?.parentElement;
-  const currentIndex = element && parent ? sectionChildren(parent).indexOf(element) : op.originalIndex;
+  const currentIndex =
+    element && parent ? sectionChildren(parent).indexOf(element) : op.originalIndex;
   return currentIndex < op.originalIndex ? "earlier" : "later";
 }
 

@@ -2599,7 +2599,7 @@ export async function patchHtml(
           baseDigest: await digestBytes(encoder.encode(sourceMarkup)),
           operations: createdOperations,
         },
-        options,
+        { ...options, layoutAssetRequired: false },
       );
       finalMarkup = new TextDecoder("utf-8", { fatal: true }).decode(createdBytes);
     }
@@ -2699,7 +2699,7 @@ export async function patchHtml(
         baseDigest: await digestBytes(encoder.encode(sourceMarkup)),
         operations: snapshotOperations,
       },
-      options,
+      { ...options, layoutAssetRequired: false },
     );
     let finalMarkup = new TextDecoder("utf-8", { fatal: true }).decode(snapshotBytes);
     const createdToLocalMap = new Map<string, string>();
@@ -2720,7 +2720,7 @@ export async function patchHtml(
           baseDigest: await digestBytes(encoder.encode(finalMarkup)),
           operations: createdOperations,
         },
-        options,
+        { ...options, layoutAssetRequired: false },
       );
       finalMarkup = new TextDecoder("utf-8", { fatal: true }).decode(createdBytes);
     }
@@ -2858,7 +2858,7 @@ export async function patchHtml(
                   baseDigest: await digestBytes(encoder.encode(sourceMarkup)),
                   operations: contentOperations,
                 },
-                options,
+                { ...options, layoutAssetRequired: false },
               )
             : encoder.encode(sourceMarkup);
         sourceMarkups.set(

@@ -15,9 +15,7 @@ test("discovers and duplicates a source-backed Group item through the human UI",
   expect(firstItemId).toBeTruthy();
   await items.first().focus();
   await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
-  await page
-    .locator(".xyle-group-item-tools button", { hasText: "Duplicate item" })
-    .click();
+  await page.locator(".xyle-group-item-tools button", { hasText: "Duplicate item" }).click();
   await expect(items).toHaveCount(3, { timeout: 10_000 });
 
   const createdId = await page.evaluate((sourceId) => {
@@ -100,7 +98,7 @@ test("discovers and duplicates a source-backed Group item through the human UI",
   await page.locator("#xyle-changes").click();
   const groupChange = page.locator('.xyle-change-row[aria-label*="Duplicate Group item"]').first();
   await expect(groupChange.locator(".xyle-change-type")).toHaveText("Group item");
-  await expect(groupChange).toContainText('Duplicated “Leaks”');
+  await expect(groupChange).toContainText("Duplicated “Leaks”");
   await expect(groupChange).not.toContainText("service-a");
   await page.locator("#xyle-changes-close").click();
 
@@ -143,9 +141,7 @@ test("moves an edited source-backed Group item through the human UI", async ({ p
 
   await items.nth(1).focus();
   await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
-  await page
-    .locator(".xyle-group-item-tools button", { hasText: "Move earlier" })
-    .click();
+  await page.locator(".xyle-group-item-tools button", { hasText: "Move earlier" }).click();
   await expect
     .poll(() => items.evaluateAll((elements) => elements.map((item) => item.textContent)))
     .toEqual([expect.stringContaining("Moved service"), expect.stringContaining("Leaks")]);

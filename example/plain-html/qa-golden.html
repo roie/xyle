@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="style-src 'self'" />
+    <meta
+      name="description"
+      content="A realistic Riverbend service page for complete editor QA."
+    />
+    <title>Riverbend QA service page</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/qa-golden.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/">Riverbend Plumbing</a>
+        <nav aria-label="Main navigation">
+          <a href="/qa-golden.html" aria-current="page">QA page</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="qa-main">
+      <section id="qa-intro" aria-labelledby="qa-intro-title">
+        <p class="eyebrow">Complete editor QA</p>
+        <h1 id="qa-intro-title">Practical plumbing help</h1>
+        <p>
+          Calm, capable service with <strong>bold workmanship</strong>,
+          <em>careful explanations</em>, and <u>clear next steps</u>.<br />
+          Licensed work for Edmonton homes.
+        </p>
+        <p>
+          Read our <a href="/about.html">service promise</a> before you call.
+        </p>
+        <img src="/assets/hero-wide.webp" alt="Plumber repairing pipes" />
+        <img
+          class="qa-small-image"
+          src="/assets/hero-fallback.jpg"
+          alt="Small service detail"
+        />
+        <img src="/assets/qa-mark.svg" alt="Riverbend mark" />
+        <picture class="qa-unsupported">
+          <source srcset="/assets/hero-wide.webp 1200w" />
+          <img
+            src="/assets/hero-fallback.jpg"
+            alt="Responsive service preview"
+          />
+        </picture>
+      </section>
+
+      <section
+        id="qa-layout"
+        class="qa-layout"
+        aria-labelledby="qa-layout-title"
+      >
+        <div class="qa-layout-copy">
+          <h2 id="qa-layout-title">Two useful regions</h2>
+          <p>Every visit starts with a clear plan.</p>
+        </div>
+        <div class="qa-layout-image">
+          <img src="/assets/hero-fallback.jpg" alt="Tools ready for the job" />
+        </div>
+      </section>
+
+      <section id="qa-duplicate" aria-labelledby="qa-duplicate-title">
+        <h2 id="qa-duplicate-title">A section worth repeating</h2>
+        <p>We leave the workspace clean and the next step clear.</p>
+      </section>
+
+      <section id="qa-services" aria-labelledby="qa-services-title">
+        <h2 id="qa-services-title">Service cards</h2>
+        <div class="qa-cards">
+          <article id="qa-card-a" aria-labelledby="qa-card-a-title">
+            <h3 id="qa-card-a-title">Leaks</h3>
+            <p>Fast fixture repairs.</p>
+          </article>
+          <article id="qa-card-b" aria-labelledby="qa-card-b-title">
+            <h3 id="qa-card-b-title">Heating</h3>
+            <p>Reliable hot water service.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="qa-references" aria-labelledby="qa-references-title">
+        <h2 id="qa-references-title">Accessible details</h2>
+        <div
+          id="qa-details"
+          aria-labelledby="qa-references-title qa-details-label"
+          aria-describedby="qa-details-description"
+          aria-controls="qa-details-active qa-details-list"
+          aria-owns="qa-details-active"
+          aria-activedescendant="qa-details-active"
+          form="qa-details-form"
+          list="qa-details-list"
+          headers="qa-references-title"
+        >
+          <label id="qa-details-label" for="qa-details">Details</label>
+          <span id="qa-details-description"
+            >Service details are available.</span
+          >
+          <span id="qa-details-active">Current detail</span>
+          <a href="#qa-details">View details</a>
+        </div>
+        <div id="qa-details-form"></div>
+        <div id="qa-details-list"></div>
+      </section>
+    </main>
+    <aside class="qa-unsafe" aria-label="Unsupported example">
+      <h2>Not an editable structure</h2>
+      <form>
+        <label for="qa-email">Email</label><input id="qa-email" name="email" />
+      </form>
+    </aside>
+  </body>
+</html>
