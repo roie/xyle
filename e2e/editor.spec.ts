@@ -290,6 +290,7 @@ test.describe("chrome layout rules", () => {
       const el = doc.querySelector(`[data-xyle-node="${nodeId}"]`)!;
       const directText = [...el.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE);
       const last = directText.at(-1)!;
+      (el as HTMLElement).focus();
       const range = doc.createRange();
       range.selectNodeContents(last);
       const selection = win.getSelection()!;
@@ -405,6 +406,22 @@ test.describe("editing affordances", () => {
         [],
     );
     expect(ops.map((entry) => entry.op.type)).toEqual(["href"]);
+  });
+
+  test("inline editor keeps ownership across real pointer and focus transfer", async ({ page }, info) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const link = page.frameLocator("#xyle-preview").locator("a.cta");
+    await link.click();
+    await page.getByRole("button", { name: "Edit URL" }).click();
+
+    const panel = page.locator(".xyle-link-tools");
+    const input = panel.locator("input[name=href]");
+    await input.focus();
+    await input.fill(`/about.html?pointer=${info.project.name}`);
+    await panel.getByRole("button", { name: "Save" }).hover();
+    await expect(panel).toBeVisible();
+    await panel.getByRole("button", { name: "Save" }).click();
+    await expect(link).toHaveAttribute("href", `/about.html?pointer=${info.project.name}`);
   });
 
   test("link panel can cancel after rejecting an invalid destination", async ({ page }) => {

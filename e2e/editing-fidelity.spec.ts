@@ -64,6 +64,59 @@ test.describe("editing fidelity gate", () => {
     await commitAndAssertOp("XYZ");
   });
 
+  test("keyboard spaces survive plain text publish and reload", async () => {
+    const id = await findNodeByText(page, "Our licensed journeymen");
+    await editNode(page, id!);
+    await focusCaret(page, id!, "end");
+    await page.keyboard.type(" hello world");
+    await clickOutsideToCommit(page);
+
+    expect((await editorText(page, id!)).endsWith(" hello world")).toBe(true);
+    const op = await textOpFor(page);
+    expect(op?.value.endsWith(" hello world")).toBe(true);
+
+    await page.click("#xyle-publish");
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    expect(await (await page.request.get(ABOUT)).text()).toContain("hello world");
+    await page.goto(`/edit?page=${encodeURIComponent(ABOUT)}`);
+    await expect(page.locator("#xyle-preview")).toBeVisible();
+    const reloadedId = await findNodeByText(page, "hello world");
+    expect((await editorText(page, reloadedId!)).endsWith(" hello world")).toBe(true);
+  });
+
+  test("keyboard spaces survive inline formatting boundaries", async () => {
+    const id = await findNodeByText(page, "We are a");
+    await editNode(page, id!);
+    await page.evaluate((nodeId) => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const container = frame.contentDocument!.querySelector(
+        `[data-xyle-node="${nodeId}"]`,
+      ) as HTMLElement;
+      const strong = container.querySelector("strong")!;
+      container.focus();
+      const range = frame.contentDocument!.createRange();
+      range.selectNodeContents(strong);
+      const selection = frame.contentWindow!.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }, id);
+    await page.keyboard.type("foo bar");
+    await clickOutsideToCommit(page);
+
+    expect(await nodeHtml(page, id!)).toContain("<strong>foo bar</strong>");
+  });
+
+  test("keyboard spaces preserve meaningful leading and trailing text", async () => {
+    const id = await findNodeByText(page, "The river valley is part of our route.");
+    await editNode(page, id!);
+    await focusCaret(page, id!, "end");
+    await page.keyboard.type(" hello world ");
+    await clickOutsideToCommit(page);
+
+    expect((await editorText(page, id!)).endsWith(" hello world ")).toBe(true);
+    expect((await textOpFor(page))?.value.endsWith(" hello world ")).toBe(true);
+  });
+
   test("Backspace removes last character", async () => {
     const id = await findNodeByText(page, "Riverbend Plumbing started");
     await editNode(page, id!);

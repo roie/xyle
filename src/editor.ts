@@ -1810,7 +1810,10 @@ function wirePreview(): void {
   if (doc.body.dataset.xyleWired === "true") return;
   doc.body.dataset.xyleWired = "true";
   doc.defaultView?.addEventListener("scroll", scheduleOverlayRefresh, { passive: true });
-  doc.addEventListener("selectionchange", scheduleFormatTools);
+  doc.addEventListener("selectionchange", () => {
+    rememberNonCollapsedSelection();
+    scheduleFormatTools();
+  });
   doc.addEventListener(
     "pointerdown",
     () => {
@@ -1852,7 +1855,9 @@ function wirePreview(): void {
       const targetNode = targetElement?.closest?.("[data-xyle-node]") as HTMLElement | null;
       const targetNodeId = targetNode?.getAttribute("data-xyle-node");
       const activeNodeId = activeToolsTarget?.getAttribute("data-xyle-node");
-      if (activeTools && targetNodeId !== activeNodeId) closeContextTools(false);
+      if (activeTools && targetNodeId !== activeNodeId && !toolbarIsInline()) {
+        closeContextTools(false);
+      }
       if (selectedImage && targetElement !== selectedImage.el && targetNodeId !== activeNodeId) {
         hideImageTools(selectedImage.el);
         selectedImage = null;
@@ -1907,8 +1912,12 @@ const controlledBreaks = new WeakSet<HTMLBRElement>();
 let showEditables = false;
 
 type InteractionMode = "idle" | "hover" | "editing" | "popover" | "drawer";
+type ToolbarPhase = "idle" | "hovered" | "selected" | "active" | "inline";
 
 let interactionMode: InteractionMode = "idle";
+let toolbarPhase: ToolbarPhase = "idle";
+let toolbarGeneration = 0;
+let toolbarActionInProgress = false;
 let hoveredCandidate: HTMLElement | null = null;
 let hoverClearTimer = 0;
 let contextToolsCloseTimer = 0;
@@ -1920,12 +1929,30 @@ let activeToolsPlacement: ContextToolPlacement = "below";
 let formatToolsFrame = 0;
 let savedFormatSelection: FormatSelection | null = null;
 
+function toolbarOwnsInteraction(): boolean {
+  return (
+    toolbarPhase === "active" ||
+    toolbarPhase === "inline" ||
+    Boolean(activeTools?.matches("[data-xyle-editing-alt], [data-xyle-editing-url]"))
+  );
+}
+
+function toolbarIsInline(): boolean {
+  return (
+    toolbarPhase === "inline" ||
+    Boolean(activeTools?.matches("[data-xyle-editing-alt], [data-xyle-editing-url]"))
+  );
+}
+
 function setInteractionMode(mode: InteractionMode): void {
   interactionMode = mode;
 }
 
 function beginCandidateHover(el: HTMLElement): void {
   window.clearTimeout(hoverClearTimer);
+  // A toolbar or inline editor owns the interaction until it explicitly closes.
+  // Do not let a nested candidate steal that ownership while the pointer moves.
+  if (toolbarActionInProgress || toolbarOwnsInteraction()) return;
   if (activeToolsTarget && activeToolsTarget !== el) closeContextTools(false);
   if (hoveredCandidate && hoveredCandidate !== el) {
     hoveredCandidate.classList.remove("xyle-hover");
@@ -1933,18 +1960,23 @@ function beginCandidateHover(el: HTMLElement): void {
   hoveredCandidate = el;
   el.classList.add("xyle-hover");
   el.setAttribute("data-xyle-generated-hover", "");
+  toolbarPhase = "hovered";
   if (!session && !activeTools) setInteractionMode("hover");
   refreshEditabilityOverlay();
 }
 
 function endCandidateHover(el: HTMLElement): void {
   window.clearTimeout(hoverClearTimer);
+  if (activeToolsTarget === el || toolbarOwnsInteraction()) return;
   hoverClearTimer = window.setTimeout(() => {
     if (hoveredCandidate !== el || activeToolsTarget === el || session?.el === el) return;
     el.classList.remove("xyle-hover");
     el.removeAttribute("data-xyle-generated-hover");
     hoveredCandidate = null;
-    if (!session && !activeTools) setInteractionMode("idle");
+    if (!session && !activeTools) {
+      toolbarPhase = "idle";
+      setInteractionMode("idle");
+    }
     refreshEditabilityOverlay();
   }, 140);
 }
@@ -1953,12 +1985,14 @@ function closeContextTools(restoreFocus = true): void {
   window.cancelAnimationFrame(formatToolsFrame);
   window.clearTimeout(contextToolsCloseTimer);
   formatToolsFrame = 0;
+  toolbarGeneration += 1;
   if (activeTools) activeTools.remove();
   activeTools = null;
   const target = activeToolsReturnFocus ?? activeToolsTarget;
   activeToolsTarget = null;
   activeToolsReturnFocus = null;
   activeToolsPlacement = "below";
+  toolbarPhase = "idle";
   if (!session) setInteractionMode("idle");
   refreshEditabilityOverlay();
   if (restoreFocus && target?.isConnected) target.focus();
@@ -1974,18 +2008,30 @@ function registerContextTools(
   activeToolsTarget = target;
   activeToolsReturnFocus = target;
   activeToolsPlacement = placement;
+  toolbarPhase = "selected";
   setInteractionMode("popover");
+  const generation = toolbarGeneration;
   tools.addEventListener("mouseenter", () => {
+    if (activeTools !== tools || toolbarGeneration !== generation) return;
+    toolbarPhase = toolbarIsInline() ? "inline" : "active";
     window.clearTimeout(hoverClearTimer);
     window.clearTimeout(contextToolsCloseTimer);
   });
-  tools.addEventListener("mouseleave", () => scheduleContextToolsClose(target));
+  tools.addEventListener("focusin", () => {
+    if (activeTools !== tools || toolbarGeneration !== generation) return;
+    toolbarPhase = toolbarIsInline() ? "inline" : "active";
+    window.clearTimeout(hoverClearTimer);
+    window.clearTimeout(contextToolsCloseTimer);
+  });
+  tools.addEventListener("mouseleave", () => scheduleContextToolsClose(target, generation));
   tools.addEventListener("focusout", () => {
     window.setTimeout(() => {
       if (
         activeTools === tools &&
+        toolbarGeneration === generation &&
         !tools.matches(":focus-within") &&
         !tools.matches(":hover") &&
+        !toolbarIsInline() &&
         !session
       ) {
         closeContextTools(false);
@@ -1995,11 +2041,17 @@ function registerContextTools(
   refreshEditabilityOverlay();
 }
 
-function scheduleContextToolsClose(target: HTMLElement): void {
-  if (activeTools?.matches("[data-xyle-editing-alt], [data-xyle-editing-url]")) return;
+function scheduleContextToolsClose(target: HTMLElement, generation = toolbarGeneration): void {
+  if (toolbarIsInline()) return;
   window.clearTimeout(contextToolsCloseTimer);
   contextToolsCloseTimer = window.setTimeout(() => {
-    if (activeToolsTarget === target && !activeTools?.matches(":hover") && !session) {
+    if (
+      toolbarGeneration === generation &&
+      activeToolsTarget === target &&
+      !toolbarIsInline() &&
+      !activeTools?.matches(":hover") &&
+      !session
+    ) {
       closeContextTools(false);
     }
   }, 180);
@@ -2095,7 +2147,7 @@ function moveGroupItem(
 }
 
 function showGroupItemTools(item: HTMLElement, itemDescriptor: GroupItemDescriptor): void {
-  if (session) return;
+  if (session || (toolbarIsInline() && activeToolsTarget !== item)) return;
   const overlay = shellOverlay();
   if (!overlay) return;
   const groupId = item.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
@@ -2161,7 +2213,7 @@ function wireGroupItemMarker(el: HTMLElement): void {
     const groupId = el.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
     const itemId = el.dataset.xyleGroupItem;
     const item = groupId && itemId ? groupItemForId(groupId, itemId) : undefined;
-    if (groupId && item) showGroupItemTools(el, item);
+    if (groupId && item && !toolbarOwnsInteraction()) showGroupItemTools(el, item);
   };
   el.addEventListener("pointerdown", (event) => {
     const target = event.target as Element | null;
@@ -2170,7 +2222,7 @@ function wireGroupItemMarker(el: HTMLElement): void {
   });
   el.addEventListener("focus", showTools);
   el.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
+    if (session || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
     showTools();
   });
@@ -2204,7 +2256,7 @@ function wireSection(el: HTMLElement, meta: NodeMeta): void {
     if (event.target === el) showSectionTools(el, meta);
   });
   el.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
+    if (session || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
     showSectionTools(el, meta, true);
   });
@@ -2592,7 +2644,7 @@ function restoreLayoutToDom(pagePath: string, target: LayoutTargetDescriptor): v
 }
 
 function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = false): void {
-  if (!session) {
+  if (!session && (!toolbarIsInline() || activeToolsTarget === section)) {
     const overlay = shellOverlay();
     if (!overlay) return;
     const tools = document.createElement("div");
@@ -2783,10 +2835,15 @@ interface EditSession {
   baselineHtml: string;
   baselineSkeleton: string;
   baselineAuthoredBreakCount: number;
+  baselineStartsWithNbsp: boolean;
+  baselineEndsWithNbsp: boolean;
   authoredContentEditable: string | null;
 }
 
 let session: EditSession | null = null;
+let pendingKeyboardSelection: Range | null = null;
+let lastNonCollapsedSelection: Range | null = null;
+let blockSelectionCapture = false;
 
 const SKIP_TAGS = new Set([
   "script",
@@ -2973,6 +3030,8 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
     baselineHtml,
     baselineSkeleton: skeleton(el),
     baselineAuthoredBreakCount: authoredBreakCount(el),
+    baselineStartsWithNbsp: (el.textContent ?? "").startsWith("\u00a0"),
+    baselineEndsWithNbsp: (el.textContent ?? "").endsWith("\u00a0"),
     authoredContentEditable: el.getAttribute("contenteditable"),
   };
   const activeSession = session;
@@ -2993,7 +3052,7 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
   el.addEventListener("beforeinput", onBeforeInput);
   el.addEventListener("input", onInput);
   el.addEventListener("keydown", onKeyDown);
-  el.addEventListener("keyup", scheduleFormatTools);
+  el.addEventListener("keyup", onKeyUp);
   el.addEventListener("mouseup", scheduleFormatTools);
   el.addEventListener("paste", onPaste, true);
   scheduleFormatTools();
@@ -3021,9 +3080,30 @@ function onPaste(event: ClipboardEvent): void {
 
 function onKeyDown(event: KeyboardEvent): void {
   if (!session) return;
+  if (
+    event.key.length === 1 &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey
+  ) {
+    rememberNonCollapsedSelection();
+    pendingKeyboardSelection = lastNonCollapsedSelection?.cloneRange() ?? null;
+    if (pendingKeyboardSelection) {
+      lastNonCollapsedSelection = null;
+      blockSelectionCapture = true;
+    }
+  }
   if (event.key === "Escape") {
     event.preventDefault();
     revertEdit();
+    return;
+  }
+  if (event.key === " ") {
+    event.preventDefault();
+    // Native contenteditable handling turns boundary spaces into NBSP and
+    // anchor/ancestor handlers may consume the key. Insert the literal space
+    // through the same plain-text path used by paste instead.
+    insertKeyboardText(" ");
     return;
   }
   if (event.key === "Enter") {
@@ -3355,8 +3435,78 @@ function scheduleFormatTools(): void {
   });
 }
 
+function normalizeInsertedBoundarySpaces(activeSession: EditSession): void {
+  const text = activeSession.el.textContent ?? "";
+  const nodes = formattingTextNodes(activeSession.el).filter((node) => node.length > 0);
+  if (!nodes.length) return;
+  const first = nodes[0];
+  const last = nodes[nodes.length - 1];
+  if (!first || !last) return;
+  if (!activeSession.baselineStartsWithNbsp && text.startsWith("\u00a0")) {
+    first.data = first.data.replace(/^\u00a0/, " ");
+  }
+  if (!activeSession.baselineEndsWithNbsp && text.endsWith("\u00a0")) {
+    last.data = last.data.replace(/\u00a0$/, " ");
+  }
+}
+
+function rememberNonCollapsedSelection(): void {
+  if (blockSelectionCapture) return;
+  if (!session) {
+    lastNonCollapsedSelection = null;
+    return;
+  }
+  const selection = previewSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return;
+  }
+  const range = selection.getRangeAt(0);
+  if (session.el.contains(range.startContainer) && session.el.contains(range.endContainer)) {
+    lastNonCollapsedSelection = range.cloneRange();
+  }
+}
+
+function restorePendingKeyboardSelection(): void {
+  if (!pendingKeyboardSelection) return;
+  const selection = previewSelection();
+  if (selection && session) {
+    session.el.focus({ preventScroll: true });
+    selection.removeAllRanges();
+    selection.addRange(pendingKeyboardSelection);
+  }
+  pendingKeyboardSelection = null;
+}
+
+function insertKeyboardText(value: string): void {
+  if (!pendingKeyboardSelection) {
+    iframe.contentWindow?.document.execCommand("insertText", false, value);
+    return;
+  }
+  restorePendingKeyboardSelection();
+  insertPlainTextAtSelection(value);
+}
+
+function insertPlainTextAtSelection(value: string): void {
+  const selection = previewSelection();
+  if (!selection || selection.rangeCount === 0) return;
+  const range = selection.getRangeAt(0);
+  const doc = range.startContainer.ownerDocument;
+  if (!doc) return;
+  const text = doc.createTextNode(value);
+  range.deleteContents();
+  range.insertNode(text);
+  selection.removeAllRanges();
+  selection.collapse(text, text.length);
+  validateStructure();
+}
+
 function onBeforeInput(event: InputEvent): void {
   if (!session) return;
+  if (event.inputType === "insertText" && event.data && !event.isComposing) {
+    event.preventDefault();
+    insertKeyboardText(event.data);
+    return;
+  }
   switch (event.inputType) {
     case "insertParagraph":
     case "insertLineBreak":
@@ -3439,7 +3589,14 @@ function onBeforeInput(event: InputEvent): void {
   }
 }
 
+function onKeyUp(): void {
+  blockSelectionCapture = false;
+  scheduleFormatTools();
+}
+
 function onInput(_event: Event): void {
+  pendingKeyboardSelection = null;
+  lastNonCollapsedSelection = null;
   if (!session) return;
   validateStructure();
 }
@@ -3473,6 +3630,7 @@ function revertEdit(): void {
 
 function commitEdit(): void {
   if (!session) return;
+  normalizeInsertedBoundarySpaces(session);
   const currentPairs = collectSegments(session.el);
   const changed = currentPairs.some((pair, i) => pair.value !== session?.baselineValues[i]);
   endEdit(changed);
@@ -3483,7 +3641,7 @@ function endEdit(recordChanges: boolean): void {
   s.el.removeEventListener("beforeinput", onBeforeInput);
   s.el.removeEventListener("input", onInput);
   s.el.removeEventListener("keydown", onKeyDown);
-  s.el.removeEventListener("keyup", scheduleFormatTools);
+  s.el.removeEventListener("keyup", onKeyUp);
   s.el.removeEventListener("mouseup", scheduleFormatTools);
   s.el.removeEventListener("paste", onPaste, true);
   if (activeTools?.classList.contains("xyle-format-tools")) closeContextTools(false);
@@ -3535,6 +3693,9 @@ function endEdit(recordChanges: boolean): void {
     }
   }
   session = null;
+  pendingKeyboardSelection = null;
+  lastNonCollapsedSelection = null;
+  blockSelectionCapture = false;
   savedFormatSelection = null;
   setInteractionMode(activeTools ? "popover" : hoveredCandidate ? "hover" : "idle");
   updateDirtyUi();
@@ -3550,13 +3711,35 @@ function wireLink(el: HTMLElement, meta: NodeMeta): void {
     showLinkTools(el as HTMLAnchorElement, meta, event.type === "keydown");
   };
   el.addEventListener("mouseenter", () => {
-    if (!session) showLinkTools(el as HTMLAnchorElement, meta);
+    if (!session && !toolbarOwnsInteraction()) showLinkTools(el as HTMLAnchorElement, meta);
   });
   el.addEventListener("mouseleave", () => scheduleContextToolsClose(el));
   el.addEventListener("click", show);
   el.addEventListener("keydown", (event) => {
     if (!session && (event.key === "Enter" || event.key === " ")) show(event);
   });
+}
+
+function toolbarExclusionRects(): ViewportRect[] {
+  const dock = document.getElementById("xyle-control-dock");
+  if (!dock) return [];
+  const rect = dock.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return [];
+  const padding = 8;
+  return [
+    {
+      left: Math.max(0, rect.left - padding),
+      top: Math.max(0, rect.top - padding),
+      right: Math.min(document.documentElement.clientWidth, rect.right + padding),
+      bottom: Math.min(document.documentElement.clientHeight, rect.bottom + padding),
+      width: rect.width + padding * 2,
+      height: rect.height + padding * 2,
+    },
+  ];
+}
+
+function rectanglesOverlap(left: ViewportRect, right: ViewportRect): boolean {
+  return left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top;
 }
 
 function positionContextTools(
@@ -3568,33 +3751,60 @@ function positionContextTools(
   const viewportWidth = document.documentElement.clientWidth;
   const viewportHeight = document.documentElement.clientHeight;
   const toolRect = tools.getBoundingClientRect();
-  const maxLeft = Math.max(8, viewportWidth - toolRect.width - 8);
-  const left = Math.min(Math.max(targetRect.left, 8), maxLeft);
-  const fitsComfortablyInside = targetRect.height >= toolRect.height * 2;
-  const above = targetRect.top - toolRect.height - 6;
+  const margin = 8;
+  const width = toolRect.width;
+  const height = toolRect.height;
+  const centeredLeft = targetRect.left + (targetRect.width - width) / 2;
+  const centeredTop = targetRect.top + (targetRect.height - height) / 2;
+  const candidates: Array<{ left: number; top: number }> = [];
+  const inside = targetRect.bottom - height - 6;
+  const above = targetRect.top - height - 6;
   const below = targetRect.bottom + 6;
-  let top = below;
-  if (placement === "inside-bottom" && fitsComfortablyInside) {
-    top = targetRect.bottom - toolRect.height - 6;
-  } else if (placement === "above") {
-    const candidates = [above, below];
-    top =
-      candidates.find(
-        (candidate) =>
-          candidate >= 8 &&
-          candidate + toolRect.height <= viewportHeight - 8 &&
-          (!avoidRect ||
-            candidate + toolRect.height <= avoidRect.top ||
-            candidate >= avoidRect.bottom),
-      ) ?? above;
+  const right = targetRect.right + 8;
+  const left = targetRect.left - width - 8;
+  if (placement === "inside-bottom" && targetRect.height >= height * 2) {
+    candidates.push({ left: centeredLeft, top: inside });
   }
-  if (top < 8 && placement === "above") top = below;
-  if (top + toolRect.height > viewportHeight - 8) top = above;
-  top = Math.min(Math.max(top, 8), Math.max(8, viewportHeight - toolRect.height - 8));
+  const preferred = placement === "below" ? [below, above] : [above, below];
+  for (const top of preferred) candidates.push({ left: centeredLeft, top });
+  candidates.push({ left: right, top: centeredTop }, { left, top: centeredTop });
+
+  const obstacles = [...(avoidRect ? [avoidRect] : []), ...toolbarExclusionRects()];
+  const inViewport = (candidate: { left: number; top: number }): boolean =>
+    candidate.left >= margin &&
+    candidate.top >= margin &&
+    candidate.left + width <= viewportWidth - margin &&
+    candidate.top + height <= viewportHeight - margin;
+  const toRect = (candidate: { left: number; top: number }): ViewportRect => ({
+    ...candidate,
+    right: candidate.left + width,
+    bottom: candidate.top + height,
+    width,
+    height,
+  });
+  const usable = candidates.find(
+    (candidate) => inViewport(candidate) && !obstacles.some((obstacle) => rectanglesOverlap(toRect(candidate), obstacle)),
+  );
+  let chosen = usable ?? candidates[0] ?? { left: centeredLeft, top: below };
+  if (!usable) {
+    const clamped = candidates.map((candidate) => ({
+      left: Math.min(Math.max(candidate.left, margin), Math.max(margin, viewportWidth - width - margin)),
+      top: Math.min(Math.max(candidate.top, margin), Math.max(margin, viewportHeight - height - margin)),
+    }));
+    chosen = clamped
+      .map((candidate) => ({
+        candidate,
+        overlap: obstacles.reduce(
+          (total, obstacle) => total + (rectanglesOverlap(toRect(candidate), obstacle) ? 1 : 0),
+          0,
+        ),
+      }))
+      .sort((a, b) => a.overlap - b.overlap)[0]?.candidate ?? chosen;
+  }
   // Context controls use viewport coordinates because they are fixed overlays.
   // Adding document scroll offsets would double-count scrolling inside srcdoc.
-  tools.style.left = `${left}px`;
-  tools.style.top = `${top}px`;
+  tools.style.left = `${Math.min(Math.max(chosen.left, margin), Math.max(margin, viewportWidth - width - margin))}px`;
+  tools.style.top = `${Math.min(Math.max(chosen.top, margin), Math.max(margin, viewportHeight - height - margin))}px`;
 }
 
 function positionInlineToolEditor(
@@ -3607,18 +3817,33 @@ function positionInlineToolEditor(
   const viewportWidth = document.documentElement.clientWidth;
   const viewportHeight = document.documentElement.clientHeight;
   const sideLeft = targetRect.right + 8;
-  if (sideLeft + toolRect.width <= viewportWidth - 8) {
-    tools.style.left = `${sideLeft}px`;
-    tools.style.top = `${Math.min(
+  const side = {
+    left: sideLeft,
+    top: Math.min(
       Math.max(targetRect.top, 8),
       Math.max(8, viewportHeight - toolRect.height - 8),
-    )}px`;
+    ),
+  };
+  const sideRect: ViewportRect = {
+    ...side,
+    right: side.left + toolRect.width,
+    bottom: side.top + toolRect.height,
+    width: toolRect.width,
+    height: toolRect.height,
+  };
+  if (
+    sideLeft + toolRect.width <= viewportWidth - 8 &&
+    !toolbarExclusionRects().some((obstacle) => rectanglesOverlap(sideRect, obstacle))
+  ) {
+    tools.style.left = `${side.left}px`;
+    tools.style.top = `${side.top}px`;
     return;
   }
   positionContextTools(tools, targetRect, fallback);
 }
 
 function showLinkTools(link: HTMLAnchorElement, meta: NodeMeta, focusFirst = false): void {
+  if (toolbarIsInline() && activeToolsTarget !== link) return;
   const overlay = shellOverlay();
   if (!overlay) return;
   const tools = document.createElement("div");
@@ -3757,11 +3982,24 @@ function openSeoEditor(): void {
   drawer.querySelector<HTMLInputElement>("[name=title]")?.focus();
 }
 
+function returnToSelectedToolbar(target: HTMLElement, reopen: () => void): void {
+  toolbarActionInProgress = true;
+  try {
+    closeContextTools(false);
+    reopen();
+  } finally {
+    toolbarActionInProgress = false;
+  }
+  target.focus();
+}
+
 function openHrefEditor(el: HTMLElement, meta: NodeMeta, tools: HTMLElement): void {
   const currentHref = el.getAttribute("href") ?? "";
   rememberOriginalAttr(meta.pagePath, meta.id, "href", currentHref);
   const internalTarget = resolveInternalPath(currentHref);
   tools.dataset.xyleEditingUrl = "1";
+  toolbarActionInProgress = true;
+  toolbarPhase = "inline";
   tools.replaceChildren(
     document.createRange().createContextualFragment(`
     <form class="xyle-inline-tool-form" novalidate>
@@ -3780,9 +4018,8 @@ function openHrefEditor(el: HTMLElement, meta: NodeMeta, tools: HTMLElement): vo
   hrefInput.value = currentHref;
   const restore = (): void => {
     delete tools.dataset.xyleEditingUrl;
-    closeContextTools(false);
-    showLinkTools(el as HTMLAnchorElement, meta, true);
-    el.focus();
+    toolbarActionInProgress = false;
+    returnToSelectedToolbar(el, () => showLinkTools(el as HTMLAnchorElement, meta, true));
   };
   tools.querySelector<HTMLButtonElement>("[data-cancel]")?.addEventListener("click", restore);
   tools.querySelector("form")?.addEventListener("submit", (event) => {
@@ -3864,7 +4101,7 @@ function wireImage(el: HTMLElement, meta: NodeMeta): void {
     showImageTools(img, meta, event.type === "keydown");
   };
   img.addEventListener("mouseenter", () => {
-    if (!session) showImageTools(img, meta);
+    if (!session && !toolbarOwnsInteraction()) showImageTools(img, meta);
   });
   img.addEventListener("mouseleave", () => scheduleContextToolsClose(img));
   img.addEventListener("click", select);
@@ -4276,6 +4513,7 @@ function openImageCropEditor(
 }
 
 function showImageTools(img: HTMLImageElement, meta: NodeMeta, focusFirst = false): void {
+  if (toolbarIsInline() && activeToolsTarget !== img) return;
   const overlay = shellOverlay();
   if (!overlay) return;
   const tools = document.createElement("div");
@@ -4529,6 +4767,8 @@ function openAltEditor(img: HTMLImageElement, meta: NodeMeta, tools: HTMLElement
   activeMediaEditor?.();
   const existing = img.getAttribute("alt") ?? "";
   tools.dataset.xyleEditingAlt = "1";
+  toolbarActionInProgress = true;
+  toolbarPhase = "inline";
   tools.replaceChildren(
     document.createRange().createContextualFragment(`
     <form class="xyle-inline-tool-form" novalidate>
@@ -4557,9 +4797,8 @@ function openAltEditor(img: HTMLImageElement, meta: NodeMeta, tools: HTMLElement
     }
     if (activeMediaEditor === cancel) activeMediaEditor = null;
     delete tools.dataset.xyleEditingAlt;
-    closeContextTools(false);
-    showImageTools(img, meta, true);
-    img.focus();
+    toolbarActionInProgress = false;
+    returnToSelectedToolbar(img, () => showImageTools(img, meta, true));
   };
   const cancel = (): void => restore(false);
   activeMediaEditor = cancel;
@@ -4927,7 +5166,44 @@ function cleanupUnreachableAssets(includeHistory = true): void {
   }
 }
 
+function operationMatchesAuthoredBaseline(pagePath: string, op: Op): boolean {
+  if (isRichContentOp(op)) {
+    const region =
+      regionForNode(pagePath, richNodeIds(op)[0]!) ?? ensureRichContentRegion(pagePath, op);
+    const doc = pagePath === state.current?.pagePath ? previewDoc() : null;
+    const currentHtml = doc ? serializeRichRegion(doc, region.nodeIds) : "";
+    return Boolean(currentHtml) && currentHtml === region.originalHtml;
+  }
+  if (op.type === "media") {
+    const original = originalMedia.get(segmentIdentity(pagePath, op.nodeId));
+    return !!original && mediaStatesEqual(op.value, original);
+  }
+  if (op.type === "seo") {
+    return originalSeo.get(seoIdentity(pagePath, op.field)) === op.value;
+  }
+  if (op.type === "sectionVisibility") return op.visible === op.before;
+  if (op.type === "setLayoutPreset") return op.preset === op.baseline;
+  if (op.type === "setRegionOrder") return op.order === "original";
+  if (op.type === "moveSection") {
+    const element = currentNodeElement(op.nodeId);
+    const parent = element?.parentElement;
+    return !!element && !!parent && sectionChildren(parent).indexOf(element) === op.originalIndex;
+  }
+  if (op.type === "moveGroupItem") {
+    const group = groupForId(op.groupId);
+    const currentOrder = groupItemsInDom(op.groupId).map((item) => item.id);
+    return !!group && currentOrder.join("\0") === group.items.map((item) => item.id).join("\0");
+  }
+  if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") return false;
+  if (op.type === "href" || op.type === "src" || op.type === "alt") {
+    return originalAttrs.get(attrIdentity(pagePath, op.nodeId, op.type)) === op.value;
+  }
+  return false;
+}
+
 function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null = op): HistoryEntry {
+  const effectivePendingOp =
+    pendingOp && !operationMatchesAuthoredBaseline(pagePath, op) ? pendingOp : null;
   const key = opKey(op);
   const previous = state.ops.find(
     (entry) => entry.pagePath === pagePath && opKey(entry.op) === key,
@@ -4941,12 +5217,12 @@ function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null =
   const revision = ++nextOpRevision;
   opRevisions.set(op, revision);
   pendingRevisions.set(key, revision);
-  replacePendingOp(pagePath, key, pendingOp, changeSet);
+  replacePendingOp(pagePath, key, effectivePendingOp, changeSet);
 
   const isCurrent = (): boolean =>
     pendingRevisions.get(key) === revision &&
-    (pendingOp
-      ? state.ops.some((entry) => entry.pagePath === pagePath && entry.op === pendingOp)
+    (effectivePendingOp
+      ? state.ops.some((entry) => entry.pagePath === pagePath && entry.op === effectivePendingOp)
       : !state.ops.some((entry) => entry.pagePath === pagePath && opKey(entry.op) === key));
   const undo = (): void => {
     if (!isCurrent()) return;
@@ -4960,12 +5236,12 @@ function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null =
   const redo = (): void => {
     if (
       pendingRevisions.get(key) === revision &&
-      (pendingOp
-        ? state.ops.some((entry) => entry.pagePath === pagePath && entry.op === pendingOp)
+      (effectivePendingOp
+        ? state.ops.some((entry) => entry.pagePath === pagePath && entry.op === effectivePendingOp)
         : !state.ops.some((entry) => entry.pagePath === pagePath && opKey(entry.op) === key))
     )
       return;
-    replacePendingOp(pagePath, key, pendingOp, changeSet);
+    replacePendingOp(pagePath, key, effectivePendingOp, changeSet);
     pendingRevisions.set(key, revision);
     applyOpToDom(pagePath, op);
     if (isRichContentOp(op)) {
@@ -7341,10 +7617,16 @@ function buildChrome(): void {
   document.addEventListener(
     "pointerdown",
     (event) => {
-      if (!activeTools) return;
-      const target = event.target as Node;
-      if (activeTools.contains(target)) return;
-      if (target === iframe) return;
+      if (!activeTools || toolbarActionInProgress) return;
+      const path = event.composedPath();
+      if (path.includes(activeTools)) {
+        toolbarPhase = toolbarIsInline() ? "inline" : "active";
+        window.clearTimeout(contextToolsCloseTimer);
+        return;
+      }
+      // Inline editors are modal to their target. An outside pointer may not
+      // silently discard the value; Save, Cancel, or Escape owns the exit.
+      if (toolbarIsInline() || event.target === iframe) return;
       closeContextTools(false);
     },
     true,

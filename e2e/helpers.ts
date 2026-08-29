@@ -135,9 +135,9 @@ export async function setSelection(
       range.setStart(first, Math.min(startOffset ?? 0, first.length));
       range.setEnd(last, Math.min(endOffset ?? last.length, last.length));
     }
+    el.focus();
     selection.removeAllRanges();
     selection.addRange(range);
-    el.focus();
   }, opts);
 }
 
