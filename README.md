@@ -1,6 +1,8 @@
 # Xyle
 
-**Xyle is a visual editor that publishes changes back to static HTML and assets.**
+**Xyle is an open-source visual editor for non-technical owners of static websites.**
+
+Xyle publishes reviewed changes back to the site's HTML and assets.
 
 ```text
 static folder → xyle → /edit → Publish → actual files changed
@@ -18,14 +20,16 @@ normal public pages.
 
 - `/edit` entry with one-owner high-entropy key login
 - click-to-edit existing text in a sandboxed preview (site scripts and forms disabled)
-- controlled `<br>` line breaks in paragraphs; headings reject them
+- safe text editing preserves existing `<br>` structure; new line-break editing is deferred
 - edit link text and destinations (`http(s)`, `mailto:`, `tel:`, relative)
 - replace simple images, edit alt text, browse/upload raster media (`/__media/`)
 - in-memory ChangeSet with undo/redo, per-change Undo, Changes drawer
 - Publish patches the original source bytes narrowly — everything outside an
   edited range stays byte-for-byte identical
 - Discard, stale-session `409 Conflict` handling, first-publish-wins
-- atomic filesystem publisher (reference implementation)
+- atomic filesystem publisher
+- browser-native WebMCP tools for shared human and agent editing
+- safe section visibility, sibling reordering, duplication, Groups, and Layout controls with shared undo/history
 
 ## Quick start
 
@@ -36,12 +40,30 @@ pnpm exec tsx src/cli.ts init example/plain-html   # prints your editor key once
 pnpm exec tsx src/cli.ts dev example/plain-html   # prints the local editor URL
 ```
 
+To run the deterministic Xyle demo:
+
+```bash
+pnpm demo:reset
+pnpm demo:dev
+```
+
+See [demo/README.md](demo/README.md) for first-time setup.
+
+## Edit with an agent
+
+Open Xyle edit mode in a browser with WebMCP support. Ask the agent to inspect
+the page and make the changes you want. The agent uses Xyle's safe editing
+capabilities for content, media, structure, layout, and SEO.
+
+Human and agent edits appear in the same Changes drawer. Review or undo any
+change before you publish. Publishing remains an explicit human action.
+
 Log in at `/edit` with the generated key, make edits, press **Publish**, then
 inspect the files under `example/plain-html/` — the actual HTML changed.
 
 ## What v1 deliberately does not do
 
-No page building, no new sections or pages, no CSS/layout editing, no form or
+No page building, no new sections or pages, no arbitrary CSS editing, no form or
 JS editing, no `picture`/`srcset` editing, no media deletion, no persisted
 drafts (refreshing loses unpublished work — by design), no collaboration, no
 content database.
