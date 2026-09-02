@@ -437,9 +437,9 @@ test.describe("editing affordances", () => {
     await expect(panel).toBeVisible();
     await expect(input).toHaveAttribute("aria-invalid", "true");
     await panel.getByRole("button", { name: "Cancel" }).click();
-    await expect(
-      page.locator(".xyle-link-tools").getByRole("button", { name: "Edit URL" }),
-    ).toBeVisible();
+    const editUrl = page.locator(".xyle-link-tools").getByRole("button", { name: "Edit URL" });
+    await expect(editUrl).toBeVisible();
+    await expect(editUrl).toBeFocused();
     await expect(page.locator(".xyle-link-tools input[name=href]")).toHaveCount(0);
   });
 

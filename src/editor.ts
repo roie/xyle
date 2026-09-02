@@ -2057,6 +2057,7 @@ function scheduleContextToolsClose(target: HTMLElement, generation = toolbarGene
       activeToolsTarget === target &&
       !toolbarIsInline() &&
       !activeTools?.matches(":hover") &&
+      !activeTools?.matches(":focus-within") &&
       !session
     ) {
       closeContextTools(false);
@@ -3863,7 +3864,12 @@ function positionInlineToolEditor(
   positionContextTools(tools, targetRect, fallback);
 }
 
-function showLinkTools(link: HTMLAnchorElement, meta: NodeMeta, focusFirst = false): void {
+function showLinkTools(
+  link: HTMLAnchorElement,
+  meta: NodeMeta,
+  focusFirst = false,
+  focusAction?: "url",
+): void {
   if (toolbarIsInline() && activeToolsTarget !== link) return;
   const overlay = shellOverlay();
   if (!overlay) return;
@@ -3913,7 +3919,9 @@ function showLinkTools(link: HTMLAnchorElement, meta: NodeMeta, focusFirst = fal
   registerContextTools(tools, link, "above");
   overlay.append(tools);
   positionContextTools(tools, previewElementRect(link), "above");
-  if (focusFirst) tools.querySelector("button")?.focus();
+  if (focusFirst) {
+    (focusAction === "url" ? editUrl : tools.querySelector("button"))?.focus();
+  }
 }
 
 let seoDrawerTrigger: HTMLElement | null = null;
@@ -4007,11 +4015,11 @@ function returnToSelectedToolbar(target: HTMLElement, reopen: () => void): void 
   toolbarActionInProgress = true;
   try {
     closeContextTools(false);
+    target.focus({ preventScroll: true });
     reopen();
   } finally {
     toolbarActionInProgress = false;
   }
-  target.focus();
 }
 
 function openHrefEditor(el: HTMLElement, meta: NodeMeta, tools: HTMLElement): void {
@@ -4040,7 +4048,7 @@ function openHrefEditor(el: HTMLElement, meta: NodeMeta, tools: HTMLElement): vo
   const restore = (): void => {
     delete tools.dataset.xyleEditingUrl;
     toolbarActionInProgress = false;
-    returnToSelectedToolbar(el, () => showLinkTools(el as HTMLAnchorElement, meta, true));
+    returnToSelectedToolbar(el, () => showLinkTools(el as HTMLAnchorElement, meta, true, "url"));
   };
   tools.querySelector<HTMLButtonElement>("[data-cancel]")?.addEventListener("click", restore);
   tools.querySelector("form")?.addEventListener("submit", (event) => {
