@@ -279,7 +279,7 @@ test.describe("chrome layout rules", () => {
     expect(html).toContain("behind the wrench.");
   });
 
-  test("authored br segments publish separately or fail closed", async ({ page }, info) => {
+  test("authored br segments publish separately", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/index.html");
     const beforeSource = await (await page.request.get("/index.html")).text();
     const id = await findNodeByText(page, "Serving Edmonton");
@@ -301,10 +301,8 @@ test.describe("chrome layout rules", () => {
     const token = `the authored break ${info.project.name}`;
     await page.keyboard.type(token);
     await clickOutsideCommit(page);
-    if ((await opsCount(page)) === 0) {
-      expect(await (await page.request.get("/index.html")).text()).toBe(beforeSource);
-      return;
-    }
+    await expect.poll(() => opsCount(page)).toBe(1);
+    expect(await (await page.request.get("/index.html")).text()).toBe(beforeSource);
     await page.click("#xyle-publish");
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
 

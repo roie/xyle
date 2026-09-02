@@ -1,6 +1,13 @@
+import { randomInt } from "node:crypto";
 import { defineConfig, devices } from "@playwright/test";
 
-const port = Number(process.env.XYLE_PORT ?? 4173);
+// Playwright reloads this config in worker processes. Store the selected port
+// in the inherited environment so the server controller and workers agree.
+process.env.XYLE_PORT ??= String(randomInt(30_000, 50_000));
+const port = Number(process.env.XYLE_PORT);
+if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+  throw new Error(`Invalid XYLE_PORT: ${process.env.XYLE_PORT ?? port}`);
+}
 const baseURL = `http://127.0.0.1:${port}`;
 
 const webmcpProject = {
@@ -33,7 +40,8 @@ export default defineConfig({
   webServer: {
     command: "node e2e/start-xyle.mts",
     url: `${baseURL}/`,
-    reuseExistingServer: !process.env.CI,
+    env: { XYLE_PORT: String(port) },
+    reuseExistingServer: false,
     timeout: 30_000,
   },
   projects: [
