@@ -321,8 +321,14 @@ test.describe("chrome layout rules", () => {
     await focusCaret(page, id!, "end");
     await page.keyboard.type(publishedToken);
     await clickOutsideCommit(page);
+    const previewBeforePublish = await page.locator("#xyle-preview").elementHandle();
+    if (!previewBeforePublish) throw new Error("Editable preview is unavailable before publish");
     await page.click("#xyle-publish");
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.waitForFunction(
+      (oldPreview) => document.querySelector("#xyle-preview") !== oldPreview,
+      previewBeforePublish,
+    );
 
     await page.waitForFunction((expected) => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
