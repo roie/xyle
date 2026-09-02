@@ -147,10 +147,10 @@ test.describe("WebMCP editor tools", () => {
       preview: string;
     }>;
     const heading = content.find(
-      (item) => item.type === "text" && item.preview === "Plumbing you can depend on",
+      (item) => item.type === "text" && item.preview === "Edit your static site visually",
     );
     const lede = content.find(
-      (item) => item.type === "text" && item.preview.includes("Serving Edmonton"),
+      (item) => item.type === "text" && item.preview.includes("Change this page in place"),
     );
     expect(heading?.id).toBeTruthy();
     expect(lede?.id).toBeTruthy();
@@ -167,8 +167,8 @@ test.describe("WebMCP editor tools", () => {
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
       {
         type: "html",
-        before: expect.stringContaining("Plumbing you can depend on"),
-        after: expect.stringContaining("<strong>Plumbing you can depend on</strong>"),
+        before: expect.stringContaining("Edit your static site visually"),
+        after: expect.stringContaining("<strong>Edit your static site visually</strong>"),
       },
     ]);
     await expect(
@@ -226,13 +226,13 @@ test.describe("WebMCP editor tools", () => {
     });
     await expect(headingLocator).toHaveJSProperty("tagName", "H1");
 
-    const servingStart = await page.evaluate((id) => {
+    const changeStart = await page.evaluate((id) => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
       const element = frame.contentDocument!.querySelector(`[data-xyle-node="${id}"]`)!;
       const firstText = [...element.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
-      return firstText?.textContent?.indexOf("Serving") ?? -1;
+      return firstText?.textContent?.indexOf("Change") ?? -1;
     }, lede!.id);
-    expect(servingStart).toBeGreaterThanOrEqual(0);
+    expect(changeStart).toBeGreaterThanOrEqual(0);
     await editNode(page, lede!.id);
     await page.evaluate(
       ({ id, start }) => {
@@ -243,15 +243,15 @@ test.describe("WebMCP editor tools", () => {
         const text = [...element.childNodes].find((node) => node.nodeType === Node.TEXT_NODE)!;
         const range = frame.contentDocument!.createRange();
         range.setStart(text, start);
-        range.setEnd(text, start + "Serving".length);
+        range.setEnd(text, start + "Change".length);
         const selection = frame.contentWindow!.getSelection()!;
         selection.removeAllRanges();
         selection.addRange(range);
         element.focus();
       },
-      { id: lede!.id, start: servingStart },
+      { id: lede!.id, start: changeStart },
     );
-    await page.keyboard.insertText("Helping");
+    await page.keyboard.insertText("Try");
     await clickOutsideToCommit(page);
 
     await editNode(page, lede!.id);
@@ -263,7 +263,7 @@ test.describe("WebMCP editor tools", () => {
       .frameLocator("#xyle-preview")
       .locator(`[data-xyle-node="${lede!.id}"]`);
     await expect(ledeLocator.locator('strong[data-xyle-format="bold"]').first()).toContainText(
-      "Helping Edmonton",
+      "Try this page in place",
     );
     await ledeLocator.click();
     await page.evaluate((id) => {
@@ -285,7 +285,7 @@ test.describe("WebMCP editor tools", () => {
     }, lede!.id);
     await page.keyboard.insertText("!");
     await clickOutsideToCommit(page);
-    await expect(ledeLocator).toContainText("wait.!");
+    await expect(ledeLocator).toContainText("files.!");
     expect(await opsCount(page)).toBe(2);
   });
 
@@ -304,10 +304,10 @@ test.describe("WebMCP editor tools", () => {
       preview: string;
     }>;
     const heading = content.find(
-      (item) => item.type === "text" && item.preview === "Plumbing you can depend on",
+      (item) => item.type === "text" && item.preview === "Edit your static site visually",
     );
     const lede = content.find(
-      (item) => item.type === "text" && item.preview.includes("Serving Edmonton"),
+      (item) => item.type === "text" && item.preview.includes("Change this page in place"),
     );
     expect(heading?.id).toBeTruthy();
     expect(lede?.id).toBeTruthy();
@@ -320,12 +320,12 @@ test.describe("WebMCP editor tools", () => {
       )!;
       const text = [...element.childNodes].find(
         (node): node is Text =>
-          node.nodeType === Node.TEXT_NODE && !!node.textContent?.includes("areas"),
+          node.nodeType === Node.TEXT_NODE && !!node.textContent?.includes("page"),
       )!;
-      const start = text.data.indexOf("areas");
+      const start = text.data.indexOf("page");
       const range = frame.contentDocument!.createRange();
       range.setStart(text, start);
-      range.setEnd(text, start + "areas".length);
+      range.setEnd(text, start + "page".length);
       const selection = frame.contentWindow!.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
@@ -355,7 +355,7 @@ test.describe("WebMCP editor tools", () => {
     const ledeLocator = page
       .frameLocator("#xyle-preview")
       .locator(`[data-xyle-node="${lede!.id}"]`);
-    await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toHaveText("areas");
+    await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toHaveText("page");
     await expect(
       page.evaluate(() =>
         document.querySelector("#xyle-preview")
@@ -364,7 +364,7 @@ test.describe("WebMCP editor tools", () => {
               .toString()
           : "",
       ),
-    ).resolves.toBe("areas");
+    ).resolves.toBe("page");
     await clickOutsideToCommit(page);
     await editNode(page, heading!.id);
     await focusCaret(page, heading!.id, "end");
@@ -380,7 +380,7 @@ test.describe("WebMCP editor tools", () => {
       const text = [...element.querySelectorAll("strong")]
         .flatMap((strong) => [...strong.childNodes])
         .find(
-          (node): node is Text => node.nodeType === Node.TEXT_NODE && node.textContent === "areas",
+          (node): node is Text => node.nodeType === Node.TEXT_NODE && node.textContent === "page",
         )!;
       const range = frame.contentDocument!.createRange();
       range.selectNodeContents(text);
@@ -394,7 +394,7 @@ test.describe("WebMCP editor tools", () => {
     await clickOutsideToCommit(page);
     await expect(ledeLocator.locator('strong[data-xyle-format="bold"]')).toHaveCount(0);
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
-      { type: "text", after: expect.stringContaining("Plumbing you can depend on?") },
+      { type: "text", after: expect.stringContaining("Edit your static site visually?") },
     ]);
   });
 
@@ -410,7 +410,7 @@ test.describe("WebMCP editor tools", () => {
       preview: string;
     }>;
     const lede = content.find(
-      (item) => item.type === "text" && item.preview.includes("Serving Edmonton"),
+      (item) => item.type === "text" && item.preview.includes("Change this page in place"),
     );
     expect(lede?.id).toBeTruthy();
     await editNode(page, lede!.id);
@@ -421,12 +421,12 @@ test.describe("WebMCP editor tools", () => {
       )!;
       const text = [...element.childNodes].find(
         (node): node is Text =>
-          node.nodeType === Node.TEXT_NODE && !!node.textContent?.includes("areas"),
+          node.nodeType === Node.TEXT_NODE && !!node.textContent?.includes("page"),
       )!;
-      const start = text.data.indexOf("areas");
+      const start = text.data.indexOf("page");
       const range = frame.contentDocument!.createRange();
       range.setStart(text, start);
-      range.setEnd(text, start + "areas".length);
+      range.setEnd(text, start + "page".length);
       const selection = frame.contentWindow!.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
@@ -440,7 +440,7 @@ test.describe("WebMCP editor tools", () => {
     const ledeLocator = page
       .frameLocator("#xyle-preview")
       .locator(`[data-xyle-node="${lede!.id}"]`);
-    await expect(ledeLocator.locator('strong[data-xyle-format="bold"] em u')).toHaveText("areas");
+    await expect(ledeLocator.locator('strong[data-xyle-format="bold"] em u')).toHaveText("page");
     await clickOutsideToCommit(page);
     await expect(invokeTool(page, "list_changes", {})).resolves.toHaveLength(1);
   });
@@ -458,9 +458,9 @@ test.describe("WebMCP editor tools", () => {
     }>;
     const heading = content.find((item) => item.type === "text");
     const paragraph = content.find(
-      (item) => item.type === "text" && item.preview.includes("Emergency calls"),
+      (item) => item.type === "text" && item.preview.includes("Select visible content"),
     );
-    const cta = content.find((item) => item.type === "link" && item.preview === "Get a quote");
+    const cta = content.find((item) => item.type === "link" && item.preview === "Try another page");
     expect(heading?.id).toBeTruthy();
     expect(paragraph?.id).toBeTruthy();
     expect(cta?.id).toBeTruthy();
@@ -471,7 +471,7 @@ test.describe("WebMCP editor tools", () => {
     await page.keyboard.insertText(humanHeading);
     await clickOutsideToCommit(page);
 
-    const agentParagraph = "Clear help from a local plumber, day or night.";
+    const agentParagraph = "People and agents share one safe editing path.";
     await expect(
       invokeTool(page, "update_text", { id: paragraph!.id, text: agentParagraph }),
     ).resolves.toMatchObject({ id: paragraph!.id, text: agentParagraph });
@@ -493,14 +493,14 @@ test.describe("WebMCP editor tools", () => {
     await invokeTool(page, "revert_change", { changeId: ctaChange!.changeId });
     await expect(
       page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${cta!.id}"]`),
-    ).toHaveText("Get a quote");
+    ).toHaveText("Try another page");
 
     await page.locator("#xyle-publish").click();
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     const published = await (await page.request.get("/index.html")).text();
     expect(published).toContain(humanHeading);
     expect(published).toContain(agentParagraph);
-    expect(published).toContain("Get a quote");
+    expect(published).toContain("Try another page");
     expect(published).not.toContain("Start editing");
     await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
@@ -569,7 +569,7 @@ test.describe("WebMCP editor tools", () => {
     const textNodes = content.filter((item) => item.type === "text");
     const heading = textNodes[0];
     const paragraph = textNodes.find((item) => item.id !== heading?.id);
-    const cta = content.find((item) => item.type === "link" && item.preview === "Get a quote");
+    const cta = content.find((item) => item.type === "link" && item.preview === "Try another page");
     const image = content.find(
       (item) => item.type === "image" && item.capabilities?.replace !== false,
     );
@@ -589,7 +589,7 @@ test.describe("WebMCP editor tools", () => {
       label: "Improve the hero",
       changes: [
         { type: "text", id: heading!.id, text: "A clearer heading" },
-        { type: "text", id: paragraph!.id, text: "Clear help from a local plumber, day or night." },
+        { type: "text", id: paragraph!.id, text: "People and agents share one safe editing path." },
         { type: "link", id: cta!.id, text: "Start editing", href: "/contact.html" },
         { type: "asset", id: image!.id, src: replacementSrc, alt: "Updated hero image" },
       ],
@@ -655,8 +655,8 @@ test.describe("WebMCP editor tools", () => {
       preview: string;
     }>;
     const blocks = [
-      content.find((item) => item.preview.includes("The first Riverbend jobs")),
-      content.find((item) => item.preview.includes("We keep appointments realistic")),
+      content.find((item) => item.preview.includes("The first Xyle edits")),
+      content.find((item) => item.preview.includes("Each pending change stays visible")),
     ];
     expect(blocks.every((block) => block?.type === "text")).toBe(true);
     const ids = blocks.map((block) => block!.id);
@@ -697,7 +697,7 @@ test.describe("WebMCP editor tools", () => {
       preview: string;
     }>;
     const paragraph = content.find(
-      (item) => item.type === "text" && item.preview.includes("Serving Edmonton"),
+      (item) => item.type === "text" && item.preview.includes("Change this page in place"),
     );
     expect(paragraph?.id).toBeTruthy();
     const paragraphLocator = page

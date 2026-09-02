@@ -58,7 +58,7 @@ async function cropImage(
 test("duplicates a safe section through its complete independent lifecycle", async ({ page }) => {
   await loginAndOpenEditor(page, "/index.html");
 
-  const originalHeading = await findNodeByText(page, "No mystery. No mess left behind.");
+  const originalHeading = await findNodeByText(page, "No hidden content model.");
   expect(originalHeading).toBeTruthy();
   await editText(page, originalHeading!, "Original before duplication");
 

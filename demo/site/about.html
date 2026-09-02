@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>About — Xyle Demo</title>
+    <meta
+      name="description"
+      content="See how Xyle adds safe visual editing to a static website."
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/">Xyle Demo</a>
+        <nav aria-label="Main navigation">
+          <a href="/">Home</a>
+          <a href="/about.html" aria-current="page">About</a>
+          <a href="/contact.html">Contact</a>
+        </nav>
+        <a class="header-call" href="/contact.html">
+          <span>Runs with your site</span>
+          Open source
+        </a>
+      </div>
+    </header>
+
+    <main id="main-content" class="interior-page">
+      <section class="page-intro" aria-labelledby="about-title">
+        <div>
+          <p class="eyebrow">About the demo</p>
+          <h1 id="about-title">See how Xyle works</h1>
+        </div>
+        <div class="intro-copy">
+          <p class="intro-lede">
+            This Xyle demo starts with ordinary static HTML and assets.
+          </p>
+          <p>
+            We are a <strong>human-controlled</strong> editing demonstration.
+          </p>
+          <dl class="quick-facts">
+            <div>
+              <dt>Content source</dt>
+              <dd>Final static files</dd>
+            </div>
+            <div>
+              <dt>Publish target</dt>
+              <dd>Your own environment</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="story-grid" aria-labelledby="story-title">
+        <div class="story-copy">
+          <p class="section-index">01 / The workflow</p>
+          <h2 id="story-title">Built around reviewable changes.</h2>
+          <p>
+            The first Xyle edits happen directly in the generated website files.
+            You do not need to move content into a separate database.
+          </p>
+          <p>
+            Each pending change stays visible in one ChangeSet. You can undo an
+            edit, discard the draft, or publish the reviewed result.
+          </p>
+        </div>
+        <blockquote>
+          <p>Editors change content. Developers keep control of structure.</p>
+          <cite>The Xyle editing boundary</cite>
+        </blockquote>
+      </section>
+
+      <section class="crew-section" aria-labelledby="crew-title">
+        <figure class="crew-figure">
+          <!-- Photo: Nate Johnston, Unsplash (TltGIe9PK4Y) -->
+          <img
+            src="/misc/team.jpg"
+            alt="Three people reviewing plans together"
+          />
+          <figcaption>
+            The Xyle demo team reviews each change before publishing.
+          </figcaption>
+        </figure>
+        <div class="crew-copy">
+          <p class="section-index">02 / Shared controls</p>
+          <h2 id="crew-title">One safe path for people and agents.</h2>
+          <p>
+            Human visual editing and WebMCP use the same operations, history,
+            safety checks, and publish boundary.
+          </p>
+          <ul class="principles-list">
+            <li>
+              <strong>Edit in context.</strong
+              ><span>Work with the real page in a protected preview.</span>
+            </li>
+            <li>
+              <strong>Review before publish.</strong
+              ><span>See useful before-and-after values for each change.</span>
+            </li>
+            <li>
+              <strong>Keep human control.</strong
+              ><span>Agents can prepare edits, but they cannot publish.</span>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="community-note" aria-labelledby="community-title">
+        <p class="section-index">03 / Your environment</p>
+        <h2 id="community-title">Your website stays where it belongs.</h2>
+        <p>
+          Xyle runs within or beside the environment that owns the site. It is
+          an editing integration, not a required hosting service.
+        </p>
+        <a class="secondary-action" href="/contact.html"
+          >Try the contact page</a
+        >
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div>
+        <strong>Xyle Demo</strong>
+        <p>Visual editing for static websites on infrastructure you control.</p>
+      </div>
+      <div class="footer-links">
+        <a href="/">Home</a>
+        <a href="/contact.html">Contact</a>
+      </div>
+      <p class="footer-meta">Open source · Bring your own hosting</p>
+    </footer>
+  </body>
+</html>

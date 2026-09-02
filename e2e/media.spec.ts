@@ -289,7 +289,7 @@ test.describe("media editing", () => {
 
   test("media drawer lists site images anywhere in the tree", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const teamId = await findNodeByText(page, "The Riverbend crew");
+    const teamId = await findNodeByText(page, "The Xyle demo team");
     void teamId;
 
     // open drawer through the image tools of the team photo
@@ -475,7 +475,7 @@ test.describe("media editing", () => {
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     const html = await (await page.request.get("/index.html")).text();
     const targetTag =
-      html.match(/<img\b(?=[^>]*alt="Plumber repairing pipes beneath a sink")[^>]*>/i)?.[0] ?? "";
+      html.match(/<img\b(?=[^>]*alt="A careful repair in progress")[^>]*>/i)?.[0] ?? "";
     expect(targetTag).toMatch(/src="\/__media\/[0-9a-f]{64}\.webp"/);
     if (/object-fit\s*:\s*cover/i.test(selected.style)) {
       expect(targetTag).toContain("object-fit: cover");

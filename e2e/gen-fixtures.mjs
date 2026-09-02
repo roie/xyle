@@ -26,11 +26,12 @@ const png = await make("image/png");
 const jpg = await make("image/jpeg");
 const webp = await make("image/webp");
 
-const out = new URL("../example/plain-html/", import.meta.url).pathname;
-await writeFile(`${out}/assets/hero.webp`, Buffer.from(webp, "base64"));
-await writeFile(`${out}/assets/hero-wide.webp`, Buffer.from(webp, "base64"));
-await writeFile(`${out}/assets/hero-fallback.jpg`, Buffer.from(jpg, "base64"));
-await writeFile(`${out}/misc/team.jpg`, Buffer.from(jpg, "base64"));
-await writeFile(`${out}/misc/unused-badge.png`, Buffer.from(png, "base64"));
+const demo = new URL("../demo/site/", import.meta.url).pathname;
+const fixtures = new URL("./fixtures/site/", import.meta.url).pathname;
+await writeFile(`${demo}/assets/hero.webp`, Buffer.from(webp, "base64"));
+await writeFile(`${demo}/assets/hero-wide.webp`, Buffer.from(webp, "base64"));
+await writeFile(`${demo}/assets/hero-fallback.jpg`, Buffer.from(jpg, "base64"));
+await writeFile(`${demo}/misc/team.jpg`, Buffer.from(jpg, "base64"));
+await writeFile(`${fixtures}/misc/unused-badge.png`, Buffer.from(png, "base64"));
 await browser.close();
 console.log("fixtures regenerated");

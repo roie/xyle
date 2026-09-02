@@ -36,8 +36,8 @@ normal public pages.
 ```bash
 pnpm install
 pnpm build
-pnpm exec tsx src/cli.ts init example/plain-html   # prints your editor key once
-pnpm exec tsx src/cli.ts dev example/plain-html   # prints the local editor URL
+pnpm exec tsx src/cli.ts init /path/to/static-output   # prints your editor key once
+pnpm exec tsx src/cli.ts dev /path/to/static-output    # prints the local editor URL
 ```
 
 To run the deterministic Xyle demo:
@@ -59,7 +59,7 @@ Human and agent edits appear in the same Changes drawer. Review or undo any
 change before you publish. Publishing remains an explicit human action.
 
 Log in at `/edit` with the generated key, make edits, press **Publish**, then
-inspect the files under `example/plain-html/` — the actual HTML changed.
+inspect your static output directory — the actual HTML changed.
 
 ## What v1 deliberately does not do
 

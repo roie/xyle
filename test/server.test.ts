@@ -5,7 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadOrCreateSecrets, readOrCreateState, startXyleDevServer } from "../src/cli.ts";
 import type { Server } from "node:http";
 
-const EXAMPLE = new URL("../example/plain-html/", import.meta.url).pathname;
+const DEMO_SITE = new URL("../demo/site/", import.meta.url).pathname;
+const TEST_FIXTURES = new URL("../e2e/fixtures/site/", import.meta.url).pathname;
 
 let root: string;
 let server: Server | undefined;
@@ -14,7 +15,8 @@ let editorKey: string;
 
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "xyle-server-"));
-  await cp(EXAMPLE, root, { recursive: true });
+  await cp(DEMO_SITE, root, { recursive: true });
+  await cp(TEST_FIXTURES, root, { recursive: true });
   const { secrets } = await loadOrCreateSecrets(root);
   editorKey = secrets.editorKey;
   await readOrCreateState(root);
@@ -44,8 +46,8 @@ describe("static serving", () => {
     const res = await fetch(`${base}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("Plumbing you can depend on");
-    expect(html).not.toContain("xyle");
+    expect(html).toContain("Edit your static site visually");
+    expect(html).not.toContain('id="xyle-root"');
     expect(html).not.toContain("/__xyle/");
   });
 

@@ -33,14 +33,14 @@ test.describe("cloudflare live publishing", () => {
     test.skip(!liveGated, "set XYLE_CLOUDFLARE_LIVE_E2E=1 for the destructive live test");
     const root = await mkdtemp(join(tmpdir(), "xyle-cloudflare-live-"));
     try {
-      await cp(new URL("../example/plain-html/", import.meta.url), root, { recursive: true });
+      await cp(new URL("../demo/site/", import.meta.url), root, { recursive: true });
       const publisher = new CloudflarePagesPublisher({ root, projectName: projectName! });
       const initial = await buildManifestFromDirectory(root);
       const first = await publisher.bootstrap(initial.manifest);
       const firstUrl = `https://${first.id}.${projectName}.pages.dev`;
       const firstPage = await fetch(`${firstUrl}/index.html`, { cache: "no-store" });
       expect(firstPage.ok).toBe(true);
-      expect(await firstPage.text()).toContain("Plumbing you can depend on");
+      expect(await firstPage.text()).toContain("Edit your static site visually");
       const firstImage = await fetch(`${firstUrl}/assets/hero.webp`, { cache: "no-store" });
       expect(firstImage.ok).toBe(true);
       expect((await firstImage.arrayBuffer()).byteLength).toBeGreaterThan(0);

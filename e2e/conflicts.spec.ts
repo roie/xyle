@@ -30,7 +30,7 @@ test.describe("conflicts and recovery", () => {
     await pageB.goto("/edit?page=%2Fabout.html");
     await pageB.waitForSelector("#xyle-preview");
 
-    const idA = await findNodeByText(page, "Riverbend Plumbing started");
+    const idA = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, idA!);
     await focusCaret(page, idA!, "end");
     const tokenA = ` TAB-A-${info.project.name}`;
@@ -39,7 +39,7 @@ test.describe("conflicts and recovery", () => {
     await clickOutsideCommit(page);
     expect(await opsCount(page)).toBe(1);
 
-    const idB = await findNodeByText(pageB, "Riverbend Plumbing started");
+    const idB = await findNodeByText(pageB, "This Xyle demo starts");
     await editNode(pageB, idB!);
     await focusCaret(pageB, idB!, "end");
     await pageB.keyboard.type(tokenB);
@@ -70,7 +70,7 @@ test.describe("conflicts and recovery", () => {
   test("edits on multiple pages publish together after navigation", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/about.html");
 
-    const idA = await findNodeByText(page, "Riverbend Plumbing started");
+    const idA = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, idA!);
     await focusCaret(page, idA!, "end");
     const tokenA = ` MULTI-A-${info.project.name}`;
@@ -87,10 +87,10 @@ test.describe("conflicts and recovery", () => {
     await follow.click();
     await page.waitForFunction(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
-      return !!doc?.body && doc.body.textContent?.includes("Plumbing you can depend on");
+      return !!doc?.body && doc.body.textContent?.includes("Edit your static site visually");
     });
 
-    const idB = await findNodeByText(page, "Burst pipe at midnight");
+    const idB = await findNodeByText(page, "A person or a WebMCP-capable agent");
     await editNode(page, idB!);
     await focusCaret(page, idB!, "end");
     await page.keyboard.type(tokenB);
@@ -108,7 +108,7 @@ test.describe("conflicts and recovery", () => {
 
   test("same ephemeral node id on two pages keeps both operations", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/about.html");
-    const aboutId = await findNodeByText(page, "The crew behind Riverbend");
+    const aboutId = await findNodeByText(page, "See how Xyle works");
     await editNode(page, aboutId!);
     await focusCaret(page, aboutId!, "end");
     const tokenA = ` PAGE-A-${info.project.name}`;
@@ -120,10 +120,10 @@ test.describe("conflicts and recovery", () => {
     await page.getByRole("button", { name: "Follow" }).click();
     await page.waitForFunction(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
-      return doc?.body?.textContent?.includes("Talk to a plumber");
+      return doc?.body?.textContent?.includes("Edit every useful detail");
     });
 
-    const contactId = await findNodeByText(page, "Talk to a plumber");
+    const contactId = await findNodeByText(page, "Edit every useful detail");
     expect(contactId).toBe(aboutId);
     await editNode(page, contactId!);
     await focusCaret(page, contactId!, "end");
@@ -139,7 +139,7 @@ test.describe("conflicts and recovery", () => {
 
   test("deferred line-break editing reports a clear no-op", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Do the small jobs well");
+    const id = await findNodeByText(page, "Editors change content");
     await editNode(page, id!);
     await focusCaret(page, id!, "start");
     for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowRight");
@@ -153,7 +153,7 @@ test.describe("conflicts and recovery", () => {
 
   test("published content survives a server restart", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/contact.html");
-    const id = await findNodeByText(page, "Talk to a plumber");
+    const id = await findNodeByText(page, "Edit every useful detail");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     const token = ` Restart-safe-${info.project.name}.`;
@@ -212,7 +212,7 @@ async function textOfAfterReload(page: import("@playwright/test").Page): Promise
   return page.evaluate(() => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
     for (const el of doc.querySelectorAll("[data-xyle-node]")) {
-      if ((el.textContent ?? "").includes("Riverbend Plumbing started")) {
+      if ((el.textContent ?? "").includes("This Xyle demo starts")) {
         return el.textContent ?? "";
       }
     }

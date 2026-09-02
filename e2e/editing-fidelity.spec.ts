@@ -57,7 +57,7 @@ test.describe("editing fidelity gate", () => {
   }
 
   test("ASCII typing", async () => {
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type("XYZ");
@@ -65,7 +65,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("keyboard spaces survive plain text publish and reload", async () => {
-    const id = await findNodeByText(page, "Our licensed journeymen");
+    const id = await findNodeByText(page, "Human visual editing and WebMCP");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type(" hello world");
@@ -107,7 +107,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("keyboard spaces preserve meaningful leading and trailing text", async () => {
-    const id = await findNodeByText(page, "The river valley is part of our route.");
+    const id = await findNodeByText(page, "Your website stays where it belongs.");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type(" hello world ");
@@ -118,29 +118,29 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("Backspace removes last character", async () => {
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.press("Backspace");
     await clickOutsideToCommit(page);
     const op = await textOpFor(page);
     expect(op).toBeTruthy();
-    expect(await editorText(page, id!)).not.toMatch(/toolbox.$/);
+    expect(await editorText(page, id!)).not.toMatch(/assets\.$/);
   });
 
   test("Delete removes first character", async () => {
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "start");
     await page.keyboard.press("Delete");
     await clickOutsideToCommit(page);
     const op = await textOpFor(page);
     expect(op).toBeTruthy();
-    expect(op!.value[0] as string).not.toBe("R");
+    expect(op!.value[0] as string).not.toBe("T");
   });
 
   test("selection replacement within a single segment", async () => {
-    const id = await findNodeByText(page, "The crew behind Riverbend");
+    const id = await findNodeByText(page, "See how Xyle works");
     await editNode(page, id!);
     await page.evaluate((nodeId) => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
@@ -153,12 +153,12 @@ test.describe("editing fidelity gate", () => {
       selection.addRange(range);
       el.focus();
     }, id);
-    await page.keyboard.insertText("Meet the crew");
-    await commitAndAssertOp("Meet the crew");
+    await page.keyboard.insertText("Explore the workflow");
+    await commitAndAssertOp("Explore the workflow");
   });
 
   test("plain paste inserts text", async () => {
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.evaluate(() => {
@@ -199,7 +199,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("emoji typing", async () => {
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.insertText("🔧");
@@ -207,7 +207,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("multi-code-point grapheme (family emoji)", async () => {
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.insertText("👨‍👩‍👧");
@@ -215,7 +215,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("Japanese IME composition commits composed text", async () => {
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.evaluate(() => {
@@ -238,7 +238,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("undo removes the pending change; redo restores it", async () => {
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type("AAA");
@@ -301,7 +301,7 @@ test.describe("editing fidelity gate", () => {
       const inner = strong.firstChild as Text;
       const range = win.document.createRange();
       range.setStart(first, Math.max(0, first.length - 2)); // "a "
-      range.setEnd(inner, 6); // into "family"
+      range.setEnd(inner, 4); // into "small"
       const selection = win.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
@@ -314,7 +314,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("Enter is rejected in headings", async () => {
-    const h1 = await findNodeByText(page, "The crew behind Riverbend");
+    const h1 = await findNodeByText(page, "See how Xyle works");
     await editNode(page, h1!);
     await focusCaret(page, h1!, "end");
     await page.keyboard.press("Enter");
@@ -324,7 +324,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("line-break editing is deferred in paragraphs", async () => {
-    const id = await findNodeByText(page, "Do the small jobs well");
+    const id = await findNodeByText(page, "Editors change content");
     await editNode(page, id!);
     await focusCaret(page, id!, "start");
     for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowRight");
@@ -356,9 +356,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("decoded entities round-trip (&middot;/&nbsp; semantics)", async () => {
-    // about.html footer contains a tel link label; use blockquote with quotes? Use paragraph text.
-    const id = await findNodeByText(page, "river valley cleanup");
-    // that text lives inside <em>; its parent paragraph is the candidate
+    const id = await findNodeByText(page, "Xyle runs within or beside");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.insertText(" & Co");

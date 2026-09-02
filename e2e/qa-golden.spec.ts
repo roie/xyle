@@ -11,14 +11,14 @@ test("golden human walkthrough covers the exposed editor contract", async ({ pag
   await loginAndOpenEditor(page, "/qa-golden.html");
   const preview = page.frameLocator("#xyle-preview");
 
-  const headingId = await findNodeByText(page, "Practical plumbing help");
+  const headingId = await findNodeByText(page, "Complete editor walkthrough");
   expect(headingId).toBeTruthy();
   await editNode(page, headingId!);
   await setSelection(page, { nodeId: headingId!, selectAll: true });
-  await page.keyboard.insertText("Reliable plumbing help");
+  await page.keyboard.insertText("Reliable editor walkthrough");
   await clickOutsideToCommit(page);
   await expect(preview.locator(`[data-xyle-node="${headingId}"]`)).toHaveText(
-    "Reliable plumbing help",
+    "Reliable editor walkthrough",
   );
 
   await editNode(page, headingId!);
@@ -27,7 +27,7 @@ test("golden human walkthrough covers the exposed editor contract", async ({ pag
   await clickOutsideToCommit(page);
   await expect(
     preview.locator(`[data-xyle-node="${headingId}"] strong[data-xyle-format="bold"]`),
-  ).toHaveText("Reliable plumbing help");
+  ).toHaveText("Reliable editor walkthrough");
 
   const cardTextId = await findNodeByText(page, "Fast fixture repairs.");
   expect(cardTextId).toBeTruthy();
@@ -148,7 +148,7 @@ test("golden human walkthrough covers the exposed editor contract", async ({ pag
   await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
 
   await page.goto("/qa-golden.html");
-  await expect(page.locator("h1")).toHaveText("Reliable plumbing help");
+  await expect(page.locator("h1")).toHaveText("Reliable editor walkthrough");
   await expect(page.locator('main a[href="/about.html"]')).toHaveCount(1);
   await expect(page.locator('main a[href="/contact.html"]')).toHaveCount(0);
   await expect(page.locator("main > section")).toHaveCount(6);

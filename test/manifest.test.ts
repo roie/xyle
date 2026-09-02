@@ -52,15 +52,14 @@ describe("normalizeSitePath", () => {
 });
 
 describe("scanStaticDirectory", () => {
-  it("scans the canonical example", async () => {
+  it("scans the canonical demo", async () => {
     const { manifest, files } = await scanStaticDirectory(
-      new URL("../example/plain-html/", import.meta.url).pathname,
+      new URL("../demo/site/", import.meta.url).pathname,
     );
     expect(manifest.files["/index.html"]).toBeDefined();
     expect(manifest.files["/about.html"]?.contentType).toBe("text/html");
     expect(manifest.files["/assets/hero.webp"]?.contentType).toBe("image/webp");
     expect(manifest.files["/misc/team.jpg"]).toBeDefined();
-    expect(manifest.files["/misc/unused-badge.png"]).toBeDefined();
     expect(manifest.files["/app.js"]?.contentType).toBe("text/javascript");
     expect(files.get("/styles.css")).toBeInstanceOf(Uint8Array);
 

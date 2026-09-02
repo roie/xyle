@@ -10,7 +10,7 @@
     "build": "rolldown -c",
     "dev": "tsx src/cli.ts dev",
     "demo:reset": "node scripts/reset-demo.mjs",
-    "demo:dev": "tsx src/cli.ts dev demo/site",
+    "demo:dev": "tsx src/cli.ts dev demo/.workspace/site",
     "typecheck": "tsc --noEmit",
     "typecheck:functions": "tsc -p functions/tsconfig.json",
     "test": "vitest run",

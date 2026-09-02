@@ -53,7 +53,7 @@ test.describe("Xyle sign in", () => {
 test.describe("logout", () => {
   test("failed logout keeps the editor and draft open", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
-    const id = await findNodeByText(page, "Plumbing you can depend on");
+    const id = await findNodeByText(page, "Edit your static site visually");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type(" LOGOUT-DRAFT");
@@ -88,7 +88,7 @@ test.describe("logout", () => {
     page,
   }) => {
     await loginAndOpenEditor(page, "/index.html");
-    const id = await findNodeByText(page, "Plumbing you can depend on");
+    const id = await findNodeByText(page, "Edit your static site visually");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type(" KEEP-ME");

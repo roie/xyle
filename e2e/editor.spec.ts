@@ -21,6 +21,24 @@ test.describe("public site isolation", () => {
     );
     expect(scripts).toEqual(["/app.js"]);
   });
+
+  test("demo contact form confirms that it sends nothing", async ({ page }) => {
+    let submitted = false;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/demo-contact") submitted = true;
+    });
+    await page.goto("/contact.html");
+    await page.locator("#name").fill("Demo visitor");
+    await page.locator("#phone").fill("555-0100");
+    await page.locator("#message").fill("Change the introduction.");
+    await page.getByRole("button", { name: "Show demo response" }).click();
+
+    await expect(page.locator("#demo-form-status")).toHaveText(
+      "Demo complete. No information was sent.",
+    );
+    expect(submitted).toBe(false);
+    expect(new URL(page.url()).pathname).toBe("/contact.html");
+  });
 });
 
 test.describe("editor shell and preview", () => {
@@ -61,7 +79,7 @@ test.describe("editor shell and preview", () => {
   });
 
   test("site scripts never execute in the preview", async ({ page }) => {
-    await loginAndOpenEditor(page, "/index.html");
+    await loginAndOpenEditor(page, "/script-runtime.html");
     await page.waitForTimeout(500);
     const mutated = await page.evaluate(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
@@ -102,7 +120,7 @@ test.describe("editor shell and preview", () => {
     await follow.click();
     await page.waitForFunction(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
-      return !!doc?.body && doc.body.textContent?.includes("crew behind Riverbend");
+      return !!doc?.body && doc.body.textContent?.includes("See how Xyle works");
     });
     expect(page.url()).toContain("/edit");
   });
@@ -216,7 +234,7 @@ test.describe("chrome layout rules", () => {
     await loginAndOpenEditor(page, "/about.html");
     await expect(page.locator("#xyle-dirty")).toBeHidden();
 
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type("!");
@@ -229,7 +247,7 @@ test.describe("chrome layout rules", () => {
 
   test("Publish does not leave /edit and clears dirty state", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     const token = `-published-${info.project.name}`;
@@ -274,15 +292,15 @@ test.describe("chrome layout rules", () => {
 
     const html = await (await page.request.get("/index.html")).text();
     expect(html).toContain(`<strong>${token}</strong>`);
-    expect(html).toContain("company with");
-    expect(html).toContain("<em>twenty-eight years</em>");
-    expect(html).toContain("behind the wrench.");
+    expect(html).toContain("with");
+    expect(html).toContain("<em>one shared history</em>");
+    expect(html).toContain("for each draft.");
   });
 
   test("authored br segments publish separately", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/index.html");
     const beforeSource = await (await page.request.get("/index.html")).text();
-    const id = await findNodeByText(page, "Serving Edmonton");
+    const id = await findNodeByText(page, "Change this page in place");
     await editNode(page, id!);
     await page.evaluate((nodeId) => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
@@ -308,14 +326,14 @@ test.describe("chrome layout rules", () => {
 
     const html = await (await page.request.get("/index.html")).text();
     const lede = html.match(/<p class="lede">([\s\S]*?)<\/p>/)?.[1] ?? "";
-    expect(lede).toContain("Serving Edmonton and surrounding areas");
+    expect(lede).toContain("Change this page in place");
     expect(lede).toContain(token);
     expect(lede.match(/<br\s*\/?\s*>/g)).toHaveLength(2);
   });
 
   test("undo after publish returns to the new published baseline", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/about.html");
-    let id = await findNodeByText(page, "Riverbend Plumbing started");
+    let id = await findNodeByText(page, "This Xyle demo starts");
     const publishedToken = ` baseline-${info.project.name}`;
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
@@ -336,7 +354,7 @@ test.describe("chrome layout rules", () => {
         document.getElementById("xyle-overlay-root") && doc?.body?.textContent?.includes(expected),
       );
     }, publishedToken.trim());
-    id = await findNodeByText(page, "Riverbend Plumbing started");
+    id = await findNodeByText(page, "This Xyle demo starts");
     const draftToken = ` draft-${info.project.name}`;
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
@@ -453,7 +471,7 @@ test.describe("editing affordances", () => {
     page,
   }, info) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type(` marker-${info.project.name}`);
@@ -479,7 +497,7 @@ test.describe("editing affordances", () => {
 test.describe("changes drawer and undo", () => {
   test("drawer renders edited markup as inert text (no shell XSS)", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     // simulate hostile content arriving via paste
@@ -529,9 +547,9 @@ test.describe("changes drawer and undo", () => {
     await page.getByRole("button", { name: "Follow" }).click();
     await page.waitForFunction(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
-      return doc?.body?.textContent?.includes("Riverbend Plumbing started");
+      return doc?.body?.textContent?.includes("This Xyle demo starts");
     });
-    const aboutId = await findNodeByText(page, "Riverbend Plumbing started");
+    const aboutId = await findNodeByText(page, "This Xyle demo starts");
     const originalAboutText = await textOf(page, aboutId!);
     await editNode(page, aboutId!);
     await focusCaret(page, aboutId!, "end");
@@ -560,7 +578,7 @@ test.describe("changes drawer and undo", () => {
 
   test("Changes drawer preserves exact whitespace in reviewed values", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type("  exact spaces  ");
@@ -575,7 +593,7 @@ test.describe("changes drawer and undo", () => {
   test("mobile Changes drawer traps focus and Escape restores its trigger", async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 });
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type(" MOBILE-DRAWER");
@@ -612,7 +630,7 @@ test.describe("changes drawer and undo", () => {
 
   test("drawer lists edits with working per-change undo", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type("X");
@@ -643,7 +661,7 @@ test.describe("changes drawer and undo", () => {
     page,
   }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     const original = await textOf(page, id!);
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
@@ -666,7 +684,7 @@ test.describe("changes drawer and undo", () => {
 
   test("Escape reverts the active field without recording a change", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "The crew behind Riverbend");
+    const id = await findNodeByText(page, "See how Xyle works");
     const original = await textOf(page, id!);
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
@@ -678,7 +696,7 @@ test.describe("changes drawer and undo", () => {
 
   test("keyboard undo/redo works outside fields", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     const original = await textOf(page, id!);
 
     await editNode(page, id!);
@@ -708,8 +726,8 @@ test.describe("changes drawer and undo", () => {
   });
   test("groups selected sibling blocks from the human editor", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const firstId = await findNodeByText(page, "The first Riverbend jobs");
-    const secondId = await findNodeByText(page, "We keep appointments realistic");
+    const firstId = await findNodeByText(page, "The first Xyle edits");
+    const secondId = await findNodeByText(page, "Each pending change stays visible");
     expect(firstId).toBeTruthy();
     expect(secondId).toBeTruthy();
     await editNode(page, firstId!);
@@ -751,7 +769,7 @@ test.describe("changes drawer and undo", () => {
             ?.toString(),
         ),
       )
-      .toContain("The first Riverbend jobs");
+      .toContain("The first Xyle edits");
   });
 
   test("updates SEO metadata from the human editor", async ({ page }) => {
@@ -798,7 +816,7 @@ test.describe("exit vs logout semantics", () => {
 
   test("dirty Exit warns and requires explicit discard", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const id = await findNodeByText(page, "Riverbend Plumbing started");
+    const id = await findNodeByText(page, "This Xyle demo starts");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
     await page.keyboard.type("D");
