@@ -17,7 +17,7 @@ import type {
 } from "./types.ts";
 import { digestBytes } from "./digest.ts";
 import { sourceTargetIdentity, stableIdentity } from "./identity.ts";
-import { mediaSourcePath, normalizeMediaState } from "./media-state.ts";
+import { mediaSourcePath, mediaUrlPathname, normalizeMediaState } from "./media-state.ts";
 import {
   LAYOUT_ATTRIBUTE,
   LAYOUT_RESOURCE_ATTRIBUTE,
@@ -220,6 +220,7 @@ export interface PageAnalysis {
   injections: { offset: number; text: string }[];
   removals: { start: number; end: number }[];
   baseTagNeeded: boolean;
+  managedLayoutAttributeCount: number;
 }
 
 function isElement(node: P5Node): node is P5Element {
@@ -738,6 +739,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
   let baseTagNeeded = true;
   let counter = 0;
   let sectionCounter = 0;
+  let managedLayoutAttributeCount = 0;
 
   const isNestedCandidateStop = (el: P5Element): boolean =>
     el.tagName === "a" || el.tagName === "img";
@@ -773,6 +775,9 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
 
     const ignored = insideIgnored || matchesIgnoreSelector(node, ignoreSelectors);
     if (ignored) return;
+    if (["stack", "split"].includes(attrValue(node, LAYOUT_ATTRIBUTE) ?? "")) {
+      managedLayoutAttributeCount += 1;
+    }
 
     let becameCandidate = false;
 
@@ -813,7 +818,9 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
         const id = `n${counter}`;
         const loc = node.sourceCodeLocation!;
         const responsive = insidePicture || node.attrs.some((a) => a.name === "srcset");
-        const extension = src.split(/[?#]/, 1)[0]?.toLowerCase().slice(src.lastIndexOf("."));
+        const pathname = mediaUrlPathname(src)?.toLowerCase() ?? "";
+        const extensionStart = pathname.lastIndexOf(".");
+        const extension = extensionStart >= 0 ? pathname.slice(extensionStart) : "";
         const nonCropFormat = extension === ".svg" || extension === ".gif";
         candidates.set(id, {
           id,
@@ -955,7 +962,7 @@ export function analyzePage(source: string, ignoreSelectors: string[] = []): Pag
   const roots = htmlEl && isElement(htmlEl) ? htmlEl.childNodes : doc.childNodes;
   for (const child of roots) visit(child, false, false, false, null, false);
 
-  return { candidates, injections, removals, baseTagNeeded };
+  return { candidates, injections, removals, baseTagNeeded, managedLayoutAttributeCount };
 }
 
 export function escapeHtmlText(text: string): string {

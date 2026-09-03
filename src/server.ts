@@ -12,7 +12,7 @@ import { isControlSitePath, isPathInsideRoot } from "./control-paths.ts";
 import { analyzeGroups, analyzeLayouts, analyzePage, preparePreview, patchHtml } from "./html.ts";
 import { discoverMedia, MAX_UPLOAD_BYTES, validateUpload, uploadPathFor } from "./media.ts";
 import { deriveCroppedImage } from "./crop.ts";
-import { mediaSourcePath } from "./media-state.ts";
+import { mediaSourcePath, mediaUrlPathname } from "./media-state.ts";
 import { digestBytes } from "./digest.ts";
 import { LAYOUT_CSS, layoutAssetPath } from "./layout.ts";
 import { bufferRequestBody, RequestBodyTooLargeError } from "./request-body.ts";
@@ -376,8 +376,14 @@ async function materializeMediaOperations(
       output.push(operation);
       continue;
     }
-    const sourcePath = mediaSourcePath(operation.value.source);
-    if (!sourcePath.startsWith("/") || !isPathInsideRoot(root, resolve(root, `.${sourcePath}`))) {
+    const source = mediaSourcePath(operation.value.source);
+    const sourcePath = mediaUrlPathname(source);
+    if (
+      !source.startsWith("/") ||
+      source.startsWith("//") ||
+      !sourcePath ||
+      !isPathInsideRoot(root, resolve(root, `.${sourcePath}`))
+    ) {
       throw new Error("cropping requires a local image source");
     }
     const sourceBytes = submitted.get(sourcePath) ?? (await readSiteFile(root, sourcePath));
@@ -408,13 +414,15 @@ async function materializeMediaOperations(
   return { operations: output, assets };
 }
 
-function layoutRequiredForPage(source: string, operations: PageOperation[]): boolean {
-  const analysis = analyzePage(source);
+function layoutRequiredForPage(
+  source: string,
+  operations: PageOperation[],
+  ignoreSelectors: string[],
+): boolean {
+  const analysis = analyzePage(source, ignoreSelectors);
   const groups = analyzeGroups(source, "layout-check");
   const targets = analyzeLayouts(source, analysis, groups);
-  const managedAttributeCount =
-    source.match(/data-xyle-layout\s*=\s*(?:"(?:stack|split)"|'(?:stack|split)'|(?:stack|split))/g)
-      ?.length ?? 0;
+  const managedAttributeCount = analysis.managedLayoutAttributeCount;
   const managed = new Map(targets.map((target) => [target.id, !!target.managedPreset]));
   const recognizedManagedCount = targets.filter((target) => target.managedPreset).length;
   const visit = (nested: PageOperation[]): void => {
@@ -540,7 +548,11 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
       );
       pageLayoutNeeds.set(
         path,
-        layoutRequiredForPage(source, pageChanges.get(path)?.operations ?? []),
+        layoutRequiredForPage(
+          source,
+          pageChanges.get(path)?.operations ?? [],
+          context.ignoreSelectors ?? [],
+        ),
       );
     } catch {
       return json({ error: `page is not valid UTF-8: ${path}` }, 400);

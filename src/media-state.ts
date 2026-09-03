@@ -4,6 +4,15 @@ export function mediaSourcePath(source: MediaSource): string {
   return source.kind === "existing" ? source.src : source.assetId;
 }
 
+export function mediaUrlPathname(source: string): string | null {
+  try {
+    const url = new URL(source, "https://xyle.invalid");
+    return url.protocol === "http:" || url.protocol === "https:" ? url.pathname : null;
+  } catch {
+    return null;
+  }
+}
+
 export function clampUnit(value: number): number {
   return Math.min(1, Math.max(0, value));
 }

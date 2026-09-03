@@ -475,6 +475,13 @@ describe("preparePreview source locations", () => {
     );
   });
 
+  it("detects non-croppable image formats from cache-busted URL pathnames", () => {
+    const source = `<img src="/logo.svg?v=logo.jpg" alt="Logo">`;
+    const image = [...analyzePage(source).candidates.values()][0]!;
+
+    expect(image.mediaCapabilities).toMatchObject({ crop: false, focus: false });
+  });
+
   it("allows SVG replacement but rejects SVG framing", async () => {
     const source = `<img src="/logo.svg" alt="Logo">`;
     const image = [...analyzePage(source).candidates.values()][0]!;
@@ -513,6 +520,13 @@ describe("preparePreview source locations", () => {
         },
       ]),
     ).rejects.toThrow(/raster-cropped|framing is not supported/);
+  });
+
+  it("excludes ignored managed Layout attributes from analysis", () => {
+    const source = `<section class="generated" data-xyle-layout="split"><div>A</div><div>B</div></section>`;
+
+    expect(analyzePage(source).managedLayoutAttributeCount).toBe(1);
+    expect(analyzePage(source, [".generated"]).managedLayoutAttributeCount).toBe(0);
   });
 
   it("honors simple ignore selectors for preview and patches", async () => {
