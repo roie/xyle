@@ -4,6 +4,7 @@ import {
   materializeHostedMediaOperations,
   type CloudflareImagesBinding,
 } from "./_publish";
+import { managedStyleCspPermits } from "../src/csp.ts";
 import { patchHtml } from "../src/html.ts";
 import { uploadPathFor, validateUpload } from "../src/media.ts";
 import { computeSnapshotDigest, digestBytes } from "../src/digest.ts";
@@ -40,38 +41,6 @@ function isLayoutNeeded(source: string, operations: PageOperation[]): boolean {
     [...overrides.values()].some(Boolean) ||
     managedAttributeCount > [...overrides.values()].filter((value) => !value).length
   );
-}
-
-function cspPermits(source: string, policies: string[], origin: string): boolean {
-  for (const tag of source.match(/<meta\b[^>]*>/gi) ?? []) {
-    const httpEquiv = /http-equiv\s*=\s*["']?([^"'\s>]+)/i.exec(tag)?.[1];
-    if (httpEquiv?.toLowerCase() !== "content-security-policy") continue;
-    const content = /content\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1];
-    if (content) policies.push(content);
-  }
-  return policies.every((policy) => {
-    const directives = new Map<string, string[]>();
-    for (const directive of policy.split(";")) {
-      const [name, ...values] = directive.trim().split(/\s+/);
-      if (name) directives.set(name.toLowerCase(), values);
-    }
-    const sources =
-      directives.get("style-src-elem") ??
-      directives.get("style-src") ??
-      directives.get("default-src");
-    if (!sources || sources.length === 0) return true;
-    if (sources.includes("'none'")) return false;
-    if (sources.some((value) => value.startsWith("'nonce-") || value.startsWith("'sha")))
-      return false;
-    return sources.some((value) => {
-      if (value === "'self'") return true;
-      try {
-        return new URL(value).origin === origin;
-      } catch {
-        return false;
-      }
-    });
-  });
 }
 
 function requestOrigin(request: Request): string {
@@ -249,7 +218,7 @@ export async function handleHostedPublish(
         const pageUrl = new URL(page.pagePath, request.url);
         const pageResponse = await env.ASSETS.fetch(new Request(pageUrl));
         const policy = pageResponse.headers.get("content-security-policy");
-        if (!cspPermits(pageSource, policy ? [policy] : [], pageUrl.origin)) {
+        if (!managedStyleCspPermits(pageSource, policy ? [policy] : [], pageUrl.origin)) {
           return Response.json(
             {
               error: `managed Layout stylesheet is blocked by CSP for ${page.pagePath}`,

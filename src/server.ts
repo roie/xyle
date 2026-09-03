@@ -2,6 +2,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import type { AuthConfig } from "./auth.ts";
 import { createSessionCookie, logoutCookie, verifyEditorKey, verifySessionCookie } from "./auth.ts";
+import { managedStyleCspPermits } from "./csp.ts";
 import {
   computeSnapshotDigest,
   isManagedLayoutAssetPath,
@@ -454,29 +455,7 @@ function layoutCspPermits(context: RuntimeContext, source: string): boolean {
   } catch {
     return false;
   }
-  return policies.every((policy) => {
-    const directives = new Map<string, string[]>();
-    for (const directive of policy.split(";")) {
-      const [name, ...values] = directive.trim().split(/\s+/);
-      if (name) directives.set(name.toLowerCase(), values);
-    }
-    const sources =
-      directives.get("style-src-elem") ??
-      directives.get("style-src") ??
-      directives.get("default-src");
-    if (!sources || sources.length === 0) return true;
-    if (sources.includes("'none'")) return false;
-    if (sources.some((value) => value.startsWith("'nonce-") || value.startsWith("'sha")))
-      return false;
-    return sources.some((value) => {
-      if (value === "'self'") return true;
-      try {
-        return new URL(value).origin === origin;
-      } catch {
-        return false;
-      }
-    });
-  });
+  return managedStyleCspPermits(source, policies, origin);
 }
 
 function layoutAssetHref(context: RuntimeContext, path: string): string {
