@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { registerWebMcpTools, type Formatting } from "../src/webmcp.ts";
+import { registerWebMcpTools, type ChangeSetOperation, type Formatting } from "../src/webmcp.ts";
 
 describe("WebMCP tools", () => {
   test("registers the first editor tools and invokes them through the bridge", async () => {
@@ -12,6 +12,7 @@ describe("WebMCP tools", () => {
         tools.push(tool);
       },
     };
+    let appliedChangeSet: { label: string; changes: ChangeSetOperation[] } | undefined;
     const bridge = {
       listEditableContent: () => [{ id: "n1", type: "text" as const, preview: "Xyle" }],
       getContent: (id: string) => ({ id, type: "text" as const, content: "Xyle" }),
@@ -25,11 +26,10 @@ describe("WebMCP tools", () => {
         },
       ],
       revertChange: (changeId: string) => ({ changeId, undone: true as const }),
-      applyChangeSet: (label: string, _changes: unknown[]) => ({
-        changeSetId: "changeset-1",
-        label,
-        changes: [],
-      }),
+      applyChangeSet: (label: string, changes: ChangeSetOperation[]) => {
+        appliedChangeSet = { label, changes };
+        return { changeSetId: "changeset-1", label, changes: [] };
+      },
       undoChangeSet: (changeSetId: string) => ({ changeSetId, undone: true as const }),
       replaceAsset: (id: string, src: string, alt?: string) => ({
         id,
@@ -89,19 +89,38 @@ describe("WebMCP tools", () => {
     await expect(tools[2]!.execute({}, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.listChanges()) }],
     });
+    const expectedChanges = [
+      { type: "text", id: "n1", text: "Hello" },
+      { type: "link", id: "n2", href: "/about.html" },
+      { type: "asset", id: "n3", src: "/images/new.jpg", alt: "New image" },
+      { type: "formatting", id: "n4", format: "heading-2" },
+      { type: "sectionVisibility", id: "s1", visible: false },
+      { type: "moveSection", id: "s2", targetId: "s3", before: true },
+    ] satisfies ChangeSetOperation[];
     await expect(
       tools[3]!.execute(
-        { label: "Hero rewrite", changes: [{ type: "text", id: "n1", text: "Hello" }] },
+        {
+          label: "  Hero rewrite  ",
+          changes: [
+            { type: "text", id: "n1", text: "Hello", ignored: "field" },
+            { type: "link", id: "n2", href: "/about.html" },
+            { type: "asset", id: "n3", src: "/images/new.jpg", alt: "New image" },
+            { type: "formatting", id: "n4", format: "heading-2" },
+            { type: "sectionVisibility", id: "s1", visible: false },
+            { type: "moveSection", id: "s2", targetId: "s3", before: true },
+          ],
+        },
         { signal },
       ),
     ).resolves.toEqual({
       content: [
         {
           type: "text",
-          text: JSON.stringify(bridge.applyChangeSet("Hero rewrite", [])),
+          text: JSON.stringify({ changeSetId: "changeset-1", label: "Hero rewrite", changes: [] }),
         },
       ],
     });
+    expect(appliedChangeSet).toEqual({ label: "Hero rewrite", changes: expectedChanges });
     await expect(tools[4]!.execute({ changeSetId: "changeset-1" }, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.undoChangeSet("changeset-1")) }],
     });
