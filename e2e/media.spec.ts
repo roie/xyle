@@ -103,6 +103,33 @@ test.describe("media editing", () => {
       .toMatch(/^blob:/);
   });
 
+  test("invalid media upload reports a visible error and keeps the drawer usable", async ({
+    page,
+  }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    await page.locator("#xyle-control-hitbox").hover();
+    await page.locator("#xyle-menu-btn").click();
+    await page.getByRole("menuitem", { name: "Media library" }).click();
+    const drawer = page.locator("#xyle-media-drawer");
+
+    const chooserPromise = page.waitForEvent("filechooser");
+    await drawer.getByRole("button", { name: "Upload to library" }).click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles({
+      name: "unsafe.svg",
+      mimeType: "image/svg+xml",
+      buffer: Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><script/></svg>"),
+    });
+
+    await expect(page.locator("#xyle-flash")).toContainText(
+      "Only JPEG, PNG, WebP and AVIF uploads are supported",
+    );
+    await expect(drawer).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Upload to library" })).toBeEnabled();
+    await expect(drawer.locator('button[aria-label^="Choose /__media/"]')).toHaveCount(0);
+    expect(await opsCount(page)).toBe(0);
+  });
+
   test("replacing an image previews via blob and records a media change", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const id = await page.evaluate(() => {
