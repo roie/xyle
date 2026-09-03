@@ -448,10 +448,11 @@ test.describe("WebMCP editor tools", () => {
     await formatTools.getByRole("button", { name: "Bold" }).click();
     await formatTools.getByRole("button", { name: "Italic" }).click();
     await formatTools.getByRole("button", { name: "Underline" }).click();
+    await formatTools.getByRole("button", { name: "Strikethrough" }).click();
     const ledeLocator = page
       .frameLocator("#xyle-preview")
       .locator(`[data-xyle-node="${lede!.id}"]`);
-    await expect(ledeLocator.locator('strong[data-xyle-format="bold"] em u')).toHaveText("page");
+    await expect(ledeLocator.locator('strong[data-xyle-format="bold"] em u s')).toHaveText("page");
     await clickOutsideToCommit(page);
     await expect(invokeTool(page, "list_changes", {})).resolves.toHaveLength(1);
   });

@@ -68,6 +68,7 @@ export type Formatting =
   | "bold"
   | "italic"
   | "underline"
+  | "strikethrough"
   | "paragraph"
   | "heading-1"
   | "heading-2"

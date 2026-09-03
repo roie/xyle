@@ -271,7 +271,7 @@ test.describe("editing fidelity gate", () => {
     await commitAndAssertOp("こんにちは");
   });
 
-  test("bold italic and underline publish through human controls", async () => {
+  test("inline formatting publishes through human controls", async () => {
     const formats = [
       {
         text: "See how Xyle works",
@@ -290,6 +290,12 @@ test.describe("editing fidelity gate", () => {
         button: "Underline",
         selector: 'u[data-xyle-format="underline"]',
         publicSelector: "#crew-title u",
+      },
+      {
+        text: "Your website stays where it belongs.",
+        button: "Strikethrough",
+        selector: 's[data-xyle-format="strikethrough"]',
+        publicSelector: "#community-title s",
       },
     ];
 
@@ -314,10 +320,11 @@ test.describe("editing fidelity gate", () => {
       "html",
       "html",
       "html",
+      "html",
     ]);
     await page.locator("#xyle-changes").click();
     const changes = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
-    await expect(changes).toHaveCount(3);
+    await expect(changes).toHaveCount(formats.length);
     for (const format of formats) {
       await expect(changes.filter({ hasText: format.text })).toHaveCount(1);
     }

@@ -1640,10 +1640,11 @@ function renderTextMarkup(text: string, multilineAllowed: boolean): string {
   return text.split("\n").map(escapeHtmlText).join("<br>");
 }
 
-function formatTag(format: TextFormat): "strong" | "em" | "u" {
+function formatTag(format: TextFormat): "strong" | "em" | "u" | "s" {
   if (format === "bold") return "strong";
   if (format === "italic") return "em";
   if (format === "underline") return "u";
+  if (format === "strikethrough") return "s";
   throw new Error("unsupported text format");
 }
 

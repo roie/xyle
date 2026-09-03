@@ -19,7 +19,7 @@ export interface XyleConfig {
   ignoreSelectors: string[];
 }
 
-export type TextFormat = "bold" | "italic" | "underline";
+export type TextFormat = "bold" | "italic" | "underline" | "strikethrough";
 export type SeoField =
   | "title"
   | "description"

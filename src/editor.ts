@@ -21,7 +21,12 @@ import {
   type SeoUpdateResult,
 } from "./webmcp.ts";
 import { XYLE_LOGO_DATA_URL } from "./brand.ts";
-import { cleanInlineHtml, inlineFormatState, toggleInlineFormat } from "./formatting.ts";
+import {
+  cleanInlineHtml,
+  type InlineFormat,
+  inlineFormatState,
+  toggleInlineFormat,
+} from "./formatting.ts";
 import { stableIdentity } from "./identity.ts";
 import {
   STRUCTURAL_ID_REFERENCE_ATTRIBUTES,
@@ -109,7 +114,7 @@ type Op =
   | {
       type: "format";
       nodeId: string;
-      value: "bold" | "italic" | "underline";
+      value: InlineFormat;
       start?: number;
       end?: number;
       sourceStart?: number;
@@ -1805,7 +1810,9 @@ function isControlledBreak(node: Node): node is HTMLBRElement {
 function isFormatWrapper(node: Node): node is HTMLElement {
   if (node.nodeType !== Node.ELEMENT_NODE) return false;
   const marker = (node as HTMLElement).getAttribute("data-xyle-format");
-  return marker === "bold" || marker === "italic" || marker === "underline";
+  return (
+    marker === "bold" || marker === "italic" || marker === "underline" || marker === "strikethrough"
+  );
 }
 
 function slotKeyOf(target: Node, root: HTMLElement): string {
@@ -2117,7 +2124,7 @@ function getFormatSelection(): FormatSelection | null {
 
 function updateFormatToolState(tools: HTMLElement, target: HTMLElement, range: Range): void {
   for (const button of tools.querySelectorAll<HTMLButtonElement>("[data-inline-format]")) {
-    const format = button.dataset.inlineFormat as "bold" | "italic" | "underline";
+    const format = button.dataset.inlineFormat as InlineFormat;
     const state = inlineFormatState(target, range, format);
     button.dataset.state = state;
     button.setAttribute("aria-pressed", state === "on" ? "true" : "false");
@@ -2299,7 +2306,7 @@ function showFormatTools(): void {
   const currentSelectionForInline = currentSelection;
   const supportsBlockStyle = isBlockTag(session.meta.tag) || session.meta.tag === "li";
 
-  const addInlineButton = (format: "bold" | "italic" | "underline", label: string): void => {
+  const addInlineButton = (format: InlineFormat, label: string): void => {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
@@ -2320,6 +2327,7 @@ function showFormatTools(): void {
     addInlineButton("bold", "Bold");
     addInlineButton("italic", "Italic");
     addInlineButton("underline", "Underline");
+    addInlineButton("strikethrough", "Strikethrough");
     updateFormatToolState(tools, target, currentSelection.range);
 
     if (supportsBlockStyle) {
@@ -2469,18 +2477,21 @@ function onBeforeInput(event: InputEvent): void {
       return;
     case "formatBold":
     case "formatItalic":
-    case "formatUnderline": {
+    case "formatUnderline":
+    case "formatStrikeThrough": {
       event.preventDefault();
       if (!session) {
         flash("Formatting is not supported outside an edit session.");
         return;
       }
-      const format =
+      const format: InlineFormat =
         event.inputType === "formatBold"
           ? "bold"
           : event.inputType === "formatItalic"
             ? "italic"
-            : "underline";
+            : event.inputType === "formatUnderline"
+              ? "underline"
+              : "strikethrough";
       const selected = getFormatSelection();
       if (!selected) {
         flash("Select text to format it.");
@@ -2506,7 +2517,6 @@ function onBeforeInput(event: InputEvent): void {
       updateFormatting(session.meta.id, format as BlockFormatting);
       return;
     }
-    case "formatStrikeThrough":
     case "insertHorizontalRule": {
       event.preventDefault();
       flash("That formatting command is not supported.");
@@ -6481,8 +6491,15 @@ function updateFormatting(
   }
   const element = currentNodeElement(nodeId);
   if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
-  const inlineFormat = format as "bold" | "italic" | "underline";
-  if (!(inlineFormat === "bold" || inlineFormat === "italic" || inlineFormat === "underline")) {
+  const inlineFormat = format as InlineFormat;
+  if (
+    !(
+      inlineFormat === "bold" ||
+      inlineFormat === "italic" ||
+      inlineFormat === "underline" ||
+      inlineFormat === "strikethrough"
+    )
+  ) {
     throw new Error("That inline format is not supported");
   }
 
@@ -7862,7 +7879,7 @@ const createdMedia = new Map<string, MediaState>();
 const originalSeo = new Map<string, string>();
 const originalMarkups = new Map<string, string>();
 const duplicateSourceLabels = new Map<string, string>();
-const originalFormats = new Map<string, "bold" | "italic" | "underline" | "none">();
+const originalFormats = new Map<string, InlineFormat | "none">();
 const originalBlockTags = new Map<string, BlockTag>();
 const originalListStates = new Map<string, "plain" | "ul" | "ol">();
 interface BlockFormatRegion {
@@ -7891,10 +7908,13 @@ function segmentIdentity(pagePath: string, id: string): string {
 function attrIdentity(pagePath: string, id: string, attr: string): string {
   return `${pagePath}@${id}:${attr}`;
 }
-function formatTag(format: "bold" | "italic" | "underline"): "strong" | "em" | "u" {
-  return format === "bold" ? "strong" : format === "italic" ? "em" : "u";
+function formatTag(format: InlineFormat): "strong" | "em" | "u" | "s" {
+  if (format === "bold") return "strong";
+  if (format === "italic") return "em";
+  if (format === "underline") return "u";
+  return "s";
 }
-function applyFormatToElement(el: HTMLElement, format: "bold" | "italic" | "underline"): void {
+function applyFormatToElement(el: HTMLElement, format: InlineFormat): void {
   const existing = el.firstElementChild;
   if (existing?.getAttribute("data-xyle-format")) {
     while (existing.firstChild) el.insertBefore(existing.firstChild, existing);
@@ -7929,11 +7949,7 @@ function rangeForFormatOffsets(el: HTMLElement, start: number, end: number): Ran
   return range;
 }
 
-function applyFormatRangeToElement(
-  el: HTMLElement,
-  range: Range,
-  format: "bold" | "italic" | "underline",
-): boolean {
+function applyFormatRangeToElement(el: HTMLElement, range: Range, format: InlineFormat): boolean {
   if (
     !el.contains(range.startContainer) ||
     !el.contains(range.endContainer) ||
@@ -7960,7 +7976,7 @@ function applyFormatRangeToElement(
 
 function applyFormatSelectionToElement(
   el: HTMLElement,
-  format: "bold" | "italic" | "underline",
+  format: InlineFormat,
   start: number,
   end: number,
 ): boolean {

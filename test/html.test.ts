@@ -628,6 +628,9 @@ describe("patchHtml text fidelity", () => {
       patchAndGetText(source, [{ type: "format", nodeId: id, value: "bold" }]),
     ).resolves.toBe(`<p><strong>Hello</strong></p>`);
     await expect(
+      patchAndGetText(source, [{ type: "format", nodeId: id, value: "strikethrough" }]),
+    ).resolves.toBe(`<p><s>Hello</s></p>`);
+    await expect(
       patchAndGetText(source, [
         { type: "text", nodeId: `${id}#0`, value: "Updated" },
         { type: "format", nodeId: id, value: "italic" },

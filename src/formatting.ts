@@ -1,9 +1,10 @@
-export type InlineFormat = "bold" | "italic" | "underline";
+export type InlineFormat = "bold" | "italic" | "underline" | "strikethrough";
 
-const FORMAT_TAGS: Record<InlineFormat, "strong" | "em" | "u"> = {
+const FORMAT_TAGS: Record<InlineFormat, "strong" | "em" | "u" | "s"> = {
   bold: "strong",
   italic: "em",
   underline: "u",
+  strikethrough: "s",
 };
 const INLINE_TAGS = new Set([
   "a",
@@ -179,7 +180,7 @@ function normalizeNode(parent: Node): void {
       continue;
     }
     normalizeNode(element);
-    if (["strong", "em", "u"].includes(tag) && !element.hasChildNodes()) {
+    if (["strong", "em", "u", "s"].includes(tag) && !element.hasChildNodes()) {
       element.remove();
       continue;
     }
