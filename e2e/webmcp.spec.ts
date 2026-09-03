@@ -503,6 +503,12 @@ test.describe("WebMCP editor tools", () => {
     expect(published).toContain("Try another page");
     expect(published).not.toContain("Start editing");
     await expect(page.locator("#xyle-dirty")).toBeHidden();
+
+    await page.goto("/index.html");
+    await expect(page.getByText(humanHeading, { exact: true })).toBeVisible();
+    await expect(page.getByText(agentParagraph)).toBeVisible();
+    await expect(page.getByRole("link", { name: "Try another page" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Start editing" })).toHaveCount(0);
   });
 
   test("reads and updates safe SEO metadata", async ({ page, browserName }) => {
