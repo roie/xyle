@@ -52,8 +52,7 @@ export function rewriteFragmentReference(
 export function rewriteIdTokens(value: string, idMap: ReadonlyMap<string, string>): string {
   return value
     .split(/\s+/)
-    .filter(Boolean)
-    .map((token) => idMap.get(token) ?? token)
+    .flatMap((token) => (token ? [idMap.get(token) ?? token] : []))
     .join(" ");
 }
 
