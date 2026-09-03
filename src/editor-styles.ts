@@ -32,6 +32,7 @@ export const editorStyles = `
 @layer xyle.reset {
   #xyle-shell,
   #xyle-overlay-root,
+  #xyle-demo-notice,
   #xyle-flash,
   #xyle-conflict,
   #xyle-control-dock,
@@ -47,6 +48,8 @@ export const editorStyles = `
   #xyle-shell *,
   #xyle-shell *::before,
   #xyle-shell *::after,
+  #xyle-demo-notice,
+  #xyle-demo-notice *,
   #xyle-flash,
   #xyle-flash *,
   #xyle-conflict,
@@ -71,6 +74,32 @@ export const editorStyles = `
     background: transparent;
     color: var(--xyle-ink);
     font-family: var(--xyle-font-ui);
+  }
+
+  #xyle-demo-notice {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 2147483646;
+    display: flex;
+    min-height: 2rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    padding: 0.4rem 1rem;
+    border-bottom: 1px solid #4b5549;
+    background: #171b17;
+    color: #c4cec1;
+    font: 500 11px / 1.3 var(--xyle-font-ui);
+    text-align: center;
+  }
+  #xyle-demo-notice strong {
+    color: #eef3ec;
+    font-weight: 700;
+  }
+  #xyle-demo-notice + #xyle-shell {
+    top: 2rem;
   }
 
   #xyle-preview-host {

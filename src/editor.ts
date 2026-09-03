@@ -6768,8 +6768,12 @@ function toggleDockPanel(panel: DockPanel, trigger: HTMLElement): void {
 }
 
 function buildChrome(): void {
+  const demoNotice = demoConfig
+    ? `<aside id="xyle-demo-notice" role="note"><strong>Demo site</strong><span>Changes reset on refresh.</span></aside>`
+    : "";
   const shell = new DOMParser().parseFromString(
     `
+  ${demoNotice}
   <main id="xyle-shell">
     <div id="xyle-preview-host"></div>
   </main>
