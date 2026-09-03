@@ -300,6 +300,7 @@ const drawerShortcutIds = new Map([
   ["xyle-media-drawer", "xyle-media-shortcut"],
   ["xyle-structure-drawer", "xyle-structure-shortcut"],
   ["xyle-seo-drawer", "xyle-seo-shortcut"],
+  ["xyle-changes-drawer", "xyle-changes"],
 ]);
 
 function setDrawerShortcutExpanded(drawer: HTMLElement, expanded: boolean): void {
@@ -2877,12 +2878,12 @@ function closeSeoDrawer(restoreFocus = true): void {
     setInteractionMode(hoveredCandidate ? "hover" : "idle");
 }
 
-function openSeoEditor(): void {
+function openSeoEditor(trigger?: HTMLElement): void {
   closeSeoDrawer(false);
   closeMediaDrawer(false);
   closeChangesDrawer(false);
   closeStructurePanel(false);
-  seoDrawerTrigger = document.activeElement as HTMLElement | null;
+  seoDrawerTrigger = trigger ?? (document.activeElement as HTMLElement | null);
   setInteractionMode("drawer");
   const drawer = document.createElement("aside");
   drawer.id = "xyle-seo-drawer";
@@ -6739,6 +6740,33 @@ function snapshotDigest(): Promise<string> {
     .then((m) => m.snapshotDigest);
 }
 
+type DockPanel = "media" | "structure" | "seo" | "changes";
+
+function toggleDockPanel(panel: DockPanel, trigger: HTMLElement): void {
+  const drawerId = {
+    media: "xyle-media-drawer",
+    structure: "xyle-structure-drawer",
+    seo: "xyle-seo-drawer",
+    changes: "xyle-changes-drawer",
+  }[panel];
+  if (document.getElementById(drawerId)) {
+    if (panel === "media") closeMediaDrawer();
+    else if (panel === "structure") closeStructurePanel();
+    else if (panel === "seo") closeSeoDrawer();
+    else closeChangesDrawer();
+    return;
+  }
+  if (panel === "media") void openMediaDrawer(trigger);
+  else if (panel === "structure") {
+    structurePanelTrigger = trigger;
+    openStructurePanel();
+  } else if (panel === "seo") openSeoEditor(trigger);
+  else {
+    changesDrawerTrigger = trigger;
+    openChangesDrawer();
+  }
+}
+
 function buildChrome(): void {
   const shell = new DOMParser().parseFromString(
     `
@@ -6779,7 +6807,7 @@ function buildChrome(): void {
         </button>
       </div>
       <div id="xyle-dirty">
-        <button id="xyle-changes" class="xyle-icon-button" data-tooltip="Changes" aria-label="Open changes" title="Open changes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 12h8M8 15h5"/></svg><span id="xyle-count" class="xyle-count-badge">0</span></button>
+        <button id="xyle-changes" class="xyle-icon-button" data-tooltip="Changes" aria-label="Open changes" aria-controls="xyle-changes-drawer" aria-expanded="false" title="Open changes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 12h8M8 15h5"/></svg><span id="xyle-count" class="xyle-count-badge">0</span></button>
         <button id="xyle-publish" class="xyle-icon-button xyle-icon-button--publish" data-tooltip="Publish" aria-label="Publish changes" title="Publish changes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M5 14v5h14v-5"/></svg><span id="xyle-publish-label" class="xyle-sr-only">Publish changes</span></button>
       </div>
     </div>
@@ -6891,15 +6919,18 @@ function buildChrome(): void {
     applyShowEditables();
   });
   $("#xyle-media-shortcut").addEventListener("click", (event) => {
-    void openMediaDrawer(event.currentTarget as HTMLElement);
+    toggleDockPanel("media", event.currentTarget as HTMLElement);
   });
   $("#xyle-structure-shortcut").addEventListener("click", (event) => {
-    structurePanelTrigger = event.currentTarget as HTMLElement;
-    openStructurePanel();
+    toggleDockPanel("structure", event.currentTarget as HTMLElement);
   });
-  $("#xyle-seo-shortcut").addEventListener("click", openSeoEditor);
+  $("#xyle-seo-shortcut").addEventListener("click", (event) => {
+    toggleDockPanel("seo", event.currentTarget as HTMLElement);
+  });
   $("#xyle-publish").addEventListener("click", () => void publish());
-  $("#xyle-changes").addEventListener("click", openChangesDrawer);
+  $("#xyle-changes").addEventListener("click", (event) => {
+    toggleDockPanel("changes", event.currentTarget as HTMLElement);
+  });
   $("#xyle-conflict-reload").addEventListener("click", () => location.reload());
   $("#xyle-conflict-dismiss").addEventListener("click", () => {
     $("#xyle-conflict").style.display = "none";
@@ -7404,6 +7435,9 @@ function appendChangeValue(
 function openChangesDrawer(): void {
   const trigger = changesDrawerTrigger ?? (document.activeElement as HTMLElement | null);
   closeChangesDrawer(false);
+  closeMediaDrawer(false);
+  closeStructurePanel(false);
+  closeSeoDrawer(false);
   setInteractionMode("drawer");
   changesDrawerTrigger = trigger;
   const drawer = document.createElement("aside");

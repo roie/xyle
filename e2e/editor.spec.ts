@@ -312,6 +312,32 @@ test.describe("chrome layout rules", () => {
     await context.close();
   });
 
+  test("panel shortcuts toggle one companion drawer at a time", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    await page.locator("#xyle-control-hitbox").hover();
+    const panels = [
+      ["#xyle-media-shortcut", "Media"],
+      ["#xyle-structure-shortcut", "Structure"],
+      ["#xyle-seo-shortcut", "SEO metadata"],
+    ] as const;
+
+    for (const [shortcutSelector, panelName] of panels) {
+      const shortcut = page.locator(shortcutSelector);
+      await shortcut.click();
+      await expect(page.getByRole("dialog", { name: panelName })).toBeVisible();
+      await expect(shortcut).toHaveAttribute("aria-expanded", "true");
+      await shortcut.click();
+      await expect(page.getByRole("dialog", { name: panelName })).toHaveCount(0);
+      await expect(shortcut).toHaveAttribute("aria-expanded", "false");
+      await expect(shortcut).toBeFocused();
+    }
+
+    await page.locator("#xyle-media-shortcut").click();
+    await page.locator("#xyle-seo-shortcut").click();
+    await expect(page.getByRole("dialog", { name: "Media" })).toHaveCount(0);
+    await expect(page.getByRole("dialog", { name: "SEO metadata" })).toBeVisible();
+  });
+
   test("dock handle remains a full touch target at 320 pixels", async ({ browser }) => {
     const context = await browser.newContext({
       baseURL: test.info().project.use.baseURL as string,
@@ -350,7 +376,14 @@ test.describe("chrome layout rules", () => {
 
     await expect(page.locator("#xyle-dirty")).toBeVisible();
     await expect(page.locator("#xyle-count")).toHaveText("1");
-    await expect(page.locator("#xyle-changes")).toHaveAttribute("aria-label", "Open 1 change");
+    const changesShortcut = page.locator("#xyle-changes");
+    await expect(changesShortcut).toHaveAttribute("aria-label", "Open 1 change");
+    await changesShortcut.click();
+    await expect(page.getByRole("dialog", { name: "Changes" })).toBeVisible();
+    await expect(changesShortcut).toHaveAttribute("aria-expanded", "true");
+    await changesShortcut.click();
+    await expect(page.getByRole("dialog", { name: "Changes" })).toHaveCount(0);
+    await expect(changesShortcut).toHaveAttribute("aria-expanded", "false");
   });
 
   test("Publish does not leave /edit and clears dirty state", async ({ page }, info) => {
