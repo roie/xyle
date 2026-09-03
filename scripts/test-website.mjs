@@ -104,7 +104,7 @@ try {
 
   const heroImage = page.frameLocator("#xyle-preview").locator(".work-standard .work-image img");
   await heroImage.click();
-  await page.getByRole("button", { name: "Replace" }).waitFor();
+  await page.getByRole("button", { name: "Replace", exact: true }).waitFor();
   if (await page.getByRole("button", { name: "Replace" }).isDisabled()) {
     throw new Error("Image replacement is disabled in the browser demo");
   }
@@ -130,7 +130,7 @@ try {
   await heroImage.waitFor();
   await heroImage.click();
   const fileChooser = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "Replace" }).click();
+  await page.getByRole("button", { name: "Replace", exact: true }).click();
   await (await fileChooser).setFiles(resolve(repository, "demo/site/misc/team.jpg"));
   await page.waitForFunction(() => {
     const frame = document.querySelector("#xyle-preview");
