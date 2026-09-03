@@ -2399,6 +2399,7 @@ function wireGroupItemMarker(el: HTMLElement): void {
   el.addEventListener("keydown", (event) => {
     if (session || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
+    event.stopPropagation();
     showTools();
   });
 }

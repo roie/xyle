@@ -124,7 +124,9 @@ test("moves a source-backed Group item later through publication", async ({ page
   await loginAndOpenEditor(page, "/groups-move.html");
   const preview = page.frameLocator("#xyle-preview");
   const items = preview.locator("[data-xyle-group-item]");
-  await items.first().focus();
+  await expect(items).toHaveCount(2);
+  await expect(items.first()).toHaveAttribute("data-xyle-keyboard-target", "");
+  await items.first().press("Enter");
   await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
   await page.locator(".xyle-group-item-tools button", { hasText: "Move later" }).click();
   await expect
