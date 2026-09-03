@@ -27,7 +27,7 @@ normal public pages.
 - Publish patches the original source bytes narrowly — everything outside an
   edited range stays byte-for-byte identical
 - Discard, stale-session `409 Conflict` handling, first-publish-wins
-- atomic filesystem publisher
+- per-file atomic replacement with rollback for filesystem publication
 - browser-native WebMCP tools for shared human and agent editing
 - safe section visibility, sibling reordering, duplication, Groups, and Layout controls with shared undo/history
 
