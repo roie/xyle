@@ -295,11 +295,21 @@ test.describe("chrome layout rules", () => {
     await touchPage.keyboard.press("Escape");
 
     await menuButton.tap();
-    await touchPage.getByRole("menuitem", { name: "Sections" }).tap();
-    const drawerClose = touchPage.getByRole("button", { name: "Close sections" });
+    await touchPage.getByRole("menuitem", { name: "Structure" }).tap();
+    const drawerClose = touchPage.getByRole("button", { name: "Close structure" });
     const drawerCloseBox = await drawerClose.boundingBox();
     expect(drawerCloseBox?.width).toBeGreaterThanOrEqual(43.9);
     expect(drawerCloseBox?.height).toBeGreaterThanOrEqual(43.9);
+    const hideButton = touchPage
+      .locator(".xyle-structure-row")
+      .first()
+      .getByRole("button", { name: "Hide", exact: true });
+    const hideButtonBox = await hideButton.boundingBox();
+    expect(hideButtonBox?.width).toBeGreaterThanOrEqual(43.9);
+    expect(hideButtonBox?.height).toBeGreaterThanOrEqual(43.9);
+    await touchPage.locator(".xyle-structure-locate").first().tap();
+    await expect(touchPage.getByRole("dialog", { name: "Structure" })).toHaveCount(0);
+    await expect(touchPage.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await context.close();
   });
 
@@ -1419,7 +1429,9 @@ test.describe("changes drawer and undo", () => {
     await expect(page).toHaveTitle("Updated page title");
   });
 
-  test("desktop drawers preserve preview scrolling and close before editing", async ({ page }) => {
+  test("desktop Structure stays synchronized beside an explicitly sized preview", async ({
+    page,
+  }) => {
     await loginAndOpenEditor(page, "/index.html");
     const menuButton = page.locator("#xyle-menu-btn");
 
@@ -1438,10 +1450,70 @@ test.describe("changes drawer and undo", () => {
     await expect(menuButton).toBeFocused();
 
     await menuButton.click();
-    await page.getByRole("menuitem", { name: "Sections" }).click();
-    const sections = page.getByRole("dialog", { name: "Sections" });
-    await expect(sections).toHaveAttribute("data-xyle-drawer-mode", "companion");
-    await expect(sections).not.toHaveAttribute("aria-modal", "true");
+    await page.getByRole("menuitem", { name: "Structure" }).click();
+    const structure = page.getByRole("dialog", { name: "Structure" });
+    await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "companion");
+    await expect(structure).not.toHaveAttribute("aria-modal", "true");
+    const shellBox = await page.locator("#xyle-shell").boundingBox();
+    const structureBox = await structure.boundingBox();
+    expect(shellBox).not.toBeNull();
+    expect(structureBox).not.toBeNull();
+    expect(shellBox!.width + structureBox!.width).toBeCloseTo(
+      await page.evaluate(() => window.innerWidth),
+      0,
+    );
+
+    await page.locator("#xyle-preview").focus();
+    await expect(page.locator("#xyle-preview")).toBeFocused();
+    await page.setViewportSize({ width: 650, height: 800 });
+    await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "modal");
+    await expect(structure).toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
+    await expect(page.locator("html")).not.toHaveAttribute("data-xyle-structure-open", "true");
+    await expect(structure.getByRole("button", { name: "Close structure" })).toBeFocused();
+    await page.setViewportSize({ width: 1_000, height: 800 });
+    await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "companion");
+    await expect(structure).not.toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
+    await expect(page.locator("html")).toHaveAttribute("data-xyle-structure-open", "true");
+
+    const rows = structure.locator(".xyle-structure-row");
+    const initialOrder = await rows.evaluateAll((items) =>
+      items.map((item) => item.getAttribute("data-section-id")),
+    );
+    await rows.first().getByRole("button", { name: "Down", exact: true }).click();
+    const movedOrder = await rows.evaluateAll((items) =>
+      items.map((item) => item.getAttribute("data-section-id")),
+    );
+    expect(movedOrder).toEqual([initialOrder[1], initialOrder[0], ...initialOrder.slice(2)]);
+    await expect(rows.nth(0).locator(".xyle-structure-position")).toHaveText("01");
+    await expect(rows.nth(1).locator(".xyle-structure-position")).toHaveText("02");
+    await structure
+      .locator(`.xyle-structure-row[data-section-id="${initialOrder[0]}"]`)
+      .getByRole("button", { name: "Up", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        rows.evaluateAll((items) => items.map((item) => item.getAttribute("data-section-id"))),
+      )
+      .toEqual(initialOrder);
+
+    const beforeDuplicate = await rows.evaluateAll((items) =>
+      items.map((item) => item.getAttribute("data-section-id")),
+    );
+    await rows.first().getByRole("button", { name: "Duplicate", exact: true }).click();
+    const afterDuplicate = await rows.evaluateAll((items) =>
+      items.map((item) => item.getAttribute("data-section-id")),
+    );
+    expect(afterDuplicate[0]).toBe(beforeDuplicate[0]);
+    expect(afterDuplicate[1]).not.toBe(beforeDuplicate[1]);
+    expect(afterDuplicate.slice(2)).toEqual(beforeDuplicate.slice(1));
+    await page.keyboard.press("Control+z");
+    await expect
+      .poll(() =>
+        rows.evaluateAll((items) => items.map((item) => item.getAttribute("data-section-id"))),
+      )
+      .toEqual(beforeDuplicate);
 
     await page.evaluate(() => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
@@ -1460,12 +1532,26 @@ test.describe("changes drawer and undo", () => {
         ),
       )
       .toBeGreaterThan(0);
-    await expect(sections).toBeVisible();
+    await structure.locator(".xyle-structure-locate").first().click();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+          const section = frame.contentDocument?.querySelector<HTMLElement>(
+            "main > section[data-xyle-node]",
+          );
+          if (!section || !frame.contentWindow) return false;
+          const rect = section.getBoundingClientRect();
+          return rect.bottom > 0 && rect.top < frame.contentWindow.innerHeight;
+        }),
+      )
+      .toBe(true);
+    await expect(structure).toBeVisible();
 
     const id = await findNodeByText(page, "Edit your static site visually");
     expect(id).toBeTruthy();
     await editNode(page, id!);
-    await expect(sections).toHaveCount(0);
+    await expect(structure).toBeVisible();
     await expect(
       page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${id}"]`),
     ).toHaveAttribute("contenteditable", "true");
@@ -1643,10 +1729,13 @@ test("hides and reorders safe sibling sections", async ({ page }) => {
   await expect(first).toHaveJSProperty("hidden", true);
   await page.locator("#xyle-control-hitbox").hover();
   await page.locator("#xyle-menu-btn").click();
-  await page.getByRole("menuitem", { name: "Sections" }).click();
-  const sectionsDrawer = page.getByRole("dialog", { name: "Sections" });
-  await expect(sectionsDrawer).toBeVisible();
-  await sectionsDrawer.getByRole("button", { name: "Show" }).first().click();
+  await page.getByRole("menuitem", { name: "Structure" }).click();
+  const structurePanel = page.getByRole("dialog", { name: "Structure" });
+  await expect(structurePanel).toBeVisible();
+  const heroRow = structurePanel
+    .locator(".xyle-structure-row")
+    .filter({ hasText: "Edit your static site visually" });
+  await heroRow.getByRole("button", { name: "Show", exact: true }).click();
   await expect(first).toHaveJSProperty("hidden", false);
 });
 

@@ -86,9 +86,10 @@ test.describe("canonical net reconciliation", () => {
     await expect(first).toHaveJSProperty("hidden", true);
     await page.locator("#xyle-control-hitbox").hover();
     await page.locator("#xyle-menu-btn").click();
-    await page.getByRole("menuitem", { name: "Sections" }).click();
-    const sections = page.getByRole("dialog", { name: "Sections" });
-    await sections.getByRole("button", { name: "Show" }).first().click();
+    await page.getByRole("menuitem", { name: "Structure" }).click();
+    const structure = page.getByRole("dialog", { name: "Structure" });
+    const firstRow = structure.locator(`.xyle-structure-row[data-section-id="${sectionIds[0]}"]`);
+    await firstRow.getByRole("button", { name: "Show", exact: true }).click();
 
     await expect(first).toHaveJSProperty("hidden", false);
     await expect.poll(async () => opsCount(page)).toBe(0);

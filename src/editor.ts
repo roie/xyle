@@ -295,6 +295,7 @@ const DIALOG_FOCUSABLE_SELECTOR = [
 ].join(",");
 
 const dialogBackgroundStates = new WeakMap<HTMLElement, Array<[HTMLElement, boolean]>>();
+const drawerModeCleanups = new WeakMap<HTMLElement, () => void>();
 
 function inertDialogBackground(dialog: HTMLElement): void {
   const states: Array<[HTMLElement, boolean]> = [];
@@ -323,6 +324,8 @@ function releaseDialogFocus(dialog: HTMLElement | null): void {
 
 function removeTrappedDialog(dialog: HTMLElement | null): void {
   if (!dialog) return;
+  drawerModeCleanups.get(dialog)?.();
+  drawerModeCleanups.delete(dialog);
   releaseDialogFocus(dialog);
   dialog.remove();
 }
@@ -353,19 +356,53 @@ function trapDialogFocus(dialog: HTMLElement, close: () => void): void {
 }
 
 function configureEditorDrawer(drawer: HTMLElement, close: () => void): void {
-  const modal = window.matchMedia("(max-width: 700px)").matches;
-  drawer.dataset.xyleDrawerMode = modal ? "modal" : "companion";
-  if (modal) {
-    drawer.setAttribute("aria-modal", "true");
-    trapDialogFocus(drawer, close);
-    return;
-  }
-  drawer.removeAttribute("aria-modal");
-  drawer.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    close();
-  });
+  const mediaQuery = window.matchMedia("(max-width: 700px)");
+  const applyMode = (): void => {
+    const modal = mediaQuery.matches;
+    const enteringModal = modal && drawer.dataset.xyleDrawerMode !== "modal";
+    drawer.dataset.xyleDrawerMode = modal ? "modal" : "companion";
+    if (modal) drawer.setAttribute("aria-modal", "true");
+    else drawer.removeAttribute("aria-modal");
+    if (modal) inertDialogBackground(drawer);
+    else releaseDialogFocus(drawer);
+    if (enteringModal && !drawer.contains(document.activeElement)) {
+      drawer.querySelector<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)?.focus();
+    }
+    if (drawer.id === "xyle-structure-drawer") {
+      if (modal) document.documentElement.removeAttribute("data-xyle-structure-open");
+      else document.documentElement.dataset.xyleStructureOpen = "true";
+      scheduleOverlayRefresh();
+    }
+  };
+  const onKeydown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+      return;
+    }
+    if (event.key !== "Tab" || drawer.dataset.xyleDrawerMode !== "modal") return;
+    const focusable = [...drawer.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)].filter(
+      (element) => !element.hidden && element.getAttribute("aria-hidden") !== "true",
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  const cleanup = (): void => {
+    mediaQuery.removeEventListener("change", applyMode);
+    drawer.removeEventListener("keydown", onKeydown);
+  };
+  drawerModeCleanups.set(drawer, cleanup);
+  mediaQuery.addEventListener("change", applyMode);
+  drawer.addEventListener("keydown", onKeydown);
+  applyMode();
 }
 
 function closeCompanionDrawerForPreviewInteraction(): void {
@@ -375,7 +412,6 @@ function closeCompanionDrawerForPreviewInteraction(): void {
   if (!drawer) return;
   if (drawer.id === "xyle-media-drawer") closeMediaDrawer(false);
   else if (drawer.id === "xyle-seo-drawer") closeSeoDrawer(false);
-  else if (drawer.id === "xyle-sections-drawer") closeSectionDrawer(false);
   else if (drawer.id === "xyle-changes-drawer") closeChangesDrawer(false);
 }
 
@@ -444,7 +480,7 @@ async function loadPage(pagePath: string, opts: { pushHistory: boolean }): Promi
   const data = (await res.json()) as PageData & { baseDigest: string };
   closeMediaDrawer(false);
   closeChangesDrawer(false);
-  closeSectionDrawer(false);
+  closeStructurePanel(false);
   closeContextTools(false);
   hoveredCandidate = null;
   window.clearTimeout(hoverClearTimer);
@@ -2827,7 +2863,7 @@ function openSeoEditor(): void {
   closeSeoDrawer(false);
   closeMediaDrawer(false);
   closeChangesDrawer(false);
-  closeSectionDrawer(false);
+  closeStructurePanel(false);
   seoDrawerTrigger = document.activeElement as HTMLElement | null;
   setInteractionMode("drawer");
   const drawer = document.createElement("aside");
@@ -3782,86 +3818,237 @@ interface MediaItem {
 }
 
 let drawerOpen = false;
-let sectionDrawerTrigger: HTMLElement | null = null;
+let structurePanelTrigger: HTMLElement | null = null;
 
-function closeSectionDrawer(restoreFocus = true): void {
-  removeTrappedDialog(document.getElementById("xyle-sections-drawer"));
-  const trigger = sectionDrawerTrigger;
-  sectionDrawerTrigger = null;
+function closeStructurePanel(restoreFocus = true): void {
+  removeTrappedDialog(document.getElementById("xyle-structure-drawer"));
+  document.documentElement.removeAttribute("data-xyle-structure-open");
+  scheduleOverlayRefresh();
+  const trigger = structurePanelTrigger;
+  structurePanelTrigger = null;
   drawerOpen = false;
   if (restoreFocus && trigger?.isConnected) trigger.focus();
   if (!session && !activeTools) setInteractionMode(hoveredCandidate ? "hover" : "idle");
 }
 
-function openSectionDrawer(): void {
-  const trigger = sectionDrawerTrigger ?? (document.activeElement as HTMLElement | null);
-  closeSectionDrawer(false);
+function structureActionButton(
+  label: string,
+  actionKey: string,
+  action: (() => void) | null,
+  reason?: string,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "xyle-structure-button";
+  button.textContent = label;
+  button.dataset.structureAction = actionKey;
+  button.disabled = action === null;
+  if (!action && reason) button.dataset.unavailableReason = reason;
+  if (action) {
+    button.addEventListener("click", () => {
+      try {
+        action();
+        document
+          .querySelector<HTMLButtonElement>(`[data-structure-action="${CSS.escape(actionKey)}"]`)
+          ?.focus();
+      } catch (error) {
+        flash(error instanceof Error ? error.message : "This structure change is unavailable");
+      }
+    });
+  }
+  return button;
+}
+
+function appendStructureReasons(row: HTMLElement, sectionIndex: number): void {
+  const buttons = [...row.querySelectorAll<HTMLButtonElement>("[data-unavailable-reason]")];
+  const reasons = [...new Set(buttons.map((button) => button.dataset.unavailableReason))].filter(
+    (reason): reason is string => Boolean(reason),
+  );
+  for (const [reasonIndex, reason] of reasons.entries()) {
+    const id = `xyle-structure-reason-${sectionIndex}-${reasonIndex}`;
+    const message = document.createElement("p");
+    message.id = id;
+    message.className = "xyle-structure-reason";
+    message.textContent = reason;
+    row.append(message);
+    for (const button of buttons) {
+      if (button.dataset.unavailableReason !== reason) continue;
+      button.setAttribute("aria-describedby", id);
+      delete button.dataset.unavailableReason;
+    }
+  }
+}
+
+function renderStructurePanel(drawer: HTMLElement): void {
+  const list = drawer.querySelector<HTMLElement>("[data-structure-list]");
+  const doc = previewDoc();
+  if (!list || !doc || !state.current) return;
+  list.replaceChildren();
+  const sectionMetadata = new Map(
+    state.current.nodes.filter((node) => node.kind === "section").map((node) => [node.id, node]),
+  );
+  const sections = [...doc.querySelectorAll<HTMLElement>("[data-xyle-node]")]
+    .map((element) => {
+      const id = element.getAttribute("data-xyle-node");
+      const meta = id ? sectionMetadata.get(id) : undefined;
+      return meta ? { element, meta } : null;
+    })
+    .filter((entry): entry is { element: HTMLElement; meta: NodeMeta } => entry !== null);
+  if (sections.length === 0) {
+    list.innerHTML = `<p class="xyle-empty-state">No safe sections found on this page.</p>`;
+    return;
+  }
+  for (const [sectionIndex, { element, meta }] of sections.entries()) {
+    const sectionName = sectionPreview(element);
+    const row = document.createElement("article");
+    row.className = "xyle-structure-row";
+    row.dataset.sectionId = meta.id;
+
+    const rowHeader = document.createElement("header");
+    rowHeader.className = "xyle-structure-row-header";
+    const position = document.createElement("span");
+    position.className = "xyle-structure-position";
+    position.textContent = String(sectionIndex + 1).padStart(2, "0");
+    const locate = document.createElement("button");
+    locate.type = "button";
+    locate.className = "xyle-structure-locate";
+    locate.textContent = sectionName;
+    locate.setAttribute("aria-label", `Show ${sectionName} in the preview`);
+    locate.addEventListener("click", () => {
+      if (drawer.dataset.xyleDrawerMode === "modal") closeStructurePanel(false);
+      element.scrollIntoView({ block: "center", inline: "nearest" });
+      focusPreviewElement(element);
+      scheduleOverlayRefresh();
+    });
+    rowHeader.append(position, locate);
+    if (element.hidden) {
+      const status = document.createElement("span");
+      status.className = "xyle-structure-status";
+      status.textContent = "Hidden";
+      rowHeader.append(status);
+    }
+    row.append(rowHeader);
+
+    const actions = document.createElement("div");
+    actions.className = "xyle-structure-actions";
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", `${sectionName} section actions`);
+    const parent = element.parentElement;
+    const siblings = parent ? sectionChildren(parent) : [];
+    const index = siblings.indexOf(element);
+    const structurallySafe = Boolean(parent) && siblings.length === parent?.children.length;
+    const structuralReason = "Section actions require supported sibling sections";
+    const previous = siblings[index - 1];
+    const next = siblings[index + 1];
+    const previousId = previous?.getAttribute("data-xyle-node");
+    const nextId = next?.getAttribute("data-xyle-node");
+    actions.append(
+      structureActionButton(
+        "Up",
+        `${meta.id}:up`,
+        structurallySafe && previousId ? () => moveSection(meta.id, previousId, true) : null,
+        previous ? structuralReason : "Already first",
+      ),
+      structureActionButton(
+        "Down",
+        `${meta.id}:down`,
+        structurallySafe && nextId ? () => moveSection(meta.id, nextId, false) : null,
+        next ? structuralReason : "Already last",
+      ),
+      structureActionButton(element.hidden ? "Show" : "Hide", `${meta.id}:visibility`, () =>
+        updateSectionVisibility(meta.id, Boolean(element.hidden)),
+      ),
+    );
+    const createdSection = state.ops.some(
+      ({ pagePath, op }) =>
+        pagePath === state.current?.pagePath &&
+        op.type === "duplicateSection" &&
+        op.createdId === meta.id,
+    );
+    actions.append(
+      structureActionButton(
+        "Duplicate",
+        `${meta.id}:duplicate`,
+        structurallySafe && !createdSection ? () => duplicateSection(meta.id) : null,
+        createdSection ? "Publish this section before duplicating it again" : structuralReason,
+      ),
+    );
+    row.append(actions);
+
+    const layoutTarget = layoutTargetForId(meta.id);
+    if (layoutTarget) {
+      const capability = layoutCapability(layoutTarget);
+      const layout = document.createElement("div");
+      layout.className = "xyle-structure-layout";
+      layout.setAttribute("role", "group");
+      layout.setAttribute("aria-label", `${sectionName} layout`);
+      const layoutLabel = document.createElement("strong");
+      layoutLabel.textContent = "Layout";
+      layout.append(layoutLabel);
+      for (const [preset, label] of [
+        ["stacked", "Stack"],
+        ["two-column", "Split"],
+      ] as const) {
+        const button = structureActionButton(
+          label,
+          `${meta.id}:layout:${preset}`,
+          capability.supported ? () => setLayoutPreset(meta.id, preset) : null,
+          capability.reason,
+        );
+        button.setAttribute("aria-pressed", String(capability.current === preset));
+        layout.append(button);
+      }
+      const currentOrder = regionOrderInDom(layoutTarget);
+      const nextOrder: RegionOrder = currentOrder === "swapped" ? "original" : "swapped";
+      const orderSupported = capability.supported && canSetRegionOrder(layoutTarget, nextOrder);
+      layout.append(
+        structureActionButton(
+          currentOrder === "swapped" ? "Restore sides" : "Swap sides",
+          `${meta.id}:layout:order`,
+          orderSupported ? () => setRegionOrder(meta.id, nextOrder) : null,
+          capability.reason ?? "Region order is unavailable",
+        ),
+      );
+      row.append(layout);
+    }
+    appendStructureReasons(row, sectionIndex);
+    list.append(row);
+  }
+}
+
+function refreshStructurePanelIfOpen(): void {
+  const drawer = document.getElementById("xyle-structure-drawer");
+  if (drawer) renderStructurePanel(drawer);
+}
+
+function openStructurePanel(): void {
+  const trigger = structurePanelTrigger ?? (document.activeElement as HTMLElement | null);
+  closeStructurePanel(false);
   closeMediaDrawer(false);
   closeChangesDrawer(false);
   closeSeoDrawer(false);
   closeContextTools(false);
-  sectionDrawerTrigger = trigger;
+  structurePanelTrigger = trigger;
   drawerOpen = true;
   setInteractionMode("drawer");
   const drawer = document.createElement("aside");
-  drawer.id = "xyle-sections-drawer";
-  drawer.className = "xyle-drawer xyle-sections-drawer";
+  drawer.id = "xyle-structure-drawer";
+  drawer.className = "xyle-drawer xyle-structure-drawer";
   drawer.setAttribute("role", "dialog");
   drawer.setAttribute("aria-modal", "true");
-  drawer.setAttribute("aria-labelledby", "xyle-sections-title");
+  drawer.setAttribute("aria-labelledby", "xyle-structure-title");
   drawer.innerHTML = `<header class="xyle-drawer-header">
-    <strong id="xyle-sections-title"><span>Sections</span></strong>
-    <button class="xyle-icon-button" type="button" data-close aria-label="Close sections">×</button>
+    <strong id="xyle-structure-title"><span>Structure</span></strong>
+    <button class="xyle-icon-button" type="button" data-close aria-label="Close structure">×</button>
   </header>
-  <p class="xyle-media-help">Hide or reorder safe sibling sections. Xyle refuses ambiguous structures.</p>
-  <div class="xyle-changes-list" data-section-list></div>`;
-  const closeButton = drawer.querySelector<HTMLButtonElement>("[data-close]")!;
-  closeButton.addEventListener("click", () => closeSectionDrawer());
-  const list = drawer.querySelector<HTMLElement>("[data-section-list]")!;
-  const sections = state.current?.nodes.filter((node) => node.kind === "section") ?? [];
-  if (sections.length === 0) {
-    list.innerHTML = `<p class="xyle-empty-state">No safe sections found.</p>`;
-  }
-  for (const meta of sections) {
-    const element = currentNodeElement(meta.id);
-    if (!element) continue;
-    const row = document.createElement("div");
-    row.className = "xyle-change-row";
-    const heading = document.createElement("strong");
-    heading.className = "xyle-change-label";
-    heading.textContent = sectionPreview(element);
-    const actions = document.createElement("div");
-    actions.className = "xyle-change-row-actions";
-    const visibility = document.createElement("button");
-    visibility.type = "button";
-    visibility.className = "xyle-undo-button";
-    visibility.textContent = element.hidden ? "Show" : "Hide";
-    visibility.addEventListener("click", () => {
-      updateSectionVisibility(meta.id, Boolean(element.hidden));
-      openSectionDrawer();
-    });
-    actions.append(visibility);
-    const siblings = sectionChildren(element.parentElement!);
-    const index = siblings.indexOf(element);
-    const addMove = (label: string, target: HTMLElement | undefined, before: boolean): void => {
-      if (!target) return;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "xyle-undo-button";
-      button.textContent = label;
-      button.addEventListener("click", () => {
-        moveSection(meta.id, target.getAttribute("data-xyle-node")!, before);
-        openSectionDrawer();
-      });
-      actions.append(button);
-    };
-    addMove("Up", siblings[index - 1], true);
-    addMove("Down", siblings[index + 1], false);
-    row.append(heading, actions);
-    list.append(row);
-  }
+  <p class="xyle-media-help">Find a section, change its order or visibility, and choose safe two-region layouts.</p>
+  <div class="xyle-structure-list" data-structure-list></div>`;
+  const closeButton = drawer.querySelector<HTMLButtonElement>("[data-close]");
+  if (!closeButton) return;
+  closeButton.addEventListener("click", () => closeStructurePanel());
   document.body.append(drawer);
-  configureEditorDrawer(drawer, () => closeSectionDrawer());
+  renderStructurePanel(drawer);
+  configureEditorDrawer(drawer, () => closeStructurePanel());
   closeButton.focus();
 }
 
@@ -3891,7 +4078,7 @@ type MediaDrawerState = "loading" | "ready" | "error" | "unavailable";
 async function openMediaDrawer(trigger?: HTMLElement): Promise<void> {
   closeSeoDrawer(false);
   closeChangesDrawer(false);
-  closeSectionDrawer(false);
+  closeStructurePanel(false);
   if (drawerOpen) return;
   mediaDrawerTrigger = trigger ?? (document.activeElement as HTMLElement | null);
   if (mediaManagementUnavailable) {
@@ -6378,6 +6565,7 @@ function updateDirtyUi(): void {
   const chevron = $("#xyle-dock-chevron", dock);
   if (chevron) chevron.textContent = expanded ? "⌄" : "⌃";
   refreshMarkers();
+  refreshStructurePanelIfOpen();
   if ($("#xyle-changes-drawer")) openChangesDrawer();
 }
 
@@ -6409,7 +6597,7 @@ function buildChrome(): void {
             <button data-action="exit" class="xyle-menu-item" role="menuitem">Exit editor</button>
             <button data-action="live" class="xyle-menu-item" role="menuitem">View live site</button>
             <button data-action="media" class="xyle-menu-item" role="menuitem">Media library</button>
-            <button data-action="sections" class="xyle-menu-item" role="menuitem">Sections</button>
+            <button data-action="structure" class="xyle-menu-item" role="menuitem">Structure</button>
             <button data-action="seo" class="xyle-menu-item" role="menuitem">SEO metadata</button>
             <div class="xyle-menu-separator" role="separator"></div>
             <button data-action="logout" class="xyle-menu-item" role="menuitem">Log out</button>
@@ -6597,7 +6785,7 @@ function buildChrome(): void {
 function menuAction(action: string): void {
   if (action === "exit") exitEditor();
   if (action === "media") void openMediaDrawer();
-  if (action === "sections") openSectionDrawer();
+  if (action === "structure") openStructurePanel();
   if (action === "seo") openSeoEditor();
   if (action === "live") {
     try {
@@ -6654,7 +6842,7 @@ function discardAll(): void {
   mediaMutationGeneration += 1;
   closeMediaDrawer(false);
   closeChangesDrawer(false);
-  closeSectionDrawer(false);
+  closeStructurePanel(false);
   selectedImage = null;
   previewDoc()
     ?.querySelectorAll(".xyle-img-tools,.xyle-link-tools")

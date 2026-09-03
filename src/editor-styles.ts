@@ -661,6 +661,117 @@ export const editorStyles = `
     gap: 1rem;
     margin-bottom: 1rem;
   }
+  @media (min-width: 701px) {
+    html[data-xyle-structure-open] #xyle-shell {
+      right: min(25rem, 100vw);
+    }
+    html[data-xyle-structure-open] #xyle-control-dock {
+      left: calc((100vw - min(25rem, 100vw)) / 2);
+    }
+  }
+  .xyle-structure-list {
+    display: grid;
+    gap: 0.65rem;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 2px 1rem 0;
+  }
+  .xyle-structure-row {
+    display: grid;
+    gap: 0.6rem;
+    padding: 0.7rem;
+    border: 1px solid var(--xyle-line);
+    border-left: 3px solid #667a61;
+    border-radius: var(--xyle-radius-md);
+    background: var(--xyle-raised);
+  }
+  .xyle-structure-row-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .xyle-structure-position {
+    color: var(--xyle-accent-hover);
+    font: 700 10px / 1 var(--xyle-font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .xyle-structure-locate {
+    min-width: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    background: transparent;
+    color: var(--xyle-ink);
+    font: 650 13px / 1.25 var(--xyle-font-ui);
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .xyle-structure-locate:hover,
+  .xyle-structure-locate:focus-visible {
+    color: #b5c8b0;
+    outline: 2px solid var(--xyle-focus);
+    outline-offset: 3px;
+  }
+  .xyle-structure-status {
+    padding: 0.15rem 0.35rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: 999px;
+    color: var(--xyle-muted);
+    font: 650 9px / 1 var(--xyle-font-ui);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .xyle-structure-actions,
+  .xyle-structure-layout {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.3rem;
+  }
+  .xyle-structure-layout {
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--xyle-line);
+  }
+  .xyle-structure-layout > strong {
+    align-self: center;
+    color: var(--xyle-muted);
+    font: 700 9px / 1 var(--xyle-font-ui);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .xyle-structure-button {
+    min-width: 0;
+    min-height: 2rem;
+    padding: 0.35rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: transparent;
+    color: var(--xyle-muted);
+    font: 600 10px / 1.15 var(--xyle-font-ui);
+    cursor: pointer;
+  }
+  .xyle-structure-button:hover,
+  .xyle-structure-button:focus-visible,
+  .xyle-structure-button[aria-pressed="true"] {
+    border-color: var(--xyle-accent-hover);
+    background: var(--xyle-accent-soft);
+    color: var(--xyle-ink);
+  }
+  .xyle-structure-button:focus-visible {
+    outline: 2px solid var(--xyle-focus);
+    outline-offset: 1px;
+  }
+  .xyle-structure-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.42;
+  }
+  .xyle-structure-reason {
+    margin: 0;
+    color: var(--xyle-muted);
+    font: 500 10px / 1.35 var(--xyle-font-ui);
+  }
   .xyle-drawer-header strong {
     display: block;
     font-size: 16px;
@@ -669,7 +780,7 @@ export const editorStyles = `
   #xyle-media-drawer .xyle-icon-button,
   #xyle-changes-drawer .xyle-icon-button,
   #xyle-seo-drawer .xyle-icon-button,
-  #xyle-sections-drawer .xyle-icon-button {
+  #xyle-structure-drawer .xyle-icon-button {
     width: 2.25rem;
     height: 2.25rem;
     border: 0;
@@ -684,8 +795,8 @@ export const editorStyles = `
   #xyle-changes-drawer .xyle-icon-button:focus-visible,
   #xyle-seo-drawer .xyle-icon-button:hover,
   #xyle-seo-drawer .xyle-icon-button:focus-visible,
-  #xyle-sections-drawer .xyle-icon-button:hover,
-  #xyle-sections-drawer .xyle-icon-button:focus-visible {
+  #xyle-structure-drawer .xyle-icon-button:hover,
+  #xyle-structure-drawer .xyle-icon-button:focus-visible {
     background: var(--xyle-accent-soft);
     color: var(--xyle-accent-hover);
   }
@@ -1042,7 +1153,7 @@ export const editorStyles = `
     #xyle-media-drawer .xyle-icon-button,
     #xyle-changes-drawer .xyle-icon-button,
     #xyle-seo-drawer .xyle-icon-button,
-    #xyle-sections-drawer .xyle-icon-button {
+    #xyle-structure-drawer .xyle-icon-button {
       width: 44px;
       height: 44px;
     }
@@ -1052,6 +1163,8 @@ export const editorStyles = `
     .xyle-media-tab,
     .xyle-media-cell,
     .xyle-media-upload,
+    .xyle-structure-button,
+    .xyle-structure-locate,
     #xyle-overlay-root button {
       min-width: 44px;
       min-height: 44px;
