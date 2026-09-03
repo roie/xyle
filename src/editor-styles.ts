@@ -195,21 +195,6 @@ export const editorStyles = `
     border: 0;
     background: transparent;
   }
-  #xyle-demo-label {
-    display: inline-flex;
-    min-height: 28px;
-    align-items: center;
-    padding: 0 10px;
-    border-inline: 1px solid var(--xyle-line);
-    color: #d7e5d2;
-    font: 650 10px / 1 var(--xyle-font-ui);
-    letter-spacing: 0.02em;
-    white-space: nowrap;
-  }
-  #xyle-demo-label strong {
-    color: #fff;
-    font-weight: 750;
-  }
   .xyle-icon-button {
     position: relative;
     display: grid;
