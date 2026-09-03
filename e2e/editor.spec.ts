@@ -855,6 +855,10 @@ test.describe("changes drawer and undo", () => {
 
   test("updates SEO metadata from the human editor", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
+    const originalTitle = await page.evaluate(
+      () =>
+        (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument?.title ?? "",
+    );
     await page.locator("#xyle-control-hitbox").hover();
     await page.locator("#xyle-menu-btn").click();
     await page.locator('#xyle-menu button[data-action="seo"]').click();
@@ -871,6 +875,24 @@ test.describe("changes drawer and undo", () => {
         ),
       )
       .toBe("Updated page title");
+
+    await page.locator("#xyle-changes").click();
+    const change = page
+      .getByRole("dialog", { name: "Changes" })
+      .locator(".xyle-change-row")
+      .filter({ hasText: "Updated page title" });
+    await expect(change.locator(".xyle-change-before")).toContainText(originalTitle);
+    await expect(change.locator(".xyle-change-after")).toContainText("Updated page title");
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get("/index.html")).text();
+    expect(source).toContain("<title>Updated page title</title>");
+    expect(source).not.toContain("data-xyle-node");
+
+    await page.goto("/index.html");
+    await expect(page).toHaveTitle("Updated page title");
   });
 
   test("SEO and Sections drawers trap focus and restore the menu trigger", async ({ page }) => {
