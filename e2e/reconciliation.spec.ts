@@ -112,6 +112,49 @@ test.describe("canonical net reconciliation", () => {
     await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
 
+  test("media source restores to the authored baseline", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    const nodeId = await image.getAttribute("data-xyle-node");
+    const original = await image.evaluate((element) => ({
+      src: element.getAttribute("src"),
+      alt: element.getAttribute("alt"),
+      style: element.getAttribute("style"),
+    }));
+
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Media" }).click();
+    await page
+      .getByRole("dialog", { name: "Media" })
+      .getByRole("button", { name: "Choose /assets/hero-fallback.jpg" })
+      .click();
+    await expect
+      .poll(() =>
+        page
+          .frameLocator("#xyle-preview")
+          .locator(`[data-xyle-node="${nodeId}"]`)
+          .getAttribute("src"),
+      )
+      .toBe("/assets/hero-fallback.jpg");
+    expect(await opsCount(page)).toBe(1);
+
+    const changedImage = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${nodeId}"]`);
+    await changedImage.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Media" }).click();
+    await page
+      .getByRole("dialog", { name: "Media" })
+      .getByRole("button", { name: "Choose /assets/hero-wide.webp" })
+      .click();
+
+    await expect(changedImage).toHaveAttribute("src", original.src!);
+    await expect(changedImage).toHaveAttribute("alt", original.alt!);
+    expect(await changedImage.getAttribute("style")).toBe(original.style);
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
+  });
+
   test("media alt text restores to the authored baseline", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const image = page

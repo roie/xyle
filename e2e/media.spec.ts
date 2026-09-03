@@ -530,6 +530,12 @@ test.describe("media editing", () => {
     const html = await (await page.request.get("/about.html")).text();
     expect(html).toContain(`alt="${altText}"`);
     expect(html).not.toContain("unused-placeholder");
+    expect(html).not.toContain("data-xyle-node");
+
+    await page.goto("/about.html");
+    const publishedImage = page.locator('img[src="/misc/team.jpg"]');
+    await expect(publishedImage).toHaveAttribute("alt", altText);
+    await expect(publishedImage).not.toHaveAttribute("data-xyle-node");
   });
 
   test("published uploads remain in the next filesystem snapshot", async ({ page }) => {
@@ -552,6 +558,12 @@ test.describe("media editing", () => {
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     expect((await page.request.get(uploadedPath)).ok()).toBe(true);
     expect((await page.request.get("/__xyle/api/manifest")).ok()).toBe(true);
+
+    await page.goto("/index.html");
+    const publishedImage = page.locator(`img[src="${uploadedPath}"]`);
+    await expect(publishedImage).toHaveCount(1);
+    await expect(publishedImage).toHaveAttribute("alt", "A careful repair in progress");
+    await expect(publishedImage).not.toHaveAttribute("data-xyle-node");
   });
 
   test("publishes a derived crop without changing the original asset", async ({ page }) => {
@@ -595,5 +607,13 @@ test.describe("media editing", () => {
     }
     expect(targetTag).toContain("object-position: 70% 30%");
     expect(targetTag).not.toContain(`src="${selected.src}"`);
+    const derivedPath = targetTag.match(/src="([^"]+)"/)?.[1];
+    expect(derivedPath).toMatch(/^\/__media\/[0-9a-f]{64}\.webp$/);
+
+    await page.goto("/index.html");
+    const publishedImage = page.locator('img[alt="A careful repair in progress"]');
+    await expect(publishedImage).toHaveAttribute("src", derivedPath!);
+    await expect(publishedImage).toHaveCSS("object-position", "70% 30%");
+    await expect(publishedImage).not.toHaveAttribute("data-xyle-node");
   });
 });
