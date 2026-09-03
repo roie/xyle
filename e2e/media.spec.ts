@@ -444,6 +444,38 @@ test.describe("media editing", () => {
     expect(usedFlag).toBe(true);
   });
 
+  test("unsupported image actions explain why they are unavailable", async ({ page }) => {
+    await loginAndOpenEditor(page, "/qa-golden.html");
+    const preview = page.frameLocator("#xyle-preview");
+
+    await preview.locator('img[alt="Xyle test mark"]').click();
+    let tools = page.locator(".xyle-img-tools");
+    await expect(tools.getByRole("button", { name: "Crop" })).toBeDisabled();
+    await expect(tools.getByRole("button", { name: "Crop" })).toHaveAttribute(
+      "title",
+      "This image format is not safely raster-cropped.",
+    );
+    await expect(tools.getByRole("button", { name: "Focus" })).toBeDisabled();
+    await expect(tools.getByRole("button", { name: "Focus" })).toHaveAttribute(
+      "title",
+      "This image format is not safely raster-cropped.",
+    );
+
+    await preview.locator('img[alt="Responsive service preview"]').click();
+    tools = page.locator(".xyle-img-tools");
+    await expect(tools.getByRole("button", { name: "Replace" })).toBeDisabled();
+    await expect(tools.getByRole("button", { name: "Replace" })).toHaveAttribute(
+      "title",
+      "Responsive image replacement is not supported yet",
+    );
+    await expect(tools.getByRole("button", { name: "Crop" })).toBeDisabled();
+    await expect(tools.getByRole("button", { name: "Crop" })).toHaveAttribute(
+      "title",
+      "Responsive image sources need deliberate mapping.",
+    );
+    expect(await opsCount(page)).toBe(0);
+  });
+
   test("upload API rejects SVG and oversized uploads server-side", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
 
