@@ -29,6 +29,17 @@ export function duplicateGroupHtmlId(createdId: string, originalId: string): str
   return stableIdentity(["duplicate-group-html-id", createdId, originalId]);
 }
 
+export function duplicateIdMap(
+  createdId: string,
+  originalIds: Iterable<string>,
+  kind: "section" | "group-item",
+): Map<string, string> {
+  const identity = kind === "section" ? duplicateHtmlId : duplicateGroupHtmlId;
+  return new Map(
+    [...originalIds].map((originalId) => [originalId, identity(createdId, originalId)]),
+  );
+}
+
 export function rewriteFragmentReference(
   value: string,
   idMap: ReadonlyMap<string, string>,

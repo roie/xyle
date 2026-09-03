@@ -25,9 +25,9 @@ import { stableIdentity } from "./identity.ts";
 import {
   STRUCTURAL_ID_REFERENCE_ATTRIBUTES,
   createdNodeIdentity,
-  duplicateGroupHtmlId,
-  duplicateHtmlId,
+  duplicateIdMap,
   replayGroupOrder,
+  rewriteFragmentReference,
   rewriteIdTokens,
   type GroupOrderOperation,
 } from "./structural.ts";
@@ -4666,17 +4666,15 @@ function duplicateSection(nodeId: string): { id: string; sourceId: string } {
   if (new Set(sourceIdValues).size !== sourceIdValues.length)
     throw new Error("Duplicate section contains duplicate HTML ids");
   const sourceIds = new Set(sourceIdValues);
-  const idMap = new Map<string, string>();
+  const idMap = duplicateIdMap(createdId, sourceIds, "section");
   const documentIds = new Set(
     [...source.ownerDocument.querySelectorAll<HTMLElement>("[id]")]
       .map((element) => element.id)
       .filter(Boolean),
   );
-  for (const id of sourceIds) {
-    const cloneId = duplicateHtmlId(createdId, id);
+  for (const cloneId of idMap.values()) {
     if (documentIds.has(cloneId))
       throw new Error("Duplicate section generated an HTML id collision");
-    idMap.set(id, cloneId);
   }
   const sourceNodeIds = new Map<string, string>();
   source.querySelectorAll<HTMLElement>("[data-xyle-node]").forEach((element) => {
@@ -4692,18 +4690,10 @@ function duplicateSection(nodeId: string): { id: string; sourceId: string } {
     if (nodeId && sourceNodeIds.has(nodeId)) element.dataset.xyleNode = sourceNodeIds.get(nodeId)!;
     for (const attribute of STRUCTURAL_ID_REFERENCE_ATTRIBUTES) {
       const value = element.getAttribute(attribute);
-      if (value)
-        element.setAttribute(
-          attribute,
-          value
-            .split(/\s+/)
-            .map((token) => idMap.get(token) ?? token)
-            .join(" "),
-        );
+      if (value) element.setAttribute(attribute, rewriteIdTokens(value, idMap));
     }
     const href = element.getAttribute("href");
-    if (href?.startsWith("#") && idMap.has(href.slice(1)))
-      element.setAttribute("href", `#${idMap.get(href.slice(1))}`);
+    if (href) element.setAttribute("href", rewriteFragmentReference(href, idMap));
     for (const child of [...element.children] as HTMLElement[]) rewrite(child);
   };
   rewrite(clone);
@@ -4819,11 +4809,9 @@ function duplicateGroupItem(
       .map((element) => element.id)
       .filter(Boolean),
   );
-  const idMap = new Map<string, string>();
-  for (const id of sourceIdValues) {
-    const cloneId = duplicateGroupHtmlId(createdId, id);
+  const idMap = duplicateIdMap(createdId, sourceIdValues, "group-item");
+  for (const cloneId of idMap.values()) {
     if (documentIds.has(cloneId)) throw new Error("Group item generated an HTML id collision");
-    idMap.set(id, cloneId);
   }
   const sourceNodeIds = new Map<string, string>();
   source.querySelectorAll<HTMLElement>("[data-xyle-node]").forEach((element) => {
@@ -4842,8 +4830,7 @@ function duplicateGroupItem(
       if (value) element.setAttribute(attribute, rewriteIdTokens(value, idMap));
     }
     const href = element.getAttribute("href");
-    if (href?.startsWith("#") && idMap.has(href.slice(1)))
-      element.setAttribute("href", `#${idMap.get(href.slice(1))}`);
+    if (href) element.setAttribute("href", rewriteFragmentReference(href, idMap));
     for (const child of [...element.children] as HTMLElement[]) rewrite(child);
   };
   rewrite(clone);
@@ -6206,6 +6193,30 @@ function updateText(nodeId: string, text: string): TextUpdateResult {
   return { id: nodeId, pagePath: current.pagePath, text };
 }
 
+function validateLinkUpdateInput(text?: string, href?: string): void {
+  if (text === undefined && href === undefined) {
+    throw new Error("update_link requires text or href");
+  }
+  if (href !== undefined && !isSafeUrl(href)) {
+    throw new Error("Unsafe link destination rejected");
+  }
+}
+
+function editableLinkSegment(
+  nodeId: string,
+  meta: NodeMeta,
+  element: HTMLAnchorElement,
+  text?: string,
+): SegmentPair | undefined {
+  if (text === undefined) return undefined;
+  if (!meta.textEditable || meta.segmentCount !== 1) {
+    throw new Error(`Xyle link ${nodeId} has ambiguous text mapping`);
+  }
+  const [textPair] = collectSegments(element);
+  if (!textPair) throw new Error(`Xyle link ${nodeId} has no editable text`);
+  return textPair;
+}
+
 function updateLink(nodeId: string, text?: string, href?: string): LinkUpdateResult {
   if (text !== undefined && /[\r\n]/.test(text)) {
     throw new Error("Line-break editing is deferred.");
@@ -6215,24 +6226,11 @@ function updateLink(nodeId: string, text?: string, href?: string): LinkUpdateRes
   if (!current) throw new Error("No page is loaded");
   const meta = current.nodes.find((candidate) => candidate.id === nodeId);
   if (!meta || meta.kind !== "link") throw new Error(`Unknown Xyle link ${nodeId}`);
-  if (text === undefined && href === undefined) {
-    throw new Error("update_link requires text or href");
-  }
-  if (href !== undefined && !isSafeUrl(href)) {
-    throw new Error("Unsafe link destination rejected");
-  }
+  validateLinkUpdateInput(text, href);
 
   const element = currentNodeElement(nodeId) as HTMLAnchorElement | null;
   if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
-
-  let textPair: SegmentPair | undefined;
-  if (text !== undefined) {
-    if (!meta.textEditable || meta.segmentCount !== 1) {
-      throw new Error(`Xyle link ${nodeId} has ambiguous text mapping`);
-    }
-    [textPair] = collectSegments(element);
-    if (!textPair) throw new Error(`Xyle link ${nodeId} has no editable text`);
-  }
+  const textPair = editableLinkSegment(nodeId, meta, element, text);
 
   if (textPair) {
     const textOperation: Op = { type: "text", nodeId: `${nodeId}#0`, value: text ?? "" };

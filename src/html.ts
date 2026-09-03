@@ -30,8 +30,7 @@ import {
 import {
   STRUCTURAL_ID_REFERENCE_ATTRIBUTES,
   createdNodeIdentity,
-  duplicateGroupHtmlId,
-  duplicateHtmlId,
+  duplicateIdMap,
   replayGroupOrder,
   type GroupOrderOperation,
   rewriteFragmentReference,
@@ -1180,14 +1179,12 @@ function duplicateSectionMarkup(
   const originalIds = allElementIds(roots[0]!);
   if (new Set(originalIds).size !== originalIds.length)
     throw new Error("duplicate section contains duplicate HTML ids");
-  const idMap = new Map<string, string>();
-  for (const originalId of originalIds) {
-    const cloneId = duplicateHtmlId(createdId, originalId);
+  const idMap = duplicateIdMap(createdId, originalIds, "section");
+  for (const [originalId, cloneId] of idMap) {
     if (documentIds.has(cloneId))
       throw new Error("duplicate section generated an HTML id collision");
     if (expectedMap[originalId] !== cloneId)
       throw new Error("duplicate section HTML id map is not deterministic");
-    idMap.set(originalId, cloneId);
   }
   const visit = (node: P5Node): void => {
     if (!isElement(node)) return;
@@ -1288,13 +1285,11 @@ function duplicateGroupItemMarkup(
   const originalIds = allElementIds(roots[0]!);
   if (new Set(originalIds).size !== originalIds.length)
     throw new Error("Group item contains duplicate HTML ids");
-  const idMap = new Map<string, string>();
-  for (const originalId of originalIds) {
-    const cloneId = duplicateGroupHtmlId(createdId, originalId);
+  const idMap = duplicateIdMap(createdId, originalIds, "group-item");
+  for (const [originalId, cloneId] of idMap) {
     if (documentIds.has(cloneId)) throw new Error("Group item generated an HTML id collision");
     if (expectedMap[originalId] !== cloneId)
       throw new Error("Group item HTML id map is not deterministic");
-    idMap.set(originalId, cloneId);
   }
   const visit = (node: P5Node): void => {
     if (!isElement(node)) return;
@@ -2746,10 +2741,9 @@ export async function patchHtml(
     ) {
       throw new Error("created Group item operations cannot mutate HTML ids");
     }
-    const expectedIdMap: Record<string, string> = {};
-    for (const originalId of snapshotIds) {
-      expectedIdMap[originalId] = duplicateGroupHtmlId(op.createdId, originalId);
-    }
+    const expectedIdMap = Object.fromEntries(
+      duplicateIdMap(op.createdId, snapshotIds, "group-item"),
+    );
     if (
       Object.keys(op.idMap).length !== Object.keys(expectedIdMap).length ||
       Object.entries(expectedIdMap).some(
