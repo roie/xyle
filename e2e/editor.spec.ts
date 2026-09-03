@@ -299,6 +299,32 @@ test.describe("chrome layout rules", () => {
     await context.close();
   });
 
+  test("dock handle remains a full touch target at 320 pixels", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: test.info().project.use.baseURL as string,
+      hasTouch: true,
+      isMobile: true,
+      viewport: { width: 320, height: 640 },
+    });
+    try {
+      const touchPage = await context.newPage();
+      await loginAndOpenEditor(touchPage, "/index.html");
+      const handle = touchPage.locator("#xyle-dock-handle");
+      const handleBox = await handle.boundingBox();
+      expect(handleBox?.width).toBeGreaterThanOrEqual(87.9);
+      expect(handleBox?.height).toBeGreaterThanOrEqual(43.9);
+      expect(handleBox?.x).toBeGreaterThanOrEqual(0);
+      expect((handleBox?.x ?? 0) + (handleBox?.width ?? 0)).toBeLessThanOrEqual(320);
+      const barBox = await touchPage.locator("#xyle-control-bar").boundingBox();
+      expect(barBox?.x).toBeGreaterThanOrEqual(0);
+      expect((barBox?.x ?? 0) + (barBox?.width ?? 0)).toBeLessThanOrEqual(320);
+      await handle.tap();
+      await expect(handle).toHaveAttribute("aria-expanded", "true");
+    } finally {
+      await context.close();
+    }
+  });
+
   test("dirty controls are absent when clean and appear after an edit", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     await expect(page.locator("#xyle-dirty")).toBeHidden();

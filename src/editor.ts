@@ -1069,6 +1069,13 @@ const editorStyles = `
     #xyle-control-dock[data-hidden] {
       transform: translateX(-50%);
     }
+    #xyle-control-hitbox {
+      pointer-events: none;
+    }
+    #xyle-dock-handle {
+      min-width: 88px;
+      min-height: 44px;
+    }
     .xyle-icon-button,
     #xyle-media-drawer .xyle-icon-button,
     #xyle-changes-drawer .xyle-icon-button,
@@ -7728,14 +7735,20 @@ function updateDirtyUi(): void {
   );
   const dock = $("#xyle-control-dock");
   const handle = $<HTMLButtonElement>("#xyle-dock-handle");
-  dock.toggleAttribute("data-hidden", count === 0);
-  handle?.setAttribute("aria-expanded", String(count > 0));
+  const controlsAlwaysVisible = matchMedia("(hover: none), (pointer: coarse)").matches;
+  const expanded = controlsAlwaysVisible || count > 0;
+  dock.toggleAttribute("data-hidden", !expanded);
+  handle?.setAttribute("aria-expanded", String(expanded));
   handle?.setAttribute(
     "aria-label",
-    count > 0 ? "Xyle controls pinned while changes are pending" : "Show Xyle controls",
+    count > 0
+      ? "Xyle controls pinned while changes are pending"
+      : controlsAlwaysVisible
+        ? "Xyle controls"
+        : "Show Xyle controls",
   );
   const chevron = $("#xyle-dock-chevron", dock);
-  if (chevron) chevron.textContent = count > 0 ? "⌄" : "⌃";
+  if (chevron) chevron.textContent = expanded ? "⌄" : "⌃";
   refreshMarkers();
   if ($("#xyle-changes-drawer")) openChangesDrawer();
 }
@@ -7814,16 +7827,19 @@ function buildChrome(): void {
     dockHandle.setAttribute("aria-label", hidden ? "Show Xyle controls" : "Hide Xyle controls");
     $("#xyle-dock-chevron", dock).textContent = hidden ? "⌃" : "⌄";
   };
+  const controlsAlwaysVisible = matchMedia("(hover: none), (pointer: coarse)").matches;
   const showDock = (): void => {
     window.clearTimeout(dockHideTimer);
     setDockHidden(false);
   };
   const scheduleDockHide = (): void => {
     window.clearTimeout(dockHideTimer);
-    if (dirtyCount() > 0) return;
+    if (controlsAlwaysVisible || dirtyCount() > 0) return;
     dockHideTimer = window.setTimeout(() => setDockHidden(true), 2000);
   };
+  if (controlsAlwaysVisible) setDockHidden(false);
   dockHandle.addEventListener("click", () => {
+    if (controlsAlwaysVisible) return;
     if (dock.hasAttribute("data-hidden")) showDock();
     else if (dirtyCount() === 0) setDockHidden(true);
   });
