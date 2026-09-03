@@ -1,6 +1,7 @@
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
 import { isControlSitePath, isPathInsideRoot } from "../control-paths.ts";
 import {
   buildManifestFromDirectory,
@@ -39,8 +40,53 @@ function assertInsideRoot(root: string, sitePath: string): string {
   return target;
 }
 
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+function unsafeDestination(root: string, target: string, reason: string): Error {
+  return new Error(`unsafe publish destination ${relative(root, target) || "."}: ${reason}`);
+}
+
+async function ensureSafeDestination(root: string, target: string): Promise<void> {
+  const parent = dirname(target);
+  const relativeParent = relative(root, parent);
+  if (!isPathInsideRoot(root, parent)) throw unsafeDestination(root, target, "path escapes root");
+
+  let current = root;
+  for (const segment of relativeParent.split(sep).filter(Boolean)) {
+    current = join(current, segment);
+    let stats: Stats;
+    try {
+      stats = await lstat(current);
+    } catch (error) {
+      if (!hasErrorCode(error, "ENOENT")) throw error;
+      try {
+        await mkdir(current);
+      } catch (mkdirError) {
+        if (!hasErrorCode(mkdirError, "EEXIST")) throw mkdirError;
+      }
+      stats = await lstat(current);
+    }
+    if (stats.isSymbolicLink()) throw unsafeDestination(root, current, "symlinked parent");
+    if (!stats.isDirectory()) throw unsafeDestination(root, current, "parent is not a directory");
+  }
+
+  const [rootRealPath, parentRealPath] = await Promise.all([realpath(root), realpath(parent)]);
+  if (!isPathInsideRoot(rootRealPath, parentRealPath)) {
+    throw unsafeDestination(root, parent, "resolved parent escapes root");
+  }
+  try {
+    if ((await lstat(target)).isSymbolicLink()) {
+      throw unsafeDestination(root, target, "target is a symlink");
+    }
+  } catch (error) {
+    if (!hasErrorCode(error, "ENOENT")) throw error;
+  }
+}
+
 async function writeDurable(path: string, bytes: Uint8Array): Promise<void> {
-  const handle = await open(path, "w");
+  const handle = await open(path, "wx");
   try {
     await handle.writeFile(bytes);
     await handle.sync();
@@ -153,9 +199,10 @@ export class FilesystemPublisher implements Publisher {
     try {
       for (const file of allFiles) {
         const finalPath = assertInsideRoot(this.rootAbs, file.path);
+        await ensureSafeDestination(this.rootAbs, finalPath);
         const tempPath = `${finalPath}.xyle-tmp-${randomUUID()}`;
         tempPaths.push(tempPath);
-        await mkdir(dirname(finalPath), { recursive: true });
+        await ensureSafeDestination(this.rootAbs, tempPath);
         await writeDurable(tempPath, file.bytes);
       }
       for (let i = 0; i < allFiles.length; i++) {
@@ -163,21 +210,27 @@ export class FilesystemPublisher implements Publisher {
         const tempPath = tempPaths[i];
         if (!file || !tempPath) throw new Error("publish staging mismatch");
         const finalPath = assertInsideRoot(this.rootAbs, file.path);
+        await ensureSafeDestination(this.rootAbs, finalPath);
+        await ensureSafeDestination(this.rootAbs, tempPath);
         backups.set(file.path, await readIfExists(finalPath));
         await rename(tempPath, finalPath);
       }
       for (const path of removedFiles) {
         if (backups.has(path)) continue;
         const finalPath = assertInsideRoot(this.rootAbs, path);
+        await ensureSafeDestination(this.rootAbs, finalPath);
         backups.set(path, await readIfExists(finalPath));
         await rm(finalPath, { force: true });
       }
       const manifestBytes = new TextEncoder().encode(JSON.stringify(next.manifest, null, 2));
       const manifestFinal = join(this.rootAbs, MANIFEST_PATH);
-      await mkdir(dirname(manifestFinal), { recursive: true });
+      await ensureSafeDestination(this.rootAbs, manifestFinal);
       const manifestTemp = `${manifestFinal}.xyle-tmp-${randomUUID()}`;
       tempPaths.push(manifestTemp);
+      await ensureSafeDestination(this.rootAbs, manifestTemp);
       await writeDurable(manifestTemp, manifestBytes);
+      await ensureSafeDestination(this.rootAbs, manifestFinal);
+      await ensureSafeDestination(this.rootAbs, manifestTemp);
       await rename(manifestTemp, manifestFinal);
       return {
         snapshot: { snapshotDigest: next.manifest.snapshotDigest, manifest: next.manifest },
@@ -187,8 +240,18 @@ export class FilesystemPublisher implements Publisher {
       for (const [sitePath, backup] of [...backups.entries()].slice().reverse()) {
         try {
           const finalPath = assertInsideRoot(this.rootAbs, sitePath);
-          if (backup === null) await rm(finalPath, { force: true });
-          else await writeDurable(finalPath, backup);
+          await ensureSafeDestination(this.rootAbs, finalPath);
+          if (backup === null) {
+            await rm(finalPath, { force: true });
+          } else {
+            const restoreTemp = `${finalPath}.xyle-tmp-${randomUUID()}`;
+            tempPaths.push(restoreTemp);
+            await ensureSafeDestination(this.rootAbs, restoreTemp);
+            await writeDurable(restoreTemp, backup);
+            await ensureSafeDestination(this.rootAbs, finalPath);
+            await ensureSafeDestination(this.rootAbs, restoreTemp);
+            await rename(restoreTemp, finalPath);
+          }
         } catch {
           /* best effort */
         }
@@ -202,8 +265,9 @@ export class FilesystemPublisher implements Publisher {
 async function readIfExists(path: string): Promise<Uint8Array | null> {
   try {
     return new Uint8Array(await readFile(path));
-  } catch {
-    return null;
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return null;
+    throw error;
   }
 }
 

@@ -1,16 +1,36 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FilesystemPublisher, MANIFEST_PATH } from "../src/publishers/filesystem.ts";
 import { digestBytes } from "../src/manifest.ts";
-import type { SiteFile } from "../src/types.ts";
+import type { PublishedSnapshot, SiteFile, XyleManifest } from "../src/types.ts";
 
 const enc = new TextEncoder();
 
 async function makeSiteFile(path: string, text: string): Promise<SiteFile> {
   const bytes = enc.encode(text);
   return { path, bytes, digest: await digestBytes(bytes), contentType: "text/html" };
+}
+
+async function manifestWithFiles(
+  base: PublishedSnapshot,
+  files: SiteFile[],
+): Promise<XyleManifest> {
+  const entries = { ...base.manifest.files };
+  for (const file of files) {
+    entries[file.path] = {
+      digest: file.digest,
+      size: file.bytes.byteLength,
+      contentType: file.contentType,
+    };
+  }
+  const { computeSnapshotDigest } = await import("../src/manifest.ts");
+  return {
+    version: 1,
+    snapshotDigest: await computeSnapshotDigest(entries),
+    files: entries,
+  };
 }
 
 let root: string;
@@ -114,6 +134,78 @@ describe("FilesystemPublisher", () => {
       }),
     ).rejects.toThrow(/stale/);
     expect(await readFile(join(root, "index.html"), "utf8")).toContain("changed externally");
+  });
+
+  it("rejects a symlinked destination parent", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "xyle-pub-outside-"));
+    try {
+      const publisher = new FilesystemPublisher({ root });
+      const base = await publisher.readSnapshot();
+      await symlink(outside, join(root, "nested"), "dir");
+      const added = await makeSiteFile("/nested/page.html", "<h1>outside</h1>");
+      const manifest = await manifestWithFiles(base, [added]);
+
+      await expect(
+        publisher.publish({
+          baseSnapshotDigest: base.snapshotDigest,
+          manifest,
+          changedFiles: [],
+          addedFiles: [added],
+        }),
+      ).rejects.toThrow(/symlinked parent/);
+      await expect(readFile(join(outside, "page.html"), "utf8")).rejects.toThrow();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a symlink at the final destination", async () => {
+    const outside = join(tmpdir(), `xyle-pub-outside-${Date.now()}.html`);
+    await writeFile(outside, "outside stays unchanged");
+    try {
+      const publisher = new FilesystemPublisher({ root });
+      const base = await publisher.readSnapshot();
+      await symlink(outside, join(root, "about.html"));
+      const added = await makeSiteFile("/about.html", "<h1>replacement</h1>");
+      const manifest = await manifestWithFiles(base, [added]);
+
+      await expect(
+        publisher.publish({
+          baseSnapshotDigest: base.snapshotDigest,
+          manifest,
+          changedFiles: [],
+          addedFiles: [added],
+        }),
+      ).rejects.toThrow(/target is a symlink/);
+      expect(await readFile(outside, "utf8")).toBe("outside stays unchanged");
+    } finally {
+      await rm(outside, { force: true });
+    }
+  });
+
+  it("rejects a symlinked manifest parent and rolls back page writes", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "xyle-pub-manifest-outside-"));
+    try {
+      const publisher = new FilesystemPublisher({ root });
+      const base = await publisher.readSnapshot();
+      const before = await readFile(join(root, "index.html"), "utf8");
+      const changed = await makeSiteFile("/index.html", "<h1>must roll back</h1>");
+      const manifest = await manifestWithFiles(base, [changed]);
+      await symlink(outside, join(root, "_xyle"), "dir");
+
+      await expect(
+        publisher.publish({
+          baseSnapshotDigest: base.snapshotDigest,
+          manifest,
+          changedFiles: [changed],
+          addedFiles: [],
+        }),
+      ).rejects.toThrow(/symlinked parent/);
+      expect(await readFile(join(root, "index.html"), "utf8")).toBe(before);
+      await expect(readFile(join(outside, "manifest.json"), "utf8")).rejects.toThrow();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("publishes HTML + a new image together", async () => {
