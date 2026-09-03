@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   TEST_KEY,
+  currentOps,
   editNode,
   findNodeByText,
   focusCaret,
@@ -368,6 +369,13 @@ test.describe("chrome layout rules", () => {
     await loginAndOpenEditor(page, "/index.html");
     const beforeSource = await (await page.request.get("/index.html")).text();
     const id = await findNodeByText(page, "Change this page in place");
+    const originalSegments = await page.evaluate((nodeId) => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      const element = doc.querySelector(`[data-xyle-node="${nodeId}"]`)!;
+      return [...element.childNodes]
+        .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.data.trim());
+    }, id);
     await editNode(page, id!);
     await page.evaluate((nodeId) => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
@@ -387,15 +395,47 @@ test.describe("chrome layout rules", () => {
     await page.keyboard.type(token);
     await clickOutsideCommit(page);
     await expect.poll(() => opsCount(page)).toBe(1);
+    expect(await currentOps(page)).toEqual([
+      {
+        pagePath: "/index.html",
+        op: { type: "text", nodeId: `${id}#2`, value: token },
+      },
+    ]);
     expect(await (await page.request.get("/index.html")).text()).toBe(beforeSource);
+    await page.locator("#xyle-changes").click();
+    const change = page
+      .getByRole("dialog", { name: "Changes" })
+      .locator(".xyle-change-row")
+      .filter({ hasText: token });
+    await expect(change.locator(".xyle-change-before")).toContainText(originalSegments[2]!);
+    await expect(change.locator(".xyle-change-after")).toContainText(token);
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
     await page.click("#xyle-publish");
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
 
     const html = await (await page.request.get("/index.html")).text();
     const lede = html.match(/<p class="lede">([\s\S]*?)<\/p>/)?.[1] ?? "";
-    expect(lede).toContain("Change this page in place");
-    expect(lede).toContain(token);
+    const publishedSegments = lede.split(/<br\s*\/?\s*>/).map((segment) => segment.trim());
+    expect(publishedSegments).toEqual([
+      "Change this page in place",
+      "then review every pending edit",
+      token,
+    ]);
     expect(lede.match(/<br\s*\/?\s*>/g)).toHaveLength(2);
+    expect(html).not.toContain("data-xyle-node");
+
+    await page.goto("/index.html");
+    const publicSegments = await page.locator("p.lede").evaluate((element) => ({
+      text: [...element.childNodes]
+        .filter((node): node is Text => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.data.trim()),
+      breaks: element.querySelectorAll("br").length,
+    }));
+    expect(publicSegments).toEqual({
+      text: ["Change this page in place", "then review every pending edit", token],
+      breaks: 2,
+    });
   });
 
   test("undo after publish returns to the new published baseline", async ({ page }, info) => {

@@ -1,5 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { loginAndOpenEditor, opsCount } from "./helpers.ts";
+import {
+  editNode,
+  findNodeByText,
+  loginAndOpenEditor,
+  nodeHtml,
+  opsCount,
+  setSelection,
+} from "./helpers.ts";
 
 async function openSectionTools(
   page: import("@playwright/test").Page,
@@ -77,6 +84,30 @@ test.describe("canonical net reconciliation", () => {
     await sections.getByRole("button", { name: "Show" }).first().click();
 
     await expect(first).toHaveJSProperty("hidden", false);
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
+  });
+
+  test("human formatting restores to the authored baseline", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const nodeId = await findNodeByText(page, "Edit your static site visually");
+    expect(nodeId).toBeTruthy();
+    const originalHtml = await nodeHtml(page, nodeId!);
+    const target = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${nodeId}"]`);
+
+    await editNode(page, nodeId!);
+    await setSelection(page, { nodeId: nodeId!, selectAll: true });
+    const bold = page.locator(".xyle-format-tools").getByRole("button", { name: "Bold" });
+    await bold.click();
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    await expect(target.locator('strong[data-xyle-format="bold"]')).toHaveCount(1);
+
+    await editNode(page, nodeId!);
+    await setSelection(page, { nodeId: nodeId!, selectAll: true });
+    await page.locator(".xyle-format-tools").getByRole("button", { name: "Bold" }).click();
+
+    await expect(target.locator('strong[data-xyle-format="bold"]')).toHaveCount(0);
+    expect(await nodeHtml(page, nodeId!)).toBe(originalHtml);
     await expect.poll(async () => opsCount(page)).toBe(0);
     await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
