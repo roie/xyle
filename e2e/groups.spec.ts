@@ -120,6 +120,36 @@ test("discovers and duplicates a source-backed Group item through the human UI",
   await expect(publishedPanel.locator("xpath=..")).toContainText("Repair details");
 });
 
+test("moves a source-backed Group item later through publication", async ({ page }) => {
+  await loginAndOpenEditor(page, "/groups-move.html");
+  const preview = page.frameLocator("#xyle-preview");
+  const items = preview.locator("[data-xyle-group-item]");
+  await items.first().focus();
+  await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
+  await page.locator(".xyle-group-item-tools button", { hasText: "Move later" }).click();
+  await expect
+    .poll(() => items.evaluateAll((elements) => elements.map((item) => item.textContent)))
+    .toEqual([expect.stringContaining("Water heaters"), expect.stringContaining("Leaks")]);
+
+  await page.locator("#xyle-changes").click();
+  const change = page
+    .getByRole("dialog", { name: "Changes" })
+    .locator(".xyle-change-row")
+    .filter({ hasText: "Moved" });
+  await expect(change.locator(".xyle-change-after")).toContainText("Moved “Leaks” later");
+  await page.locator("#xyle-changes-close").click();
+
+  const publishResponse = page.waitForResponse((response) =>
+    response.url().includes("/__xyle/api/publish"),
+  );
+  await page.locator("#xyle-publish").click();
+  expect((await publishResponse).ok()).toBe(true);
+  await page.goto("/groups-move.html");
+  await expect(page.locator("article h2").first()).toContainText("Water heaters");
+  await expect(page.locator("article h2").nth(1)).toContainText("Leaks");
+  expect(await page.locator("[data-xyle-node], [data-xyle-group-item]").count()).toBe(0);
+});
+
 test("moves an edited source-backed Group item through the human UI", async ({ page }) => {
   await loginAndOpenEditor(page, "/groups-move.html");
   const preview = page.frameLocator("#xyle-preview");
