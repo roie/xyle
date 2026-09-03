@@ -1,12 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { login } from "../functions/_auth.ts";
 import { materializeHostedMediaOperations, type HostedPublishEnv } from "../functions/_publish.ts";
 import { onRequest } from "../functions/__xyle/api/[[route]].ts";
 import { onRequestGet } from "../functions/edit.ts";
+import { computeSnapshotDigest, digestBytes } from "../src/digest.ts";
 
 const ORIGIN = "https://site.example";
 const KEY = "hosted-editor-key";
 const SECRET = "hosted-session-secret-that-is-long-enough";
+
+afterEach(() => vi.unstubAllGlobals());
 
 async function sha256(value: string): Promise<string> {
   const bytes = new Uint8Array(
@@ -244,6 +247,137 @@ describe("hosted media publishing", () => {
 });
 
 describe("hosted publish boundaries", () => {
+  it("holds the overlap guard through snapshot preparation and deployment", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (url.endsWith("/upload-token")) {
+          return Response.json({ result: { jwt: "upload-token" } });
+        }
+        if (url.endsWith("/check-missing")) return Response.json({ result: [] });
+        if (url.endsWith("/upsert-hashes")) return Response.json({ result: null });
+        if (url.endsWith("/deployments")) {
+          return Response.json({ result: { id: "deployment-id" } });
+        }
+        return new Response(null, { status: 404 });
+      }),
+    );
+    const htmlBytes = new TextEncoder().encode('<img src="/photo.jpg" alt="Photo">');
+    const imageBytes = new Uint8Array([1, 2, 3]);
+    const files = {
+      "/index.html": {
+        digest: await digestBytes(htmlBytes),
+        size: htmlBytes.byteLength,
+        contentType: "text/html",
+      },
+      "/photo.jpg": {
+        digest: await digestBytes(imageBytes),
+        size: imageBytes.byteLength,
+        contentType: "image/jpeg",
+      },
+    };
+    const manifest = {
+      version: 1 as const,
+      snapshotDigest: await computeSnapshotDigest(files),
+      files,
+    };
+    const cropStarted = Promise.withResolvers<void>();
+    const releaseCrop = Promise.withResolvers<void>();
+    const imageInput = {
+      transform() {
+        return imageInput;
+      },
+      output: async () => {
+        cropStarted.resolve();
+        await releaseCrop.promise;
+        return {
+          response: async () =>
+            new Response(new Uint8Array([4, 5, 6]), {
+              headers: { "content-type": "image/webp" },
+            }),
+        };
+      },
+    };
+    const authEnv = await hostedEnv();
+    const env = {
+      ...authEnv,
+      CLOUDFLARE_ACCOUNT_ID: "account",
+      CLOUDFLARE_API_TOKEN: "token",
+      CLOUDFLARE_PROJECT: "site",
+      XYLE_WORKER_BUNDLE_B64: "AA==",
+      IMAGES: { input: () => imageInput },
+      ASSETS: {
+        fetch: async (assetRequest: Request) => {
+          const path = new URL(assetRequest.url).pathname;
+          if (path === "/_xyle/manifest.json") return Response.json(manifest);
+          if (path === "/index.html") {
+            return new Response(Uint8Array.from(htmlBytes).buffer, {
+              headers: { "content-type": "text/html" },
+            });
+          }
+          if (path === "/photo.jpg") {
+            return new Response(Uint8Array.from(imageBytes).buffer, {
+              headers: { "content-type": "image/jpeg" },
+            });
+          }
+          return new Response(null, { status: 404 });
+        },
+      },
+    };
+    const token = await login(KEY, env);
+    const publishRequest = () => {
+      const form = new FormData();
+      form.set(
+        "metadata",
+        JSON.stringify({
+          baseSnapshotDigest: manifest.snapshotDigest,
+          pages: [
+            {
+              pagePath: "/index.html",
+              baseDigest: files["/index.html"].digest,
+              operations: [
+                {
+                  type: "media",
+                  nodeId: "n1",
+                  value: {
+                    source: { kind: "existing", src: "/photo.jpg" },
+                    alt: { present: true, value: "Photo" },
+                    crop: { x: 0, y: 0, width: 1, height: 1 },
+                    focus: null,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      );
+      return new Request(`${ORIGIN}/__xyle/api/publish`, {
+        method: "POST",
+        headers: {
+          origin: ORIGIN,
+          cookie: `xyle_session=${token}`,
+          "x-xyle-request": "1",
+        },
+        body: form,
+      });
+    };
+    const first = onRequest({ request: publishRequest(), env, params: { route: ["publish"] } });
+    await cropStarted.promise;
+
+    const overlapping = await onRequest({
+      request: publishRequest(),
+      env,
+      params: { route: ["publish"] },
+    });
+
+    expect(overlapping.status).toBe(409);
+    expect(await overlapping.json()).toMatchObject({ error: "publish-in-progress" });
+    releaseCrop.resolve();
+    const completed = await first;
+    expect(completed.status, await completed.clone().text()).toBe(200);
+  });
+
   it("rejects an oversized streamed body without Content-Length", async () => {
     const env = await hostedEnv();
     const token = await login(KEY, env);

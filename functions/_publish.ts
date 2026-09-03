@@ -170,7 +170,10 @@ async function transformHostedCrop(
   }
 }
 
-export async function deployCompleteSnapshot(env: PagesEnv & { CLOUDFLARE_PROJECT?: string }, files: PublishFile[]): Promise<string> {
+export async function deployCompleteSnapshot(
+  env: PagesEnv & { CLOUDFLARE_PROJECT?: string },
+  files: PublishFile[],
+): Promise<string> {
   const projectName = env.CLOUDFLARE_PROJECT ?? "xyle";
   const assets = files.map((file) => ({ ...file, hash: pagesAssetHash(file.bytes, file.path) }));
   const tokenResponse = await pagesRequest(env, `/pages/projects/${projectName}/upload-token`);

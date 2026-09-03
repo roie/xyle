@@ -20,6 +20,7 @@ type RuntimeEnv = Env & {
 };
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_PUBLISH_REQUEST_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024;
+const activePublishRequests = new Set<string>();
 
 function isLayoutNeeded(source: string, operations: PageOperation[]): boolean {
   const managedAttributeCount =
@@ -132,6 +133,18 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     if (!request.headers.get("content-type")?.includes("multipart/form-data")) {
       return Response.json({ error: "unsupported content type" }, { status: 415 });
     }
+    const publishKey = env.CLOUDFLARE_PROJECT ?? new URL(request.url).origin;
+    if (activePublishRequests.has(publishKey)) {
+      return Response.json(
+        {
+          error: "publish-in-progress",
+          message: "Another publish is in progress. Wait for it to finish, then reload.",
+        },
+        { status: 409 },
+      );
+    }
+    activePublishRequests.add(publishKey);
+    try {
     let bufferedRequest: Request;
     try {
       bufferedRequest = await bufferRequestBody(request, MAX_PUBLISH_REQUEST_BYTES);
@@ -283,6 +296,9 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
       return Response.json({ snapshotDigest: nextManifest.snapshotDigest, publishId: deployment });
     } catch (error) {
       return Response.json({ error: (error as Error).message }, { status: 502 });
+    }
+    } finally {
+      activePublishRequests.delete(publishKey);
     }
   }
     return Response.json({ error: "not found" }, { status: 404 });
