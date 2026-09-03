@@ -205,6 +205,12 @@ test.describe("media editing", () => {
     await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
     await expect(page.locator("#xyle-control-dock")).toHaveAttribute("inert", "");
     await expect(page.locator("dialog.xyle-dialog")).toHaveCount(0);
+    const stageBox = await dialog.locator(".xyle-crop-stage").boundingBox();
+    const panelBox = await dialog.locator(".xyle-media-editor-panel").boundingBox();
+    expect(stageBox).not.toBeNull();
+    expect(panelBox).not.toBeNull();
+    expect(stageBox!.x + stageBox!.width).toBeLessThanOrEqual(panelBox!.x + 1);
+    expect(stageBox!.width).toBeGreaterThan(600);
     const focalTarget = dialog.locator(".xyle-focal-target");
     const done = dialog.getByRole("button", { name: "Done" });
     await expect(focalTarget).toBeFocused();
@@ -212,6 +218,11 @@ test.describe("media editing", () => {
     await expect(done).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(focalTarget).toBeFocused();
+    const bottomRight = dialog.getByRole("button", { name: "Bottom right" });
+    await bottomRight.click();
+    await expect(bottomRight).toHaveAttribute("aria-pressed", "true");
+    await expect(dialog.locator("#xyle-focal-x")).toHaveValue("100");
+    await expect(dialog.locator("#xyle-focal-y")).toHaveValue("100");
     await dialog.locator("select[name=fit]").selectOption("cover");
     await dialog.locator("#xyle-focal-x").fill("24");
     await dialog.locator("#xyle-focal-y").fill("68");
@@ -228,6 +239,32 @@ test.describe("media editing", () => {
     expect((op?.op as { value: MediaState } | undefined)?.value.crop).not.toBeNull();
     await expect(image).toHaveJSProperty("style.objectFit", "cover");
     await expect(image).toHaveJSProperty("style.objectPosition", "24% 68%");
+  });
+
+  test("keeps image framing usable when the viewport becomes narrow", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Crop & focal point" });
+    await expect(dialog.locator(".xyle-crop-stage")).toHaveCSS("width", "720px");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(dialog.locator(".xyle-crop-stage")).toHaveCSS("width", "358px");
+    const dialogBox = await dialog.boundingBox();
+    const stageBox = await dialog.locator(".xyle-crop-stage").boundingBox();
+    const panelBox = await dialog.locator(".xyle-media-editor-panel").boundingBox();
+    expect(dialogBox).not.toBeNull();
+    expect(stageBox).not.toBeNull();
+    expect(panelBox).not.toBeNull();
+    expect(dialogBox!.x).toBeGreaterThanOrEqual(0);
+    expect(dialogBox!.y).toBeGreaterThanOrEqual(0);
+    expect(dialogBox!.x + dialogBox!.width).toBeLessThanOrEqual(390);
+    expect(dialogBox!.y + dialogBox!.height).toBeLessThanOrEqual(844);
+    expect(stageBox!.y + stageBox!.height).toBeLessThanOrEqual(panelBox!.y + 1);
+    await expect(dialog.getByRole("button", { name: "Done" })).toBeInViewport();
   });
 
   test("cancelling crop restores the image without a pending change", async ({ page }) => {

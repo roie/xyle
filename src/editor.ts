@@ -3183,14 +3183,8 @@ function openImageCropEditor(
       ? { x: media.crop.x + media.crop.width / 2, y: media.crop.y + media.crop.height / 2 }
       : { x: 0.5, y: 0.5 });
   const imageRect = previewElementRect(img);
-  const isSmall = imageRect.width < 180 || imageRect.height < 140;
   const aspect =
     imageRect.width > 0 && imageRect.height > 0 ? imageRect.width / imageRect.height : 1;
-  const inline = !isSmall;
-  const width = inline ? imageRect.width : Math.min(420, window.innerWidth - 24);
-  const height = inline
-    ? imageRect.height
-    : Math.min(width / aspect, window.innerHeight * (mode === "focus" ? 0.5 : 0.32));
   const originalImageStyles = {
     height: img.style.height,
     objectFit: img.style.objectFit,
@@ -3202,43 +3196,74 @@ function openImageCropEditor(
     width: img.style.width,
   };
   const editor = document.createElement("div");
-  editor.className = `xyle-inline-media-editor${inline ? " xyle-on-canvas" : ""}`;
+  editor.className = "xyle-inline-media-editor";
   editor.setAttribute("role", "dialog");
   editor.setAttribute("aria-modal", "true");
   editor.setAttribute("aria-labelledby", "xyle-crop-dialog-title");
-  editor.style.left = `${inline ? imageRect.left : Math.max(12, Math.min(window.innerWidth - width - 12, imageRect.left))}px`;
-  const maximumTop = Math.max(12, window.innerHeight - height - (mode === "focus" ? 220 : 390));
-  editor.style.top = `${inline ? imageRect.top : Math.max(12, Math.min(maximumTop, imageRect.top))}px`;
-  editor.style.width = `${Math.max(180, width)}px`;
   editor.style.setProperty("--xyle-crop-aspect", String(aspect));
-  editor.style.setProperty("--xyle-crop-height", `${height}px`);
+  const applyStageDimensions = (): void => {
+    const compact = window.innerWidth < 760;
+    const maximumStageWidth = Math.max(240, window.innerWidth - (compact ? 32 : 380));
+    const maximumStageHeight = Math.max(
+      180,
+      window.innerHeight - (compact ? (mode === "focus" ? 330 : 460) : 48),
+    );
+    let stageWidth = Math.min(720, maximumStageWidth);
+    let stageHeight = stageWidth / aspect;
+    if (stageHeight > maximumStageHeight) {
+      stageHeight = maximumStageHeight;
+      stageWidth = stageHeight * aspect;
+    }
+    editor.style.setProperty("--xyle-crop-width", `${stageWidth}px`);
+    editor.style.setProperty("--xyle-crop-height", `${stageHeight}px`);
+  };
+  applyStageDimensions();
   editor.replaceChildren(
     document.createRange().createContextualFragment(`
     <div class="xyle-crop-stage" role="group" aria-label="Image crop preview">
       <img alt="" src="">
       <div class="xyle-crop-guide" aria-hidden="true"></div>
       <button type="button" class="xyle-focal-target" aria-label="Focal point. Use arrow keys to move."></button>
+      <span class="xyle-crop-stage-hint" aria-hidden="true">Drag to reposition</span>
     </div>
     <div class="xyle-media-editor-panel">
       <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">${mode === "focus" ? "Image focus" : "Image framing"}</span><strong id="xyle-crop-dialog-title">${mode === "focus" ? "Focus point" : "Crop & focal point"}</strong></div>
-      <p class="xyle-crop-hint">${mode === "focus" ? "Click or drag to place the focus point." : "Drag to reposition · scroll or use the slider to zoom."}</p>
+      <p class="xyle-crop-hint">${mode === "focus" ? "Choose what must stay visible when the image frame changes." : "Choose what stays inside the frame, then adjust how tightly the image is cropped."}</p>
       <label class="xyle-dialog-label" data-frame-control>Frame
         <select class="xyle-dialog-input" name="fit">
-          <option value="cover">Crop to fill</option>
-          <option value="contain">Show full image</option>
+          <option value="cover">Fill the frame</option>
+          <option value="contain">Show the full image</option>
         </select>
       </label>
       <label class="xyle-dialog-label" data-zoom-control>Zoom <output class="xyle-range-value" for="xyle-zoom"></output>
         <input id="xyle-zoom" class="xyle-dialog-range" type="range" min="1" max="3" step="0.01" value="1">
       </label>
-      <label class="xyle-dialog-label">Horizontal focus <output class="xyle-range-value" for="xyle-focal-x"></output>
-        <input id="xyle-focal-x" class="xyle-dialog-range" type="range" min="0" max="100" step="1" value="50">
-      </label>
-      <label class="xyle-dialog-label">Vertical focus <output class="xyle-range-value" for="xyle-focal-y"></output>
-        <input id="xyle-focal-y" class="xyle-dialog-range" type="range" min="0" max="100" step="1" value="50">
-      </label>
+      <div class="xyle-focus-presets">
+        <span>Quick position</span>
+        <div class="xyle-focus-preset-grid" role="group" aria-label="Quick focal point positions">
+          <button type="button" data-focus-x="0" data-focus-y="0" aria-label="Top left"></button>
+          <button type="button" data-focus-x="0.5" data-focus-y="0" aria-label="Top center"></button>
+          <button type="button" data-focus-x="1" data-focus-y="0" aria-label="Top right"></button>
+          <button type="button" data-focus-x="0" data-focus-y="0.5" aria-label="Center left"></button>
+          <button type="button" data-focus-x="0.5" data-focus-y="0.5" aria-label="Center"></button>
+          <button type="button" data-focus-x="1" data-focus-y="0.5" aria-label="Center right"></button>
+          <button type="button" data-focus-x="0" data-focus-y="1" aria-label="Bottom left"></button>
+          <button type="button" data-focus-x="0.5" data-focus-y="1" aria-label="Bottom center"></button>
+          <button type="button" data-focus-x="1" data-focus-y="1" aria-label="Bottom right"></button>
+        </div>
+      </div>
+      <details class="xyle-focus-fine-tune" open>
+        <summary>Fine-tune position</summary>
+        <label class="xyle-dialog-label">Horizontal <output class="xyle-range-value" for="xyle-focal-x"></output>
+          <input id="xyle-focal-x" class="xyle-dialog-range" type="range" min="0" max="100" step="1" value="50">
+        </label>
+        <label class="xyle-dialog-label">Vertical <output class="xyle-range-value" for="xyle-focal-y"></output>
+          <input id="xyle-focal-y" class="xyle-dialog-range" type="range" min="0" max="100" step="1" value="50">
+        </label>
+      </details>
       <div class="xyle-dialog-actions">
-        <button class="xyle-dialog-button" type="button" data-reset>Reset</button>
+        <button class="xyle-dialog-button xyle-dialog-button--quiet" type="button" data-reset>Reset</button>
+        <span class="xyle-dialog-actions-spacer"></span>
         <button class="xyle-dialog-button" type="button" data-cancel>Cancel</button>
         <button class="xyle-dialog-button xyle-dialog-button--primary" type="button" data-done>Done</button>
       </div>
@@ -3252,6 +3277,9 @@ function openImageCropEditor(
   const zoomInput = editor.querySelector("#xyle-zoom") as HTMLInputElement;
   const xInput = editor.querySelector("#xyle-focal-x") as HTMLInputElement;
   const yInput = editor.querySelector("#xyle-focal-y") as HTMLInputElement;
+  const focusPresetButtons = [
+    ...editor.querySelectorAll<HTMLButtonElement>("[data-focus-x][data-focus-y]"),
+  ];
   const zoomOutput = editor.querySelector("output[for=xyle-zoom]") as HTMLOutputElement;
   if (mode === "focus") {
     editor.querySelector<HTMLElement>("[data-frame-control]")?.setAttribute("hidden", "");
@@ -3261,7 +3289,6 @@ function openImageCropEditor(
   const yOutput = editor.querySelector("output[for=xyle-focal-y]") as HTMLOutputElement;
   preview.src =
     media.source.kind === "staged" ? media.source.previewUrl : img.currentSrc || img.src;
-  if (inline) img.style.visibility = "hidden";
   fit.value = currentFit;
   xInput.value = String(Math.round(currentFocus.x * 100));
   yInput.value = String(Math.round(currentFocus.y * 100));
@@ -3308,6 +3335,12 @@ function openImageCropEditor(
     }
     target.style.left = `${x * 100}%`;
     target.style.top = `${y * 100}%`;
+    focusPresetButtons.forEach((button) => {
+      const selected =
+        Math.abs(Number(button.dataset.focusX) - x) < 0.005 &&
+        Math.abs(Number(button.dataset.focusY) - y) < 0.005;
+      button.setAttribute("aria-pressed", String(selected));
+    });
     zoomOutput.value = `${zoom.toFixed(2)}×`;
     xOutput.value = `${Math.round(x * 100)}%`;
     yOutput.value = `${Math.round(y * 100)}%`;
@@ -3328,6 +3361,7 @@ function openImageCropEditor(
   const close = (save: boolean): void => {
     if (editorClosed) return;
     editorClosed = true;
+    window.removeEventListener("resize", resizeEditor);
     if (activeMediaEditor === close) activeMediaEditor = null;
     if (save) {
       // Do not let the temporary preview styles become the current authored state.
@@ -3390,6 +3424,12 @@ function openImageCropEditor(
   zoomInput.addEventListener("input", updateChangedPreview);
   xInput.addEventListener("input", updateChangedPreview);
   yInput.addEventListener("input", updateChangedPreview);
+  focusPresetButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      resetToAuthored = false;
+      setFocus(Number(button.dataset.focusX), Number(button.dataset.focusY));
+    });
+  });
   editor.querySelector<HTMLButtonElement>("[data-reset]")?.addEventListener("click", () => {
     fitChanged = true;
     fit.value = original.framing?.fit ?? currentFit;
@@ -3461,22 +3501,15 @@ function openImageCropEditor(
     const rect = stage.getBoundingClientRect();
     setFocus((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
   }
+  function resizeEditor(): void {
+    applyStageDimensions();
+    window.requestAnimationFrame(updatePreview);
+  }
+  window.addEventListener("resize", resizeEditor);
   closeContextTools(false);
   activeMediaEditor = () => close(false);
-  if (!inline) img.style.visibility = "hidden";
   shellOverlay()?.append(editor);
   trapDialogFocus(editor, () => close(false));
-  if (inline) {
-    const panel = editor.querySelector<HTMLElement>(".xyle-media-editor-panel");
-    if (panel) {
-      panel.style.position = "fixed";
-      panel.style.left = `${Math.max(12, Math.min(window.innerWidth - width - 12, imageRect.left))}px`;
-      panel.style.width = `${Math.min(width, window.innerWidth - 24)}px`;
-      const panelHeight = panel.getBoundingClientRect().height;
-      const below = imageRect.bottom + 8;
-      panel.style.top = `${below + panelHeight <= window.innerHeight - 12 ? below : Math.max(12, imageRect.top - panelHeight - 8)}px`;
-    }
-  }
   updatePreview();
   target.focus();
 }

@@ -315,29 +315,37 @@ export const editorStyles = `
   #xyle-overlay-root .xyle-inline-media-editor {
     all: initial;
     position: fixed !important;
+    top: 50% !important;
+    left: 50% !important;
     z-index: 20 !important;
     display: grid !important;
-    gap: 0.65rem !important;
+    grid-template-columns: var(--xyle-crop-width, 36rem) minmax(17rem, 19rem) !important;
+    align-items: stretch !important;
     box-sizing: border-box !important;
+    max-width: calc(100vw - 2rem) !important;
+    max-height: calc(100vh - 2rem) !important;
+    overflow: hidden !important;
+    border: 1px solid #526050 !important;
+    border-radius: 12px !important;
+    background: #151815 !important;
+    box-shadow: 0 0 0 100vmax #050705bf, 0 24px 70px #000d !important;
     color: #eef3ec !important;
     font: 500 13px / 1.4 var(--xyle-font-ui) !important;
-    pointer-events: none !important;
-  }
-  #xyle-overlay-root .xyle-inline-media-editor.xyle-on-canvas {
-    max-width: none !important;
+    transform: translate(-50%, -50%) !important;
+    pointer-events: auto !important;
+    isolation: isolate !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-media-editor-panel {
     display: grid !important;
-    gap: 0.65rem !important;
+    grid-template-rows: auto auto auto auto auto 1fr !important;
+    gap: 0.8rem !important;
     box-sizing: border-box !important;
-    max-width: calc(100vw - 1.5rem) !important;
-    max-height: calc(100vh - 1.5rem) !important;
-    padding: 0.8rem !important;
+    min-width: 0 !important;
+    max-height: calc(100vh - 2rem) !important;
+    padding: 1rem !important;
     overflow: auto !important;
-    border: 1px solid #a1b69a !important;
-    border-radius: 10px !important;
+    border-left: 1px solid #435047 !important;
     background: #151815 !important;
-    box-shadow: 0 14px 36px #000b !important;
     pointer-events: auto !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-heading {
@@ -346,40 +354,156 @@ export const editorStyles = `
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-label {
     display: grid !important;
-    gap: 0.35rem !important;
+    grid-template-columns: 1fr auto !important;
+    gap: 0.4rem !important;
     color: #aab6aa !important;
     font-size: 11px !important;
     font-weight: 600 !important;
   }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-label > :last-child {
+    grid-column: 1 / -1 !important;
+  }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-input {
     width: 100% !important;
     box-sizing: border-box !important;
-    padding: 0.45rem !important;
+    padding: 0.6rem !important;
     border: 1px solid #435047 !important;
-    border-radius: 5px !important;
+    border-radius: 6px !important;
     background: #10130f !important;
     color: #eef3ec !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-actions {
+    align-self: end !important;
     display: flex !important;
     justify-content: flex-end !important;
     gap: 0.4rem !important;
+    padding-top: 0.35rem !important;
+    border-top: 1px solid #303830 !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-actions-spacer {
+    flex: 1 !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-button {
-    min-height: 2rem !important;
-    padding: 0 0.65rem !important;
+    min-height: 2.25rem !important;
+    padding: 0 0.7rem !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-button--quiet {
+    color: #aab6aa !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-stage {
+    width: var(--xyle-crop-width, 36rem) !important;
+    min-width: 0 !important;
     min-height: 0 !important;
-    height: var(--xyle-crop-height, 15rem) !important;
+    height: var(--xyle-crop-height, 24rem) !important;
+    border: 0 !important;
+    border-radius: 0 !important;
     aspect-ratio: var(--xyle-crop-aspect, 16 / 9) !important;
+    background: #080a08 !important;
     pointer-events: auto !important;
-  }
-  #xyle-overlay-root .xyle-inline-media-editor.xyle-on-canvas .xyle-crop-stage {
-    background: transparent !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-stage img {
     height: 100% !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-stage-hint {
+    position: absolute !important;
+    right: 0.75rem !important;
+    bottom: 0.75rem !important;
+    z-index: 3 !important;
+    padding: 0.35rem 0.55rem !important;
+    border: 1px solid #ffffff2e !important;
+    border-radius: 999px !important;
+    background: #0a0d0acc !important;
+    color: #eef3ec !important;
+    font: 600 10px / 1 var(--xyle-font-ui) !important;
+    letter-spacing: 0.02em !important;
+    pointer-events: none !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-presets {
+    display: grid !important;
+    grid-template-columns: 1fr auto !important;
+    align-items: center !important;
+    gap: 0.65rem !important;
+    color: #aab6aa !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid {
+    display: grid !important;
+    grid-template-columns: repeat(3, 1.7rem) !important;
+    gap: 0.2rem !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button {
+    all: initial !important;
+    position: relative !important;
+    box-sizing: border-box !important;
+    width: 1.7rem !important;
+    height: 1.7rem !important;
+    border: 1px solid #435047 !important;
+    border-radius: 4px !important;
+    background: #10130f !important;
+    cursor: pointer !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button::after {
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    width: 0.3rem !important;
+    height: 0.3rem !important;
+    border-radius: 50% !important;
+    background: #a8bea5 !important;
+    content: "" !important;
+    transform: translate(-50%, -50%) !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button:hover,
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button:focus-visible,
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button[aria-pressed="true"] {
+    border-color: #a8bea5 !important;
+    background: #253027 !important;
+    outline: 2px solid #a8bea5 !important;
+    outline-offset: 1px !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button[aria-pressed="true"]::after {
+    width: 0.5rem !important;
+    height: 0.5rem !important;
+    background: #eef3ec !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-fine-tune {
+    padding-top: 0.1rem !important;
+    border-top: 1px solid #303830 !important;
+    color: #aab6aa !important;
+    font-size: 11px !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-fine-tune summary {
+    padding: 0.35rem 0 !important;
+    color: #c7d0c6 !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-fine-tune[open] {
+    display: grid !important;
+    gap: 0.7rem !important;
+  }
+  @media (hover: none), (pointer: coarse) {
+    #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid {
+      grid-template-columns: repeat(3, 2.75rem) !important;
+    }
+    #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button {
+      width: 2.75rem !important;
+      height: 2.75rem !important;
+    }
+  }
+  @media (max-width: 759px) {
+    #xyle-overlay-root .xyle-inline-media-editor {
+      grid-template-columns: minmax(0, var(--xyle-crop-width, calc(100vw - 2rem))) !important;
+      max-width: calc(100vw - 1.5rem) !important;
+      max-height: calc(100vh - 1.5rem) !important;
+      overflow: auto !important;
+    }
+    #xyle-overlay-root .xyle-inline-media-editor .xyle-media-editor-panel {
+      max-height: none !important;
+      border-top: 1px solid #435047 !important;
+      border-left: 0 !important;
+    }
   }
   .xyle-dialog-form {
     display: grid;
