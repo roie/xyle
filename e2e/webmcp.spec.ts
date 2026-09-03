@@ -636,7 +636,7 @@ test.describe("WebMCP editor tools", () => {
           { type: "text", id: "not-a-current-node", text: "Also not applied" },
         ],
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("Unknown or unavailable Xyle node not-a-current-node");
     expect(await opsCount(page)).toBe(0);
     await expect(invokeTool(page, "get_content", { id: heading!.id })).resolves.toMatchObject({
       content: heading!.preview,
