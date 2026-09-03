@@ -99,6 +99,7 @@ made since your last managed deployment unless you pass `--force`.
 
 ```bash
 pnpm check          # typecheck + unit tests + biome
+pnpm test:coverage  # report focused unit coverage without a threshold
 pnpm test:e2e       # Playwright suite (Chromium/Firefox; WebKit needs host deps)
 pnpm test:package              # pack, install, edit, publish, and reload a temporary static site
 pnpm test:website              # build and test the product homepage and isolated browser demo
@@ -109,6 +110,7 @@ pnpm release:check             # run the complete local release matrix in sequen
 The release check includes WebKit. Run it on a host with the documented WebKit system libraries. It also runs native Chrome WebMCP checks with the required browser flags.
 
 See [docs/architecture.md](docs/architecture.md) for the design,
+[docs/COVERAGE_BASELINE.md](docs/COVERAGE_BASELINE.md) for the initial unit coverage report,
 [SECURITY.md](SECURITY.md) for the security model,
 [docs/webmcp.md](docs/webmcp.md) for the WebMCP interface, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.

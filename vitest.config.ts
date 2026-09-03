@@ -4,5 +4,18 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary", "html"],
+      reportsDirectory: "coverage",
+      include: [
+        "src/editor.ts",
+        "src/html.ts",
+        "src/server.ts",
+        "src/webmcp.ts",
+        "src/publishers/**/*.ts",
+        "functions/**/*.ts",
+      ],
+    },
   },
 });
