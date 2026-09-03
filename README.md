@@ -34,11 +34,14 @@ normal public pages.
 ## Quick start
 
 ```bash
-pnpm install
-pnpm build
-pnpm exec tsx src/cli.ts init /path/to/static-output   # prints your editor key once
-pnpm exec tsx src/cli.ts dev /path/to/static-output    # prints the local editor URL
+cd /path/to/static-output
+npx xyle init .
+npx xyle dev .
 ```
+
+The `init` command prints the editor key once. The `dev` command prints the public and editor URLs.
+
+Open the editor URL and publish a change. Xyle writes the change to the static HTML and asset files.
 
 To run the deterministic Xyle demo:
 
@@ -78,8 +81,9 @@ made since your last managed deployment unless you pass `--force`.
 ## Development
 
 ```bash
-pnpm check        # typecheck + unit tests + biome
-pnpm test:e2e     # Playwright suite (Chromium/Firefox; WebKit needs host deps)
+pnpm check          # typecheck + unit tests + biome
+pnpm test:e2e       # Playwright suite (Chromium/Firefox; WebKit needs host deps)
+pnpm test:package   # pack, install with npm, initialize, and serve a temporary static site
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the design,

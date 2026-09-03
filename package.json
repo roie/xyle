@@ -3,11 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "xyle": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "build": "rolldown -c",
+    "prepack": "pnpm build",
     "dev": "tsx src/cli.ts dev",
     "demo:reset": "node scripts/reset-demo.mjs",
     "demo:dev": "tsx src/cli.ts dev demo/.workspace/site",
@@ -15,6 +24,7 @@
     "typecheck:functions": "tsc -p functions/tsconfig.json",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:package": "node scripts/test-package.mjs",
     "check": "pnpm typecheck && pnpm test && ./node_modules/.bin/biome check ."
   },
   "dependencies": {

@@ -1,6 +1,10 @@
+#!/usr/bin/env node
+
+import { realpathSync } from "node:fs";
 import { appendFile, link, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { generateEditorKey } from "./auth.ts";
 import { FilesystemPublisher } from "./publishers/filesystem.ts";
 import { CloudflarePagesPublisher } from "./publishers/cloudflare.ts";
@@ -550,7 +554,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 }
 
-const invokedAsCli = /cli\.(ts|mts|js|mjs)$/.test(process.argv[1] ?? "");
+let invokedAsCli = false;
+try {
+  invokedAsCli = realpathSync(process.argv[1] ?? "") === fileURLToPath(import.meta.url);
+} catch {
+  // Importers can use the CLI helpers without an executable argv entry.
+}
 if (invokedAsCli) {
   main()
     .then((code) => process.exit(code))
