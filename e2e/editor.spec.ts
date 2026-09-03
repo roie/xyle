@@ -7,6 +7,7 @@ import {
   focusCaret,
   loginAndOpenEditor,
   opsCount,
+  setSelection,
   waitForEditorReady,
 } from "./helpers.ts";
 
@@ -866,7 +867,7 @@ test.describe("changes drawer and undo", () => {
     expect(await textOf(page, id!)).toBe(secondEdit);
     expect(await opsCount(page)).toBe(1);
   });
-  test("groups selected sibling blocks from the human editor", async ({ page }) => {
+  test("publishes a human-created bulleted list", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const firstId = await findNodeByText(page, "The first Xyle edits");
     const secondId = await findNodeByText(page, "Each pending change stays visible");
@@ -912,6 +913,56 @@ test.describe("changes drawer and undo", () => {
         ),
       )
       .toContain("The first Xyle edits");
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["toggleList"]);
+
+    await page.locator("#xyle-changes").click();
+    const change = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
+    await expect(change).toHaveCount(1);
+    await expect(change.locator(".xyle-change-before")).toContainText("<p");
+    await expect(change.locator(".xyle-change-after")).toContainText("<ul>");
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get("/about.html")).text();
+    expect(source).toContain("<ul>");
+    expect(source).not.toContain("data-xyle-node");
+
+    await page.goto("/about.html");
+    const list = page.locator("ul").filter({ hasText: "The first Xyle edits" });
+    await expect(list.locator(":scope > li")).toHaveCount(2);
+    await expect(list).toContainText("Each pending change stays visible");
+  });
+
+  test("publishes a human-created numbered list", async ({ page }) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const firstId = await findNodeByText(page, "The first Xyle edits");
+    const secondId = await findNodeByText(page, "Each pending change stays visible");
+    expect(firstId).toBeTruthy();
+    expect(secondId).toBeTruthy();
+    await editNode(page, firstId!);
+    await setSelection(page, { nodeId: firstId!, selectAll: true });
+    await page
+      .locator('.xyle-format-tools select[aria-label="Block style"]')
+      .selectOption("ordered-list");
+    const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${firstId}"]`);
+    const second = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${secondId}"]`);
+    await expect(first).toHaveJSProperty("tagName", "LI");
+    await expect(second).toHaveJSProperty("tagName", "LI");
+    await expect(first.locator("..")).toHaveJSProperty("tagName", "OL");
+
+    await page.locator("#xyle-changes").click();
+    const change = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
+    await expect(change.locator(".xyle-change-before")).toContainText("<p");
+    await expect(change.locator(".xyle-change-after")).toContainText("<ol>");
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/about.html");
+    const list = page.locator("ol").filter({ hasText: "The first Xyle edits" });
+    await expect(list.locator(":scope > li")).toHaveCount(2);
+    await expect(list).toContainText("Each pending change stays visible");
   });
 
   test("updates SEO metadata from the human editor", async ({ page }) => {
