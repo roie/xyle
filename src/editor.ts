@@ -308,6 +308,14 @@ function setDrawerShortcutExpanded(drawer: HTMLElement, expanded: boolean): void
     document.getElementById(shortcutId)?.setAttribute("aria-expanded", String(expanded));
 }
 
+function syncCompanionLayout(): void {
+  const companionOpen = Boolean(
+    document.querySelector('.xyle-drawer[data-xyle-drawer-mode="companion"]'),
+  );
+  document.documentElement.toggleAttribute("data-xyle-companion-open", companionOpen);
+  scheduleOverlayRefresh();
+}
+
 function inertDialogBackground(dialog: HTMLElement): void {
   const states: Array<[HTMLElement, boolean]> = [];
   let current: HTMLElement = dialog;
@@ -340,6 +348,7 @@ function removeTrappedDialog(dialog: HTMLElement | null): void {
   releaseDialogFocus(dialog);
   setDrawerShortcutExpanded(dialog, false);
   dialog.remove();
+  syncCompanionLayout();
 }
 
 function trapDialogFocus(dialog: HTMLElement, close: () => void): void {
@@ -381,11 +390,7 @@ function configureEditorDrawer(drawer: HTMLElement, close: () => void): void {
     if (enteringModal && !drawer.contains(document.activeElement)) {
       drawer.querySelector<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)?.focus();
     }
-    if (drawer.id === "xyle-structure-drawer") {
-      if (modal) document.documentElement.removeAttribute("data-xyle-structure-open");
-      else document.documentElement.dataset.xyleStructureOpen = "true";
-      scheduleOverlayRefresh();
-    }
+    syncCompanionLayout();
   };
   const onKeydown = (event: KeyboardEvent): void => {
     if (event.key === "Escape") {
@@ -3868,8 +3873,6 @@ let structurePanelTrigger: HTMLElement | null = null;
 
 function closeStructurePanel(restoreFocus = true): void {
   removeTrappedDialog(document.getElementById("xyle-structure-drawer"));
-  document.documentElement.removeAttribute("data-xyle-structure-open");
-  scheduleOverlayRefresh();
   const trigger = structurePanelTrigger;
   structurePanelTrigger = null;
   drawerOpen = false;

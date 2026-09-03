@@ -1441,6 +1441,14 @@ test.describe("changes drawer and undo", () => {
     await expect(seo).not.toHaveAttribute("aria-modal", "true");
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
+    const seoShellBox = await page.locator("#xyle-shell").boundingBox();
+    const seoBox = await seo.boundingBox();
+    expect(seoShellBox).not.toBeNull();
+    expect(seoBox).not.toBeNull();
+    expect(seoShellBox!.width + seoBox!.width).toBeCloseTo(
+      await page.evaluate(() => window.innerWidth),
+      0,
+    );
     await expect(title).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(seo).toHaveCount(0);
@@ -1465,13 +1473,13 @@ test.describe("changes drawer and undo", () => {
     await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "modal");
     await expect(structure).toHaveAttribute("aria-modal", "true");
     await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
-    await expect(page.locator("html")).not.toHaveAttribute("data-xyle-structure-open", "true");
+    await expect(page.locator("html")).not.toHaveAttribute("data-xyle-companion-open", "");
     await expect(structure.getByRole("button", { name: "Close structure" })).toBeFocused();
     await page.setViewportSize({ width: 1_000, height: 800 });
     await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "companion");
     await expect(structure).not.toHaveAttribute("aria-modal", "true");
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
-    await expect(page.locator("html")).toHaveAttribute("data-xyle-structure-open", "true");
+    await expect(page.locator("html")).toHaveAttribute("data-xyle-companion-open", "");
 
     const rows = structure.locator(".xyle-structure-row");
     const initialOrder = await rows.evaluateAll((items) =>

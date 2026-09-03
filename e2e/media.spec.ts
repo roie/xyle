@@ -429,6 +429,14 @@ test.describe("media editing", () => {
     await expect(drawer).not.toHaveAttribute("aria-modal", "true");
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
+    const shellBox = await page.locator("#xyle-shell").boundingBox();
+    const drawerBox = await drawer.boundingBox();
+    expect(shellBox).not.toBeNull();
+    expect(drawerBox).not.toBeNull();
+    expect(shellBox!.width + drawerBox!.width).toBeCloseTo(
+      await page.evaluate(() => window.innerWidth),
+      0,
+    );
     await expect(drawer).toHaveAttribute("aria-busy", "true");
     await expect(drawer.getByRole("status")).toHaveText("Loading media…");
 
