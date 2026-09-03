@@ -63,6 +63,16 @@ try {
   );
   if (hasHorizontalOverflow) throw new Error("The product homepage overflows a mobile viewport");
 
+  await page.goto(`${baseUrl}/guide/`);
+  await page.getByRole("heading", { name: "Change content without changing how your site works." }).waitFor();
+  await page.getByRole("heading", { name: "Know the editing boundary" }).waitFor();
+  await page.getByText("Not supported in v1", { exact: true }).waitFor();
+  const guideOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth,
+  );
+  if (guideOverflow) throw new Error("The owner guide overflows a mobile viewport");
+
+  await page.goto(baseUrl);
   await page.getByRole("link", { name: "Edit the live demo" }).click();
   await page.locator("#xyle-preview").waitFor({ state: "visible" });
   await page.waitForFunction(() => {

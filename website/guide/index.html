@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Owner guide — Xyle</title>
+    <meta
+      name="description"
+      content="Install Xyle, edit a static website, review changes, and publish safely."
+    />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23173ad6'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='monospace' font-size='10' font-weight='700' fill='white'%3EXY%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header">
+      <a class="wordmark" href="/" aria-label="Xyle home"><span aria-hidden="true">XY</span><strong>Xyle</strong></a>
+      <nav aria-label="Main navigation">
+        <a href="/">Product</a>
+        <a href="/guide/" aria-current="page">Owner guide</a>
+        <a class="nav-demo" href="/demo/">Try the demo</a>
+      </nav>
+    </header>
+
+    <main id="main-content" class="guide-page">
+      <section class="guide-intro" aria-labelledby="guide-title">
+        <div>
+          <p class="kicker">Owner guide</p>
+          <h1 id="guide-title">Change content without changing how your site works.</h1>
+        </div>
+        <p>
+          Xyle edits the final static files that your website already serves. Your developer keeps control of templates, code, and deployment.
+        </p>
+      </section>
+
+      <section class="guide-section" aria-labelledby="start-title">
+        <div class="guide-heading"><span>01</span><h2 id="start-title">Start Xyle</h2></div>
+        <div class="guide-body">
+          <p>Open a terminal in the directory that contains the website HTML files.</p>
+          <pre><code><span>$</span> cd /path/to/static-output
+<span>$</span> npx xyle init .
+<span>$</span> npx xyle dev .</code></pre>
+          <p>The first command shows an editor key. Store this key in a secure password manager.</p>
+          <p>The second command shows two addresses. Open the address that ends in <code>/edit</code>.</p>
+        </div>
+      </section>
+
+      <section class="guide-section" aria-labelledby="edit-title">
+        <div class="guide-heading"><span>02</span><h2 id="edit-title">Edit and review</h2></div>
+        <div class="guide-body">
+          <ol class="instruction-list">
+            <li>Enter the editor key.</li>
+            <li>Select visible text, a link, an image, or a supported section.</li>
+            <li>Make the change with the controls beside the selected content.</li>
+            <li>Open <strong>Changes</strong> to examine the old and new values.</li>
+            <li>Use <strong>Revert</strong> to remove one change. Use <strong>Discard</strong> to remove the complete draft.</li>
+            <li>Select <strong>Publish</strong> after the review is complete.</li>
+          </ol>
+          <aside>
+            <strong>Draft limit</strong>
+            <p>Xyle keeps an unpublished draft in browser memory. A refresh removes that draft.</p>
+          </aside>
+        </div>
+      </section>
+
+      <section class="guide-section" aria-labelledby="support-title">
+        <div class="guide-heading"><span>03</span><h2 id="support-title">Know the editing boundary</h2></div>
+        <div class="guide-body support-columns">
+          <div>
+            <h3>Supported</h3>
+            <ul>
+              <li>Existing text and safe inline formatting.</li>
+              <li>Link labels and safe destinations.</li>
+              <li>Raster images, alt text, crop, focus, and fit.</li>
+              <li>SEO title, description, social metadata, and canonical URL.</li>
+              <li>Safe section visibility, order, duplication, Groups, and Layout.</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Not supported in v1</h3>
+            <ul>
+              <li>New pages or arbitrary page building.</li>
+              <li>JavaScript, forms, or arbitrary CSS editing.</li>
+              <li>Responsive <code>picture</code> and <code>srcset</code> replacement.</li>
+              <li>Persisted drafts or multiple editors.</li>
+              <li>Changes to framework templates or source components.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="guide-section" aria-labelledby="safety-title">
+        <div class="guide-heading"><span>04</span><h2 id="safety-title">Publish safely</h2></div>
+        <div class="guide-body">
+          <p>Xyle patches only the reviewed ranges. It keeps unrelated source bytes unchanged.</p>
+          <p>Uploaded images become content-addressed static files. Xyle does not put website content in a separate database.</p>
+          <p>For a generated site, coordinate with the developer before another framework build. A new build can replace edits in final output.</p>
+          <p>After publication, reload the public address and examine the result.</p>
+        </div>
+      </section>
+
+      <section class="guide-section" aria-labelledby="agent-title">
+        <div class="guide-heading"><span>05</span><h2 id="agent-title">Use WebMCP when you want assistance</h2></div>
+        <div class="guide-body">
+          <p>A compatible browser agent can inspect editable content and prepare changes from a natural-language request.</p>
+          <p>The agent uses the same safety rules and ChangeSet as the visual editor. It cannot publish.</p>
+          <p>Review agent changes in the Changes drawer before you select <strong>Publish</strong>.</p>
+        </div>
+      </section>
+
+      <section class="guide-finish" aria-labelledby="finish-title">
+        <div><p class="kicker">Try it safely</p><h2 id="finish-title">Practice in an isolated copy.</h2></div>
+        <p>The public demo resets when you refresh it. It does not modify the Xyle website.</p>
+        <a class="button button-light" href="/demo/">Open the demo</a>
+      </section>
+    </main>
+
+    <footer>
+      <a class="wordmark footer-mark" href="/" aria-label="Xyle home"><span aria-hidden="true">XY</span><strong>Xyle</strong></a>
+      <p>Visual editing for static websites on infrastructure you control.</p>
+      <div><a href="/">Product</a><a href="/guide/">Owner guide</a><a href="/demo/">Demo</a></div>
+    </footer>
+  </body>
+</html>

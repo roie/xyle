@@ -579,7 +579,160 @@ footer > p {
 
 footer > div {
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
+}
+
+.guide-page {
+  padding-bottom: clamp(5rem, 9vw, 8rem);
+}
+
+.guide-intro {
+  display: grid;
+  grid-template-columns: 1.25fr 0.75fr;
+  align-items: end;
+  gap: clamp(2rem, 8vw, 7rem);
+  padding-block: clamp(5rem, 10vw, 9rem);
+  border-bottom: 1px solid var(--line);
+}
+
+.guide-intro h1 {
+  max-width: 13ch;
+  font-size: clamp(3.2rem, 7vw, 6.5rem);
+}
+
+.guide-intro > p {
+  max-width: 34rem;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 1.08rem;
+}
+
+.guide-section {
+  display: grid;
+  grid-template-columns: 0.75fr 1.25fr;
+  gap: clamp(2rem, 8vw, 7rem);
+  padding-block: clamp(3rem, 7vw, 5.5rem);
+  border-bottom: 1px solid var(--line);
+}
+
+.guide-heading {
+  display: grid;
+  align-content: start;
+  gap: 1.25rem;
+}
+
+.guide-heading > span {
+  color: var(--blue);
+  font: 800 0.72rem/1 var(--mono);
+}
+
+.guide-heading h2 {
+  max-width: 9ch;
+  font-size: clamp(2.5rem, 4.5vw, 4rem);
+}
+
+.guide-body {
+  max-width: 48rem;
+}
+
+.guide-body > p:first-child {
+  margin-top: 0;
+}
+
+.guide-body p,
+.guide-body li {
+  color: var(--ink-soft);
+}
+
+.guide-body pre {
+  margin: 1.5rem 0;
+  padding: clamp(1rem, 4vw, 2rem);
+  overflow-x: auto;
+  border-left: 4px solid var(--coral);
+  background: var(--ink);
+  color: #e5eaff;
+  font: 0.82rem/2 var(--mono);
+}
+
+.guide-body pre span {
+  color: var(--mint);
+}
+
+.guide-body code {
+  font-family: var(--mono);
+}
+
+.instruction-list {
+  display: grid;
+  gap: 0.8rem;
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.guide-body aside {
+  margin-top: 2rem;
+  padding: 1.25rem;
+  border: 1px solid #8ac8a5;
+  background: var(--mint);
+}
+
+.guide-body aside strong {
+  font: 800 0.72rem/1 var(--mono);
+  text-transform: uppercase;
+}
+
+.guide-body aside p {
+  margin: 0.5rem 0 0;
+  color: #244b38;
+}
+
+.support-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+}
+
+.support-columns > div {
+  padding: 1.5rem;
+  border: 1px solid var(--line);
+  background: var(--white);
+}
+
+.support-columns > div:last-child {
+  border-color: #ffb1a5;
+  background: #fff5f2;
+}
+
+.support-columns ul {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.guide-finish {
+  display: grid;
+  grid-template-columns: 1fr 0.7fr auto;
+  align-items: end;
+  gap: 2rem;
+  margin-top: clamp(4rem, 8vw, 7rem);
+  padding: clamp(2rem, 5vw, 4rem);
+  background: var(--blue);
+  color: var(--white);
+}
+
+.guide-finish .kicker {
+  color: var(--mint);
+}
+
+.guide-finish h2 {
+  font-size: clamp(2.4rem, 4vw, 4rem);
+}
+
+.guide-finish > p {
+  margin: 0;
+  color: #d9e0ff;
 }
 
 @keyframes blink {
@@ -596,7 +749,11 @@ footer > div {
 @media (max-width: 62rem) {
   .hero,
   .workflow,
-  .install {
+  .install,
+  .demo-callout,
+  .guide-intro,
+  .guide-section,
+  .guide-finish {
     grid-template-columns: 1fr;
   }
 
@@ -621,8 +778,8 @@ footer > div {
     border-top: 1px solid var(--line);
   }
 
-  .demo-callout {
-    grid-template-columns: 1fr;
+  .demo-callout,
+  .guide-finish {
     align-items: start;
   }
 }
@@ -646,7 +803,8 @@ footer > div {
 
   .file-body,
   .boundary-strip,
-  .control-grid {
+  .control-grid,
+  .support-columns {
     grid-template-columns: 1fr;
   }
 
