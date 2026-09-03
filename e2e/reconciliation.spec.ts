@@ -37,6 +37,73 @@ test.describe("canonical net reconciliation", () => {
     await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
 
+  test("section visibility and order restore to the authored baseline", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const sectionIds = await page.evaluate(() => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      return [...doc.querySelectorAll("main > section[data-xyle-node]")].map((section) =>
+        section.getAttribute("data-xyle-node"),
+      );
+    });
+    expect(sectionIds.length).toBeGreaterThanOrEqual(2);
+    const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${sectionIds[0]}"]`);
+
+    await first.press("Enter");
+    await page.getByRole("button", { name: "Move down" }).click();
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    await first.press("Enter");
+    await page.getByRole("button", { name: "Move up" }).click();
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
+            .contentDocument!;
+          return [...doc.querySelectorAll("main > section[data-xyle-node]")].map((section) =>
+            section.getAttribute("data-xyle-node"),
+          );
+        }),
+      )
+      .toEqual(sectionIds);
+
+    await first.press("Enter");
+    await page.getByRole("button", { name: "Hide section" }).click();
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    await expect(first).toHaveJSProperty("hidden", true);
+    await page.locator("#xyle-control-hitbox").hover();
+    await page.locator("#xyle-menu-btn").click();
+    await page.getByRole("menuitem", { name: "Sections" }).click();
+    const sections = page.getByRole("dialog", { name: "Sections" });
+    await sections.getByRole("button", { name: "Show" }).first().click();
+
+    await expect(first).toHaveJSProperty("hidden", false);
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
+  });
+
+  test("media alt text restores to the authored baseline", async ({ page }) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/misc/team.jpg"]');
+    const originalAlt = (await image.getAttribute("alt")) ?? "";
+
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Alt" }).click();
+    await page.locator('.xyle-img-tools input[name="alt"]').fill("Temporary description");
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Save" }).click();
+    await expect.poll(async () => opsCount(page)).toBe(1);
+
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Alt" }).click();
+    await page.locator('.xyle-img-tools input[name="alt"]').fill(originalAlt);
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Save" }).click();
+
+    await expect(image).toHaveAttribute("alt", originalAlt);
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
+  });
+
   test("layout and region order restore to the authored baseline", async ({ page }) => {
     await loginAndOpenEditor(page, "/layouts.html");
     const section = page.frameLocator("#xyle-preview").locator("#layout-basic");
