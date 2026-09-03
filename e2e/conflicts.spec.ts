@@ -4,6 +4,7 @@ import {
   currentOps,
   editNode,
   findNodeByText,
+  flashText,
   focusCaret,
   loginAndOpenEditor,
   opsCount,
@@ -65,6 +66,33 @@ test.describe("conflicts and recovery", () => {
     expect(reloaded).not.toContain(tokenB.trim());
 
     await contextB.close();
+  });
+
+  test("network failure keeps the ChangeSet and permits retry", async ({ page }, info) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const beforeSource = await (await page.request.get("/about.html")).text();
+    const nodeId = await findNodeByText(page, "This Xyle demo starts");
+    await editNode(page, nodeId!);
+    await focusCaret(page, nodeId!, "end");
+    const token = ` retry-${info.project.name}`;
+    await page.keyboard.type(token);
+    await clickOutsideCommit(page);
+    expect(await opsCount(page)).toBe(1);
+
+    await page.route("**/__xyle/api/publish", (route) => route.abort("connectionfailed"), {
+      times: 1,
+    });
+    await page.locator("#xyle-publish").click();
+    await expect.poll(() => flashText(page)).toMatch(/check your connection and retry/i);
+    expect(await opsCount(page)).toBe(1);
+    await expect(page.locator("#xyle-dirty")).toBeVisible();
+    expect(await (await page.request.get("/about.html")).text()).toBe(beforeSource);
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    expect(await (await page.request.get("/about.html")).text()).toContain(token);
+    expect(await opsCount(page)).toBe(0);
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
 
   test("edits on multiple pages publish together after navigation", async ({ page }, info) => {
