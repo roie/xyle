@@ -127,6 +127,34 @@ describe("hosted media publishing", () => {
   });
 });
 
+describe("hosted publish boundaries", () => {
+  it("rejects an oversized streamed body without Content-Length", async () => {
+    const env = await hostedEnv();
+    const token = await login(KEY, env);
+    expect(token).toBeTruthy();
+    const request = new Request(`${ORIGIN}/__xyle/api/publish`, {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        cookie: `xyle_session=${token}`,
+        "content-type": "multipart/form-data; boundary=xyle",
+        "x-xyle-request": "1",
+      },
+      body: new Uint8Array(21 * 1024 * 1024 + 1).buffer,
+    });
+    expect(request.headers.get("content-length")).toBeNull();
+
+    const response = await onRequest({
+      request,
+      env,
+      params: { route: ["publish"] },
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ error: "request too large" });
+  });
+});
+
 describe("hosted edit entry", () => {
   it("serves the responsive accessible sign-in experience", async () => {
     const env = await hostedEnv();

@@ -7,6 +7,10 @@ import { preparePreview, patchHtml } from "../../../src/html.ts";
 import { discoverMedia, uploadPathFor, validateUpload } from "../../../src/media.ts";
 import { computeSnapshotDigest, digestBytes } from "../../../src/digest.ts";
 import { LAYOUT_CSS, layoutAssetPath } from "../../../src/layout.ts";
+import {
+  bufferRequestBody,
+  RequestBodyTooLargeError,
+} from "../../../src/request-body.ts";
 import type { ManifestFile, PageOperation, XyleDigest } from "../../../src/types.ts";
 
 type RuntimeEnv = Env & {
@@ -15,6 +19,7 @@ type RuntimeEnv = Env & {
   IMAGES?: import("../../_publish").CloudflareImagesBinding;
 };
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_PUBLISH_REQUEST_BYTES = MAX_UPLOAD_BYTES + 1024 * 1024;
 
 function isLayoutNeeded(source: string, operations: PageOperation[]): boolean {
   const managedAttributeCount =
@@ -127,9 +132,16 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     if (!request.headers.get("content-type")?.includes("multipart/form-data")) {
       return Response.json({ error: "unsupported content type" }, { status: 415 });
     }
-    const length = Number(request.headers.get("content-length") ?? "0");
-    if (!Number.isSafeInteger(length) || length > MAX_UPLOAD_BYTES + 1024 * 1024) return Response.json({ error: "request too large" }, { status: 413 });
-    const form = await request.formData().catch(() => null);
+    let bufferedRequest: Request;
+    try {
+      bufferedRequest = await bufferRequestBody(request, MAX_PUBLISH_REQUEST_BYTES);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        return Response.json({ error: "request too large" }, { status: 413 });
+      }
+      throw error;
+    }
+    const form = await bufferedRequest.formData().catch(() => null);
     if (!form) return Response.json({ error: "invalid multipart body" }, { status: 400 });
     const raw = form.get("metadata");
     if (typeof raw !== "string") return Response.json({ error: "missing metadata" }, { status: 400 });

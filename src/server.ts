@@ -15,6 +15,7 @@ import { deriveCroppedImage } from "./crop.ts";
 import { mediaSourcePath } from "./media-state.ts";
 import { digestBytes } from "./digest.ts";
 import { LAYOUT_CSS, layoutAssetPath } from "./layout.ts";
+import { bufferRequestBody, RequestBodyTooLargeError } from "./request-body.ts";
 import type {
   MediaState,
   PageOperation,
@@ -482,10 +483,16 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
   await requireSession(request, context);
   assertMutationAllowed(request, context);
 
-  const contentLength = Number(request.headers.get("content-length") ?? "0");
-  if (!Number.isSafeInteger(contentLength) || contentLength > MAX_PUBLISH_REQUEST_BYTES)
-    return json({ error: "request too large" }, 413);
-  const form = await request.formData().catch(() => null);
+  let bufferedRequest: Request;
+  try {
+    bufferedRequest = await bufferRequestBody(request, MAX_PUBLISH_REQUEST_BYTES);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return json({ error: "request too large" }, 413);
+    }
+    throw error;
+  }
+  const form = await bufferedRequest.formData().catch(() => null);
   if (!form) return json({ error: "invalid multipart body" }, 400);
   const metadataRaw = form.get("metadata");
   if (typeof metadataRaw !== "string") {
