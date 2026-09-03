@@ -12,6 +12,8 @@ pnpm demo:dev
 
 Open the printed `/demo/` URL. The browser demo does not require an editor key. Refresh the page to reset it.
 
+For a WebMCP rehearsal, use [the demo prompts](JUDGE_PROMPTS.md) and [the three-minute recording script](DEMO_SCRIPT.md).
+
 ## Test the authenticated editor
 
 Create the local workspace:
