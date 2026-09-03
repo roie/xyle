@@ -41,6 +41,14 @@ const baseUrl = `http://127.0.0.1:${address.port}`;
 let browser;
 
 try {
+  const headers = await readFile(resolve(root, "_headers"), "utf8");
+  if (!headers.includes("Content-Security-Policy:") || !headers.includes("X-Robots-Tag: noindex")) {
+    throw new Error("The website deployment headers are incomplete");
+  }
+  const redirects = await readFile(resolve(root, "_redirects"), "utf8");
+  if (!redirects.includes("/demo /demo/ 301") || !redirects.includes("/guide /guide/ 301")) {
+    throw new Error("The website route redirects are incomplete");
+  }
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   const errors = [];
