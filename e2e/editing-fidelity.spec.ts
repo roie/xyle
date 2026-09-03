@@ -226,10 +226,10 @@ test.describe("editing fidelity gate", () => {
     });
     await page.waitForTimeout(200);
     const skeletonAfter = await nodeSkeleton(page, id!);
-    // either refused+reverted or flattened — never structural damage
-    expect(skeletonAfter === skeletonBefore || !(await nodeHtml(page, id!)).includes("<b")).toBe(
-      true,
-    );
+    const htmlAfter = await nodeHtml(page, id!);
+    expect(skeletonAfter).toBe(skeletonBefore);
+    expect(htmlAfter).not.toContain("<b");
+    expect(htmlAfter).not.toContain("data-x=");
   });
 
   test("emoji typing", async () => {
