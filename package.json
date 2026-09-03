@@ -28,7 +28,8 @@
     "test:package": "node scripts/test-package.mjs",
     "test:cloudflare-runtime": "pnpm build && node scripts/test-cloudflare-runtime.mjs",
     "test:website": "pnpm build:website && node scripts/test-website.mjs",
-    "check": "pnpm typecheck && pnpm test && ./node_modules/.bin/biome check ."
+    "check": "pnpm typecheck && pnpm test && ./node_modules/.bin/biome check .",
+    "release:check": "node scripts/release-check.mjs"
   },
   "dependencies": {
     "@noble/hashes": "^2.3.0",

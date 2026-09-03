@@ -103,7 +103,10 @@ pnpm test:e2e       # Playwright suite (Chromium/Firefox; WebKit needs host deps
 pnpm test:package              # pack, install, edit, publish, and reload a temporary static site
 pnpm test:website              # build and test the product homepage and isolated browser demo
 pnpm test:cloudflare-runtime   # run the packaged Pages Worker locally with workerd
+pnpm release:check             # run the complete local release matrix in sequence
 ```
+
+The release check includes WebKit. Run it on a host with the documented WebKit system libraries. It also runs native Chrome WebMCP checks with the required browser flags.
 
 See [docs/architecture.md](docs/architecture.md) for the design,
 [SECURITY.md](SECURITY.md) for the security model,
