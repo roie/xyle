@@ -6435,7 +6435,7 @@ function registerCreatedMediaStates(
     const image = clone.querySelector<HTMLImageElement>(
       `[data-xyle-node="${CSS.escape(createdNodeId)}"]`,
     );
-    if (!(image instanceof HTMLImageElement)) continue;
+    if (!image || image.tagName !== "IMG") continue;
     const media = normalizeMediaState(operation.value);
     createdMedia.set(segmentIdentity(pagePath, createdNodeId), media);
     applyMediaStateToDom(image, media);
@@ -8556,8 +8556,8 @@ function applyOpToDom(pagePath: string, op: Op): void {
     return;
   }
   if (op.type === "media") {
-    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
-    if (el instanceof HTMLImageElement) applyMediaStateToDom(el, op.value);
+    const el = doc.querySelector<HTMLImageElement>(`[data-xyle-node="${op.nodeId}"]`);
+    if (el?.tagName === "IMG") applyMediaStateToDom(el, op.value);
     return;
   }
   if (op.type === "seo") {
@@ -8708,9 +8708,9 @@ function revertOpInDom(pagePath: string, op: Op): void {
   } else if (op.type === "html") {
     restoreOriginalMarkup(pagePath, op.nodeId);
   } else if (op.type === "media") {
-    const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
+    const el = doc.querySelector<HTMLImageElement>(`[data-xyle-node="${op.nodeId}"]`);
     const original = originalMedia.get(segmentIdentity(pagePath, op.nodeId));
-    if (el instanceof HTMLImageElement && original) applyMediaStateToDom(el, original);
+    if (el?.tagName === "IMG" && original) applyMediaStateToDom(el, original);
   } else if (op.type === "seo") {
     applySeoToDom(op.field, originalSeo.get(seoIdentity(pagePath, op.field)) ?? "");
   } else if (op.type === "href" || op.type === "src" || op.type === "alt") {
@@ -9121,8 +9121,8 @@ function restoreOpsIntoDom(): void {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) replaceElementContentsFromHtml(el, op.value);
     } else if (op.type === "media") {
-      const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`);
-      if (el instanceof HTMLImageElement) applyMediaStateToDom(el, op.value);
+      const el = doc.querySelector<HTMLImageElement>(`[data-xyle-node="${op.nodeId}"]`);
+      if (el?.tagName === "IMG") applyMediaStateToDom(el, op.value);
     } else if (op.type === "seo") {
       applySeoToDom(op.field, op.value);
     } else {

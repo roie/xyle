@@ -198,6 +198,40 @@ test.describe("canonical net reconciliation", () => {
     await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
 
+  test("Revert restores authored missing-alt presence", async ({ page }) => {
+    await loginAndOpenEditor(page, "/media-missing-alt.html");
+    const image = page.frameLocator("#xyle-preview").locator('img[src="/misc/team.jpg"]');
+    await expect(image).not.toHaveAttribute("alt");
+
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Alt" }).click();
+    const tools = page.locator(".xyle-img-tools");
+    await tools.locator("input[name=alt]").fill("A team reviewing the site");
+    await tools.getByRole("button", { name: "Save" }).click();
+    await expect(image).toHaveAttribute("alt", "A team reviewing the site");
+    await expect.poll(async () => opsCount(page)).toBe(1);
+
+    await page.locator("#xyle-changes").click();
+    const change = page
+      .getByRole("dialog", { name: "Changes" })
+      .locator(".xyle-change-row")
+      .filter({ hasText: "A team reviewing the site" });
+    await expect(change).toHaveCount(1);
+    await change.getByRole("button", { name: /Revert/ }).click();
+
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await expect(image).not.toHaveAttribute("alt");
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
+    await page.keyboard.press("Control+z");
+    await expect(image).toHaveAttribute("alt", "A team reviewing the site");
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    await page.keyboard.press("Control+Shift+z");
+    await expect(image).not.toHaveAttribute("alt");
+    await expect.poll(async () => opsCount(page)).toBe(0);
+  });
+
   test("media alt text restores to the authored baseline", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const image = page
