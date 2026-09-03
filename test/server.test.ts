@@ -1,8 +1,13 @@
-import { cp, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { loadOrCreateSecrets, readOrCreateState, startXyleDevServer } from "../src/cli.ts";
+import {
+  loadOrCreateSecrets,
+  readOrCreateState,
+  startXyleDevServer,
+  updateState,
+} from "../src/cli.ts";
 import type { Server } from "node:http";
 
 const DEMO_SITE = new URL("../demo/site/", import.meta.url).pathname;
@@ -20,6 +25,8 @@ beforeAll(async () => {
   const { secrets } = await loadOrCreateSecrets(root);
   editorKey = secrets.editorKey;
   await readOrCreateState(root);
+  await writeFile(join(root, "ignored.html"), "<h1>Ignored page</h1>");
+  await updateState(root, { ignorePaths: ["/ignored.html"] });
   const started = await startXyleDevServer({ directory: root, port: 0 });
   server = started.server;
   base = started.url;
@@ -253,6 +260,46 @@ describe("mutation guards", () => {
       body: "{}",
     });
     expect(res.status).toBe(403);
+  });
+
+  it("rejects publication of an ignored page", async () => {
+    const cookie = await login();
+    const manifestResponse = await fetch(`${base}/__xyle/api/manifest`, {
+      headers: { cookie },
+    });
+    expect(manifestResponse.status).toBe(200);
+    const manifest = (await manifestResponse.json()) as {
+      snapshotDigest: string;
+      files: Record<string, { digest: string }>;
+    };
+    const form = new FormData();
+    form.set(
+      "metadata",
+      JSON.stringify({
+        baseSnapshotDigest: manifest.snapshotDigest,
+        pages: [
+          {
+            pagePath: "/ignored.html",
+            baseDigest: manifest.files["/ignored.html"]!.digest,
+            operations: [],
+          },
+        ],
+      }),
+    );
+
+    const response = await fetch(`${base}/__xyle/api/publish`, {
+      method: "POST",
+      headers: {
+        cookie,
+        origin: new URL(base).origin,
+        "x-xyle-request": "1",
+      },
+      body: form,
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "page is ignored: /ignored.html" });
+    expect(await readFile(join(root, "ignored.html"), "utf8")).toBe("<h1>Ignored page</h1>");
   });
 });
 

@@ -500,6 +500,12 @@ async function handlePublish(request: Request, context: RuntimeContext): Promise
   const validMetadata = validatePublishMetadata(metadata);
   if (!validMetadata) return json({ error: "invalid publish metadata" }, 400);
   metadata = validMetadata;
+  for (const page of metadata.pages) {
+    const pagePath = normalizeSitePath(page.pagePath);
+    if (isIgnoredPath(pagePath, context.ignorePaths)) {
+      return json({ error: `page is ignored: ${pagePath}` }, 400);
+    }
+  }
 
   // re-read current snapshot for conflict detection
   const current = await context.publisher.readSnapshot();
