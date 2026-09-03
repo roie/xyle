@@ -1,10 +1,11 @@
 import { digestBytes } from "./digest.ts";
 import { patchHtml, preparePreview } from "./html.ts";
-import type { PageChange } from "./types.ts";
+import type { MediaItem, PageChange } from "./types.ts";
 
 export interface BrowserDemoConfig {
   initialPage: string;
   pages: Record<string, string>;
+  media?: Record<string, string>;
   publicBaseUrl: string;
 }
 
@@ -43,6 +44,7 @@ async function dataUrl(file: File): Promise<string> {
 
 export function createBrowserDemoTransport(config: BrowserDemoConfig): BrowserDemoTransport {
   const sources = new Map<string, string>();
+  let mediaItems: Promise<MediaItem[]> | null = null;
 
   const sourceFor = async (pagePath: string): Promise<string> => {
     const existing = sources.get(pagePath);
@@ -77,6 +79,30 @@ export function createBrowserDemoTransport(config: BrowserDemoConfig): BrowserDe
       groups: prepared.groups,
       layouts: prepared.layouts,
     });
+  };
+
+  const loadMediaItems = (): Promise<MediaItem[]> => {
+    if (mediaItems) return mediaItems;
+    mediaItems = Promise.all(Object.keys(config.pages).map(sourceFor)).then((pageSources) =>
+      Promise.all(
+        Object.entries(config.media ?? {}).map(async ([path, sourceUrl]) => {
+          const response = await fetch(sourceUrl, { cache: "no-store" });
+          if (!response.ok) throw new Error(`Demo media could not load: ${path}`);
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          return {
+            path,
+            contentType: response.headers.get("content-type")?.split(";", 1)[0] || "image/*",
+            size: bytes.byteLength,
+            digest: await digestBytes(bytes),
+            source: "site" as const,
+            usedBySimpleImg: pageSources.some(
+              (source) => source.includes(`src="${path}"`) || source.includes(`src='${path}'`),
+            ),
+          };
+        }),
+      ),
+    );
+    return mediaItems;
   };
 
   const publishResponse = async (init?: RequestInit): Promise<Response> => {
@@ -127,7 +153,13 @@ export function createBrowserDemoTransport(config: BrowserDemoConfig): BrowserDe
       if (url.pathname === "/__xyle/api/page") {
         return pageResponse(url.searchParams.get("path") ?? config.initialPage);
       }
-      if (url.pathname === "/__xyle/api/media") return json({ available: false });
+      if (url.pathname === "/__xyle/api/media") {
+        try {
+          return json(await loadMediaItems());
+        } catch (error) {
+          return json({ error: errorMessage(error) }, 502);
+        }
+      }
       if (url.pathname === "/__xyle/api/logout") return json({ ok: true });
       if (url.pathname === "/__xyle/api/publish" && init?.method === "POST") {
         return publishResponse(init);

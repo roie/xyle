@@ -92,6 +92,42 @@ try {
     throw new Error("The browser demo requires an editor key");
   }
 
+  const heroImage = page.frameLocator("#xyle-preview").locator(".work-standard .work-image img");
+  await heroImage.click();
+  await page.getByRole("button", { name: "Replace" }).waitFor();
+  if (await page.getByRole("button", { name: "Replace" }).isDisabled()) {
+    throw new Error("Image replacement is disabled in the browser demo");
+  }
+  const mediaButton = page.getByRole("button", { name: "Media", exact: true });
+  if (await mediaButton.isDisabled()) {
+    throw new Error("The media library is disabled in the browser demo");
+  }
+  await mediaButton.click();
+  const mediaDrawer = page.getByRole("dialog", { name: "Media" });
+  if ((await mediaDrawer.getAttribute("data-xyle-drawer-mode")) !== "modal") {
+    throw new Error("The mobile browser demo did not open Media as a modal panel");
+  }
+  if (!(await page.locator("#xyle-shell").evaluate((element) => element.hasAttribute("inert")))) {
+    throw new Error("The mobile browser demo did not lock its preview while Media was open");
+  }
+  const currentMedia = mediaDrawer.getByRole("button", {
+    name: /Choose .*hero-wide\.webp \(currently used\)/,
+  });
+  if ((await currentMedia.getAttribute("aria-current")) !== "true") {
+    throw new Error("The browser demo did not identify the currently used image");
+  }
+  await mediaDrawer.getByRole("button", { name: /Choose .*hero-fallback\.jpg/ }).click();
+  await heroImage.waitFor();
+  await heroImage.click();
+  const fileChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Replace" }).click();
+  await (await fileChooser).setFiles(resolve(repository, "demo/site/misc/team.jpg"));
+  await page.waitForFunction(() => {
+    const frame = document.querySelector("#xyle-preview");
+    if (!(frame instanceof HTMLIFrameElement)) return false;
+    return frame.contentDocument?.querySelector(".work-standard .work-image img")?.getAttribute("src")?.startsWith("blob:");
+  });
+
   const heading = page
     .frameLocator("#xyle-preview")
     .getByRole("heading", { name: "Edit your static site visually" });
@@ -101,17 +137,19 @@ try {
   await page.frameLocator("#xyle-preview").locator("html").click({ position: { x: 1, y: 1 } });
   await page.locator("#xyle-dirty").waitFor({ state: "visible" });
   await page.locator("#xyle-changes").click();
-  const changeRow = page.locator("#xyle-changes-list .xyle-change-row").first();
+  const changeRow = page
+    .locator("#xyle-changes-list .xyle-change-row")
+    .filter({ hasText: "Edited in my private demo" });
   await changeRow.locator(".xyle-change-after").waitFor();
-  if (!(await changeRow.textContent())?.includes("Edited in my private demo")) {
-    throw new Error("The browser demo did not show the pending text change");
-  }
   await page.locator("#xyle-drawer-publish").click();
   await page.locator("#xyle-dirty").waitFor({ state: "hidden" });
   await page
     .frameLocator("#xyle-preview")
     .getByRole("heading", { name: "Edited in my private demo" })
     .waitFor();
+  if (!(await heroImage.getAttribute("src"))?.startsWith("data:image/jpeg;base64,")) {
+    throw new Error("The browser demo did not publish the replacement image in memory");
+  }
 
   await page.reload();
   await page.locator("#xyle-preview").waitFor({ state: "visible" });

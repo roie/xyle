@@ -43,14 +43,15 @@ The `init` command prints the editor key once. The `dev` command prints the publ
 
 Open the editor URL and publish a change. Xyle writes the change to the static HTML and asset files.
 
-To run the deterministic Xyle demo:
+To run the browser demo:
 
 ```bash
-pnpm demo:reset
 pnpm demo:dev
 ```
 
-See [demo/README.md](demo/README.md) for first-time setup.
+Open the printed `/demo/` URL. The browser demo does not require an editor key. Refresh the page to reset it.
+
+See [demo/README.md](demo/README.md) to test the authenticated `/edit` workflow.
 
 ## Host `/edit` on Cloudflare Pages
 

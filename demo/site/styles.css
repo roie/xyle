@@ -363,14 +363,16 @@ h3 {
 }
 
 .hero-visual picture,
-.hero-visual picture img {
+.hero-visual picture img,
+.hero-visual > img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
 }
 
-.hero-visual picture img {
+.hero-visual picture img,
+.hero-visual > img {
   opacity: 0.45;
   filter: saturate(0.6) contrast(1.15);
   object-fit: cover;

@@ -774,7 +774,10 @@ export const editorStyles = `
   .xyle-change-comparison {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 0.35rem;
+    gap: 1px;
+    overflow: hidden;
+    border: 1px solid #ffffff12;
+    border-radius: 4px;
   }
   .xyle-change-value {
     position: relative;
@@ -945,6 +948,7 @@ export const editorStyles = `
     overflow: auto;
   }
   .xyle-media-cell {
+    position: relative;
     min-width: 0;
     padding: 0.28rem;
     border: 1px solid var(--xyle-line);
@@ -955,6 +959,22 @@ export const editorStyles = `
   .xyle-media-cell:hover {
     border-color: var(--xyle-accent);
     background: var(--xyle-accent-soft);
+  }
+  .xyle-media-cell.is-current {
+    border-color: #a8bea5;
+    box-shadow: 0 0 0 1px #a8bea5;
+  }
+  .xyle-media-current {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    padding: 0.18rem 0.38rem;
+    border-radius: 999px;
+    background: #17201be8;
+    color: #eef3ec;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
   }
   .xyle-media-thumb {
     display: block;
@@ -1094,6 +1114,33 @@ export const editorStyles = `
   #xyle-overlay-root .xyle-format-tools {
     align-items: center !important;
   }
+  #xyle-overlay-root .xyle-section-tools {
+    align-items: center !important;
+    justify-content: center !important;
+    flex-wrap: wrap !important;
+    max-width: min(36rem, calc(100vw - 16px)) !important;
+  }
+  #xyle-overlay-root .xyle-layout-tools,
+  #xyle-overlay-root .xyle-section-action-tools {
+    display: flex !important;
+    align-items: center !important;
+    gap: 2px !important;
+  }
+  #xyle-overlay-root .xyle-section-action-tools {
+    padding-left: 5px !important;
+    border-left: 1px solid #ffffff2e !important;
+  }
+  #xyle-overlay-root .xyle-tool-group-label {
+    padding: 0 6px !important;
+    color: #aab6aa !important;
+    font: 700 9px / 1 var(--xyle-font-ui) !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+  }
+  #xyle-overlay-root .xyle-section-tools button[data-state="on"] {
+    background: #a8bea5 !important;
+    color: #142018 !important;
+  }
   #xyle-overlay-root .xyle-format-tools [role="separator"] {
     width: 1px !important;
     height: 20px !important;
@@ -1102,18 +1149,24 @@ export const editorStyles = `
   }
   #xyle-overlay-root .xyle-format-tools select {
     all: initial !important;
+    appearance: none !important;
     min-height: 28px !important;
-    padding: 0 22px 0 8px !important;
+    box-sizing: border-box !important;
+    padding: 0 24px 0 9px !important;
     border: 0 !important;
     border-radius: 6px !important;
-    background: transparent !important;
+    background-color: transparent !important;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='m1 1 4 4 4-4' fill='none' stroke='%23aab6aa' stroke-width='1.5'/%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: right 8px center !important;
+    background-size: 8px 5px !important;
     color: #eef3ec !important;
-    font: 600 11px / 1.2 var(--xyle-font-ui) !important;
+    font: 600 11px / 26px var(--xyle-font-ui) !important;
     cursor: pointer !important;
   }
   #xyle-overlay-root .xyle-format-tools select:hover,
   #xyle-overlay-root .xyle-format-tools select:focus-visible {
-    background: #ffffff1f !important;
+    background-color: #ffffff1f !important;
   }
   #xyle-overlay-root .xyle-format-tools option {
     background: #17201b !important;
@@ -1122,10 +1175,10 @@ export const editorStyles = `
 
   #xyle-overlay-root .xyle-inline-tool-form {
     display: grid !important;
-    grid-template-columns: minmax(9rem, 1fr) auto auto;
-    align-items: end;
-    gap: 0.35rem 0.5rem;
-    min-width: min(18rem, calc(100vw - 1rem));
+    grid-template-columns: minmax(10rem, 1fr) auto;
+    align-items: center;
+    gap: 0.35rem 0.4rem;
+    min-width: min(20rem, calc(100vw - 1rem));
     padding: 0.25rem;
     color: #eef3ec;
     font: 500 11px / 1.2 var(--xyle-font-ui);
@@ -1140,8 +1193,9 @@ export const editorStyles = `
   #xyle-overlay-root .xyle-inline-tool-input {
     width: 100%;
     min-width: 0;
+    min-height: 28px;
     box-sizing: border-box;
-    padding: 0.4rem 0.5rem;
+    padding: 0.35rem 0.55rem;
     border: 1px solid #435047;
     border-radius: 5px;
     background: #10130f;
@@ -1161,6 +1215,17 @@ export const editorStyles = `
     color: #aab6aa;
     white-space: nowrap;
   }
+  #xyle-overlay-root .xyle-inline-tool-help {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: #aab6aa;
+    font-size: 10px;
+    line-height: 1.35;
+  }
+  #xyle-overlay-root .xyle-alt-form .xyle-inline-tool-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
   #xyle-overlay-root .xyle-inline-tool-error {
     display: block;
     grid-column: 1 / -1;
@@ -1173,7 +1238,12 @@ export const editorStyles = `
   }
   #xyle-overlay-root .xyle-inline-tool-actions {
     display: flex;
-    gap: 2px;
+    gap: 4px;
+  }
+  #xyle-overlay-root .xyle-inline-tool-actions button {
+    min-width: 56px !important;
+    justify-content: center !important;
+    text-align: center !important;
   }
   #xyle-overlay-root .xyle-img-tools button,
   #xyle-overlay-root .xyle-link-tools button,

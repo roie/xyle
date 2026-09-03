@@ -4,9 +4,17 @@
 
 Do not run Xyle against `demo/site` directly. Use the ignored writable copy at `demo/.workspace/site`.
 
-## First-time setup
+## Run the browser demo
 
-Build Xyle and create the local workspace:
+```bash
+pnpm demo:dev
+```
+
+Open the printed `/demo/` URL. The browser demo does not require an editor key. Refresh the page to reset it.
+
+## Test the authenticated editor
+
+Create the local workspace:
 
 ```bash
 pnpm build
@@ -16,15 +24,15 @@ pnpm exec tsx src/cli.ts init demo/.workspace/site
 
 The last command prints the editor key once. Keep it private.
 
-## Run locally
+Start Xyle against the workspace:
 
 ```bash
-pnpm demo:dev
+pnpm demo:workspace
 ```
 
-Open the printed `/edit` URL and sign in with the local editor key.
+Open the printed `/edit` URL. Sign in with the local editor key.
 
-Use `pnpm demo:reset` when you want a clean copy. The reset restores the tracked canonical site and keeps an existing local editor key.
+Run `pnpm demo:reset` to restore the tracked demo. The command keeps the existing local editor key.
 
 ## Edit as a person
 

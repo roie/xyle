@@ -113,7 +113,7 @@ test("golden human walkthrough covers the exposed editor contract", async ({ pag
   await layout.press("Enter");
   await page.locator(".xyle-layout-tools").getByRole("button", { name: "Split" }).click();
   await layout.press("Enter");
-  await page.locator(".xyle-layout-tools").getByRole("button", { name: "Swap order" }).click();
+  await page.locator(".xyle-layout-tools").getByRole("button", { name: "Swap sides" }).click();
   await expect(layout.locator("> div").first()).toHaveClass(/qa-layout-image/);
 
   await page.locator("#xyle-changes").click();

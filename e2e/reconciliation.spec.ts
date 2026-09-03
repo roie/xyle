@@ -274,10 +274,10 @@ test.describe("canonical net reconciliation", () => {
     await expect(section).not.toHaveAttribute("data-xyle-layout", "split");
 
     await openSectionTools(page, "#layout-basic");
-    await page.locator(".xyle-layout-tools").getByRole("button", { name: "Swap order" }).click();
+    await page.locator(".xyle-layout-tools").getByRole("button", { name: "Swap sides" }).click();
     await expect.poll(async () => opsCount(page)).toBe(1);
     await openSectionTools(page, "#layout-basic");
-    await page.locator(".xyle-layout-tools").getByRole("button", { name: "Swap order" }).click();
+    await page.locator(".xyle-layout-tools").getByRole("button", { name: "Swap sides" }).click();
     await expect.poll(async () => opsCount(page)).toBe(0);
   });
 });

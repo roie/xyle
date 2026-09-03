@@ -75,6 +75,40 @@ describe("browser-only demo transport", () => {
     expect(isolated.html).not.toContain("Published heading");
   });
 
+  it("provides the demo media library without server storage", async () => {
+    const mediaPath = "/demo-content/assets/photo.webp";
+    const mediaBytes = new Uint8Array([82, 73, 70, 70]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url === mediaPath) {
+          return new Response(mediaBytes, { headers: { "content-type": "image/webp" } });
+        }
+        return new Response(source.replace("</main>", `<img src="${mediaPath}"></main>`), {
+          headers: { "content-type": "text/html" },
+        });
+      }),
+    );
+    const transport = createBrowserDemoTransport({
+      ...config,
+      media: { [mediaPath]: mediaPath },
+    });
+
+    const response = await transport.request("/__xyle/api/media");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([
+      {
+        path: mediaPath,
+        contentType: "image/webp",
+        size: mediaBytes.byteLength,
+        digest: expect.stringMatching(/^sha256:/),
+        source: "site",
+        usedBySimpleImg: true,
+      },
+    ]);
+  });
+
   it("rejects stale and unknown demo publication targets", async () => {
     vi.stubGlobal(
       "fetch",

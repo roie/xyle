@@ -16,7 +16,7 @@ test.describe("media editing", () => {
     const id = await page.evaluate(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       for (const el of doc.querySelectorAll("img[data-xyle-node]")) {
-        if ((el as HTMLImageElement).getAttribute("src") === "/assets/hero-wide.webp") {
+        if ((el as HTMLImageElement).getAttribute("src") === "/assets/hero-fallback.jpg") {
           return el.getAttribute("data-xyle-node");
         }
       }
@@ -28,9 +28,10 @@ test.describe("media editing", () => {
     await image.hover();
     const tools = page.locator(".xyle-img-tools");
     await expect(tools).toBeVisible();
-    await expect(tools.getByRole("button", { name: "Replace" })).toBeVisible();
-    await expect(tools.getByRole("button", { name: "Media" })).toBeVisible();
-    await expect(tools.getByRole("button", { name: "Alt" })).toBeVisible();
+    await expect(tools.getByRole("button", { name: "Replace" })).toBeEnabled();
+    await expect(tools.getByRole("button", { name: "Media" })).toBeEnabled();
+    await expect(tools.getByRole("button", { name: "Crop" })).toBeEnabled();
+    await expect(tools.getByRole("button", { name: "Alt" })).toBeEnabled();
     const geometry = await tools.boundingBox();
     const viewport = page.viewportSize()!;
     expect(geometry).toBeTruthy();
@@ -39,12 +40,23 @@ test.describe("media editing", () => {
     expect(geometry!.x + geometry!.width).toBeLessThanOrEqual(viewport.width);
     expect(geometry!.y + geometry!.height).toBeLessThanOrEqual(viewport.height);
 
-    // picture/srcset image is not a candidate at all
-    const pictureCandidates = await page.evaluate(() => {
+    // The demo's prominent image is intentionally simple so every media action is available.
+    const responsiveImages = await page.evaluate(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
-      return doc.querySelectorAll("picture [data-xyle-node]").length;
+      return doc.querySelectorAll("picture, img[srcset]").length;
     });
-    expect(pictureCandidates).toBe(1);
+    expect(responsiveImages).toBe(0);
+
+    await tools.getByRole("button", { name: "Media" }).click();
+    const mediaDrawer = page.getByRole("dialog", { name: "Media" });
+    const currentImage = mediaDrawer.getByRole("button", {
+      name: "Choose /assets/hero-fallback.jpg (currently used)",
+    });
+    await expect(currentImage).toHaveAttribute("aria-current", "true");
+    await expect(currentImage.locator(".xyle-media-current")).toHaveText("Current");
+    await mediaDrawer.getByRole("button", { name: "Choose /misc/team.jpg" }).click();
+    await expect(image).toHaveAttribute("src", "/misc/team.jpg");
+    await expect.poll(async () => opsCount(page)).toBe(1);
   });
 
   test("keyboard image activation focuses actions and Escape returns focus", async ({ page }) => {
@@ -354,7 +366,9 @@ test.describe("media editing", () => {
     });
   });
 
-  test("media drawer shows loading and empty states and traps focus", async ({ page }) => {
+  test("desktop media drawer shows loading and empty states without locking the preview", async ({
+    page,
+  }) => {
     let mediaRequests = 0;
     let releaseEmptyResponse!: () => void;
     const emptyResponseGate = new Promise<void>((resolve) => {
@@ -377,9 +391,10 @@ test.describe("media editing", () => {
     await page.getByRole("menuitem", { name: "Media library" }).click();
 
     const drawer = page.getByRole("dialog", { name: "Media" });
-    await expect(drawer).toHaveAttribute("aria-modal", "true");
-    await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
-    await expect(page.locator("#xyle-control-dock")).toHaveAttribute("inert", "");
+    await expect(drawer).toHaveAttribute("data-xyle-drawer-mode", "companion");
+    await expect(drawer).not.toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
+    await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
     await expect(drawer).toHaveAttribute("aria-busy", "true");
     await expect(drawer.getByRole("status")).toHaveText("Loading media…");
 
@@ -390,12 +405,7 @@ test.describe("media editing", () => {
     );
 
     const close = drawer.getByRole("button", { name: "Close media drawer" });
-    const upload = drawer.getByRole("button", { name: "Upload to library" });
     await close.focus();
-    await page.keyboard.press("Shift+Tab");
-    await expect(upload).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(close).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(drawer).toHaveCount(0);
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
@@ -547,6 +557,51 @@ test.describe("media editing", () => {
     expect(await res2.text()).toMatch(/large/i);
   });
 
+  test("decorative images explain and apply empty alternative text", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const imgId = await page.evaluate(() => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+      return doc
+        .querySelector('img[src="/assets/hero-fallback.jpg"]')
+        ?.getAttribute("data-xyle-node");
+    });
+    expect(imgId).toBeTruthy();
+
+    const image = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${imgId}"]`);
+    await clickNode(page, imgId!);
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Alt" }).click();
+    const toolbar = page.locator(".xyle-img-tools");
+    const altInput = toolbar.locator("input[name=alt]");
+    const decorative = toolbar.getByRole("checkbox", {
+      name: "The page makes sense without this image",
+    });
+    await expect(
+      toolbar.getByText(
+        "Choose this for a background or visual detail. Screen readers will skip the image.",
+      ),
+    ).toBeVisible();
+    await expect(decorative).not.toBeChecked();
+
+    await altInput.fill("");
+    await toolbar.getByRole("button", { name: "Save" }).click();
+    await expect(toolbar.getByRole("alert")).toHaveText(
+      "Describe the image, or confirm that the page makes sense without it.",
+    );
+    await decorative.check();
+    await expect(altInput).toBeDisabled();
+    await toolbar.getByRole("button", { name: "Save" }).click();
+    await expect(image).toHaveAttribute("alt", "");
+    await expect.poll(async () => opsCount(page)).toBe(1);
+
+    await clickNode(page, imgId!);
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Alt" }).click();
+    await expect(
+      page
+        .locator(".xyle-img-tools")
+        .getByRole("checkbox", { name: "The page makes sense without this image" }),
+    ).toBeChecked();
+  });
+
   test("alt text can be edited and publishes to source", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/about.html");
     const imgId = await page.evaluate(() => {
@@ -631,11 +686,7 @@ test.describe("media editing", () => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       const images = [...doc.querySelectorAll("img[data-xyle-node]")] as HTMLImageElement[];
       const image =
-        images.find(
-          (candidate) =>
-            !candidate.closest("picture") &&
-            /\.(?:jpg|jpeg|png|webp|avif)(?:$|\?)/i.test(candidate.src),
-        ) ?? images[0];
+        images.find((candidate) => candidate.alt === "A careful repair in progress") ?? images[0];
       return {
         id: image?.getAttribute("data-xyle-node"),
         src: image?.getAttribute("src") ?? "",

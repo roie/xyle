@@ -337,6 +337,57 @@ test.describe("editing fidelity gate", () => {
     }
   });
 
+  test("Changes shows compact raw HTML around a formatting edit", async () => {
+    const nodeId = await findNodeByText(page, "The first Xyle edits happen");
+    expect(nodeId).toBeTruthy();
+    await editNode(page, nodeId!);
+    await page.evaluate((id) => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      const element = frame.contentDocument!.querySelector<HTMLElement>(
+        `[data-xyle-node="${id}"]`,
+      )!;
+      const text = [...element.childNodes].find(
+        (node): node is Text =>
+          node.nodeType === Node.TEXT_NODE &&
+          (node.textContent ?? "").includes("separate database"),
+      )!;
+      const start = text.data.indexOf("separate database");
+      const range = frame.contentDocument!.createRange();
+      range.setStart(text, start);
+      range.setEnd(text, start + "separate database".length);
+      const selection = frame.contentWindow!.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      frame.contentDocument!.dispatchEvent(new Event("selectionchange"));
+    }, nodeId!);
+    await page.locator(".xyle-format-tools").getByRole("button", { name: "Italic" }).click();
+    await clickOutsideToCommit(page);
+
+    await page.locator("#xyle-changes").click();
+    const row = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
+    const before = (await row.locator(".xyle-change-before").textContent()) ?? "";
+    const after = (await row.locator(".xyle-change-after").textContent()) ?? "";
+    expect(before).toContain("…");
+    expect(before).toContain("separate database");
+    expect(after).toContain("<em>separate database</em>");
+    expect(after).not.toContain('class=""');
+    expect(before).not.toContain("The first Xyle edits happen");
+    expect(after.length).toBeLessThan(150);
+  });
+
+  test("choosing the current heading style does not create a formatting change", async () => {
+    const headingId = await findNodeByText(page, "See how Xyle works");
+    expect(headingId).toBeTruthy();
+    await editNode(page, headingId!);
+    await setSelection(page, { nodeId: headingId!, selectAll: true });
+    await page
+      .locator('.xyle-format-tools select[aria-label="Block style"]')
+      .selectOption("heading-1");
+
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
+  });
+
   test("block styles publish in both directions and survive reload", async () => {
     const headingId = await findNodeByText(page, "See how Xyle works");
     const paragraphId = await findNodeByText(page, "Editors change content");
@@ -345,9 +396,10 @@ test.describe("editing fidelity gate", () => {
 
     await editNode(page, headingId!);
     await setSelection(page, { nodeId: headingId!, selectAll: true });
-    await page
-      .locator('.xyle-format-tools select[aria-label="Block style"]')
-      .selectOption("paragraph");
+    const headingStyle = page.locator('.xyle-format-tools select[aria-label="Block style"]');
+    await headingStyle.click();
+    await page.keyboard.press("Home");
+    await page.keyboard.press("Enter");
     const changedHeading = page
       .frameLocator("#xyle-preview")
       .locator(`[data-xyle-node="${headingId}"]`);

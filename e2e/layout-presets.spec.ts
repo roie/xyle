@@ -15,7 +15,7 @@ test("unsupported Layout controls explain why they are disabled", async ({ page 
   await layout.press("Enter");
   const tools = page.locator(".xyle-section-tools");
   await expect(tools).toBeVisible();
-  for (const name of ["Stack", "Split", "Swap order"]) {
+  for (const name of ["Stack", "Split", "Swap sides"]) {
     const button = tools.getByRole("button", { name });
     await expect(button).toBeDisabled();
     await expect(button).toHaveAttribute(
@@ -40,8 +40,8 @@ test("applies and publishes the safe Split preset", async ({ page }) => {
   await expect(preview.locator("#layout-basic")).toHaveAttribute("data-xyle-layout", "split");
   await expect(preview.locator("#layout-basic h2")).toContainText("Safe layout");
   await page.frameLocator("#xyle-preview").locator("#layout-basic").press("Enter");
-  await expect(page.locator(".xyle-layout-tools button", { hasText: "Swap order" })).toBeEnabled();
-  await page.locator(".xyle-layout-tools button", { hasText: "Swap order" }).click();
+  await expect(page.locator(".xyle-layout-tools button", { hasText: "Swap sides" })).toBeEnabled();
+  await page.locator(".xyle-layout-tools button", { hasText: "Swap sides" }).click();
   await expect(preview.locator("#layout-basic > div").nth(0)).toHaveClass(/layout-content/);
   await expect(preview.locator("#layout-basic > div").nth(1)).toHaveClass(/layout-image/);
   await page.frameLocator("#xyle-preview").locator("#layout-unsafe").press("Enter");

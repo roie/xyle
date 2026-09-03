@@ -571,8 +571,11 @@ test.describe("editing affordances", () => {
     await page.getByRole("button", { name: "Edit URL" }).click();
     const panel = page.locator(".xyle-link-tools");
     await expect(panel).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Follow" })).toHaveCount(0);
+    const hrefInput = panel.getByRole("textbox", { name: "Link destination" });
+    await expect(hrefInput).toHaveAttribute("placeholder", "https://example.com or /about");
     const destination = `/about.html?from=${info.project.name}`;
-    await panel.locator("input[name=href]").fill(destination);
+    await hrefInput.fill(destination);
     await panel.getByRole("button", { name: "Save" }).click();
 
     await expect(link).toHaveText(originalLabel ?? "");
@@ -584,6 +587,28 @@ test.describe("editing affordances", () => {
         [],
     );
     expect(ops.map((entry) => entry.op.type)).toEqual(["href"]);
+  });
+
+  test("link Edit URL treats a bare domain as an HTTPS destination", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const link = page.frameLocator("#xyle-preview").locator("a.cta");
+    await link.click();
+    await page.getByRole("button", { name: "Edit URL" }).click();
+    const panel = page.locator(".xyle-link-tools");
+    await panel.getByRole("textbox", { name: "Link destination" }).fill("google.com/search?q=xyle");
+    await panel.getByRole("button", { name: "Save" }).click();
+
+    await expect(link).toHaveAttribute("href", "https://google.com/search?q=xyle");
+    expect(await currentOps(page)).toEqual([
+      {
+        pagePath: "/index.html",
+        op: {
+          type: "href",
+          nodeId: await link.getAttribute("data-xyle-node"),
+          value: "https://google.com/search?q=xyle",
+        },
+      },
+    ]);
   });
 
   test("inline editor keeps ownership across real pointer and focus transfer", async ({
@@ -705,7 +730,6 @@ test.describe("changes drawer and undo", () => {
       return doc?.body?.textContent?.includes("This Xyle demo starts");
     });
     const aboutId = await findNodeByText(page, "This Xyle demo starts");
-    const originalAboutText = await textOf(page, aboutId!);
     await editNode(page, aboutId!);
     await focusCaret(page, aboutId!, "end");
     await page.keyboard.type(" GROUPED-ABOUT");
@@ -727,7 +751,9 @@ test.describe("changes drawer and undo", () => {
     await expect(linkRow.locator(".xyle-change-before")).toContainText(originalHref);
     await expect(linkRow.locator(".xyle-change-after")).toContainText(updatedHref);
     await expect(indexGroup.locator(".xyle-change-arrow")).toHaveCount(2);
-    await expect(aboutGroup.locator(".xyle-change-before")).toContainText(originalAboutText);
+    await expect(aboutGroup.locator(".xyle-change-before")).toContainText(
+      "Xyle demo starts with ordinary static HTML and assets.",
+    );
     await expect(aboutGroup.locator(".xyle-change-after")).toContainText("GROUPED-ABOUT");
 
     await textRow.getByRole("button", { name: "Revert" }).click();
@@ -771,7 +797,9 @@ test.describe("changes drawer and undo", () => {
     const trigger = page.locator("#xyle-changes");
     await trigger.click();
     const drawer = page.getByRole("dialog", { name: "Changes" });
+    await expect(drawer).toHaveAttribute("data-xyle-drawer-mode", "modal");
     await expect(drawer).toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
     const close = drawer.getByRole("button", { name: "Close changes drawer" });
     const discard = drawer.getByRole("button", { name: "Discard all changes" });
     await expect(close).toBeFocused();
@@ -889,6 +917,27 @@ test.describe("changes drawer and undo", () => {
     expect(await textOf(page, id!)).toBe(original);
   });
 
+  test("keyboard undo stays native inside shell form fields", async ({ page }) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const id = await findNodeByText(page, "This Xyle demo starts");
+    await editNode(page, id!);
+    await focusCaret(page, id!, "end");
+    await page.keyboard.type(" HISTORY");
+    await clickOutsideCommit(page);
+    await expect.poll(async () => opsCount(page)).toBe(1);
+
+    await page.locator("#xyle-control-hitbox").hover();
+    await page.locator("#xyle-menu-btn").click();
+    await page.getByRole("menuitem", { name: "SEO" }).click();
+    const title = page.getByRole("dialog", { name: "SEO metadata" }).locator('[name="title"]');
+    const originalTitle = await title.inputValue();
+    await title.press("End");
+    await title.pressSequentially("X");
+    await title.press("Control+z");
+    await expect(title).toHaveValue(originalTitle);
+    await expect.poll(async () => opsCount(page)).toBe(1);
+  });
+
   test("keyboard undo/redo works outside fields", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const id = await findNodeByText(page, "This Xyle demo starts");
@@ -919,6 +968,22 @@ test.describe("changes drawer and undo", () => {
     expect(await textOf(page, id!)).toBe(secondEdit);
     expect(await opsCount(page)).toBe(1);
   });
+
+  test("inline spans show inline formatting without a misleading block selector", async ({
+    page,
+  }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const id = await findNodeByText(page, "Your files · Your hosting · Your decision");
+    expect(id).toBeTruthy();
+    await editNode(page, id!);
+    await setSelection(page, { nodeId: id!, selectAll: true });
+
+    const tools = page.locator(".xyle-format-tools");
+    await expect(tools.getByRole("button", { name: "Bold" })).toBeVisible();
+    await expect(tools.locator('select[aria-label="Block style"]')).toHaveCount(0);
+    await expect(tools.getByRole("separator")).toHaveCount(0);
+  });
+
   test("publishes a human-created bulleted list", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const firstId = await findNodeByText(page, "The first Xyle edits");
@@ -984,6 +1049,33 @@ test.describe("changes drawer and undo", () => {
     const list = page.locator("ul").filter({ hasText: "The first Xyle edits" });
     await expect(list.locator(":scope > li")).toHaveCount(2);
     await expect(list).toContainText("Each pending change stays visible");
+  });
+
+  test("returns a draft list to paragraphs from the block-style menu", async ({ page }) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const firstId = await findNodeByText(page, "The first Xyle edits");
+    const secondId = await findNodeByText(page, "Each pending change stays visible");
+    expect(firstId).toBeTruthy();
+    expect(secondId).toBeTruthy();
+
+    await editNode(page, firstId!);
+    await setSelection(page, { nodeId: firstId!, selectAll: true });
+    await page
+      .locator('.xyle-format-tools select[aria-label="Block style"]')
+      .selectOption("unordered-list");
+
+    await editNode(page, firstId!);
+    await setSelection(page, { nodeId: firstId!, selectAll: true });
+    const blockStyle = page.locator('.xyle-format-tools select[aria-label="Block style"]');
+    await expect(blockStyle).toHaveValue("unordered-list");
+    await expect(blockStyle.locator('option[value="heading-1"]')).toHaveCount(0);
+    await blockStyle.selectOption("paragraph");
+
+    const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${firstId}"]`);
+    const second = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${secondId}"]`);
+    await expect(first).toHaveJSProperty("tagName", "P");
+    await expect(second).toHaveJSProperty("tagName", "P");
+    await expect.poll(async () => opsCount(page)).toBe(0);
   });
 
   test("publishes a human-created numbered list", async ({ page }) => {
@@ -1059,7 +1151,7 @@ test.describe("changes drawer and undo", () => {
     await expect(page).toHaveTitle("Updated page title");
   });
 
-  test("SEO and Sections drawers trap focus and restore the menu trigger", async ({ page }) => {
+  test("desktop drawers preserve preview scrolling and close before editing", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const menuButton = page.locator("#xyle-menu-btn");
 
@@ -1067,40 +1159,48 @@ test.describe("changes drawer and undo", () => {
     await menuButton.click();
     await page.getByRole("menuitem", { name: "SEO" }).click();
     const seo = page.getByRole("dialog", { name: "SEO metadata" });
-    const seoClose = seo.getByRole("button", { name: "Close SEO metadata" });
-    const seoLast = seo.locator("button").last();
     const title = seo.locator('[name="title"]');
-    await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
-    await expect(page.locator("#xyle-control-dock")).toHaveAttribute("inert", "");
-    await expect(title).toBeFocused();
-    await page.evaluate(() => document.getElementById("xyle-menu-btn")?.focus());
-    await expect(title).toBeFocused();
-    await seoClose.focus();
-    await page.keyboard.press("Shift+Tab");
-    await expect(seoLast).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(seoClose).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(seo).toHaveCount(0);
+    await expect(seo).toHaveAttribute("data-xyle-drawer-mode", "companion");
+    await expect(seo).not.toHaveAttribute("aria-modal", "true");
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
+    await expect(title).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(seo).toHaveCount(0);
     await expect(menuButton).toBeFocused();
 
     await menuButton.click();
     await page.getByRole("menuitem", { name: "Sections" }).click();
     const sections = page.getByRole("dialog", { name: "Sections" });
-    const sectionsClose = sections.getByRole("button", { name: "Close sections" });
-    const sectionsLast = sections.locator("button").last();
-    await expect(sectionsClose).toBeFocused();
-    await page.keyboard.press("Shift+Tab");
-    await expect(sectionsLast).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(sectionsClose).toBeFocused();
-    await sections.getByRole("button", { name: "Hide" }).first().click();
-    await expect(sections.getByRole("button", { name: "Close sections" })).toBeFocused();
-    await page.keyboard.press("Escape");
+    await expect(sections).toHaveAttribute("data-xyle-drawer-mode", "companion");
+    await expect(sections).not.toHaveAttribute("aria-modal", "true");
+
+    await page.evaluate(() => {
+      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+      frame.contentWindow?.scrollTo(0, 0);
+    });
+    const previewBox = await page.locator("#xyle-preview").boundingBox();
+    expect(previewBox).not.toBeNull();
+    await page.mouse.move(previewBox!.x + 100, previewBox!.y + previewBox!.height / 2);
+    await page.mouse.wheel(0, 500);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentWindow?.scrollY ??
+            0,
+        ),
+      )
+      .toBeGreaterThan(0);
+    await expect(sections).toBeVisible();
+
+    const id = await findNodeByText(page, "Edit your static site visually");
+    expect(id).toBeTruthy();
+    await editNode(page, id!);
     await expect(sections).toHaveCount(0);
-    await expect(menuButton).toBeFocused();
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${id}"]`),
+    ).toHaveAttribute("contenteditable", "true");
   });
 });
 

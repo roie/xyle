@@ -234,6 +234,7 @@ let unregisterWebMcp: (() => void) | null = null;
 interface DemoBootstrapConfig {
   initialPage: string;
   pages: Record<string, string>;
+  media?: Record<string, string>;
   publicBaseUrl: string;
 }
 const rawDemoConfig = (window as typeof window & { __XYLE_BROWSER_DEMO__?: unknown })
@@ -345,6 +346,33 @@ function trapDialogFocus(dialog: HTMLElement, close: () => void): void {
       first.focus();
     }
   });
+}
+
+function configureEditorDrawer(drawer: HTMLElement, close: () => void): void {
+  const modal = window.matchMedia("(max-width: 700px)").matches;
+  drawer.dataset.xyleDrawerMode = modal ? "modal" : "companion";
+  if (modal) {
+    drawer.setAttribute("aria-modal", "true");
+    trapDialogFocus(drawer, close);
+    return;
+  }
+  drawer.removeAttribute("aria-modal");
+  drawer.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    close();
+  });
+}
+
+function closeCompanionDrawerForPreviewInteraction(): void {
+  const drawer = document.querySelector<HTMLElement>(
+    '.xyle-drawer[data-xyle-drawer-mode="companion"]',
+  );
+  if (!drawer) return;
+  if (drawer.id === "xyle-media-drawer") closeMediaDrawer(false);
+  else if (drawer.id === "xyle-seo-drawer") closeSeoDrawer(false);
+  else if (drawer.id === "xyle-sections-drawer") closeSectionDrawer(false);
+  else if (drawer.id === "xyle-changes-drawer") closeChangesDrawer(false);
 }
 
 async function boot(): Promise<void> {
@@ -500,6 +528,8 @@ function wirePreview(): void {
   if (doc.body.dataset.xyleWired === "true") return;
   doc.body.dataset.xyleWired = "true";
   doc.defaultView?.addEventListener("scroll", scheduleOverlayRefresh, { passive: true });
+  doc.addEventListener("pointerdown", closeCompanionDrawerForPreviewInteraction, true);
+  doc.addEventListener("focusin", closeCompanionDrawerForPreviewInteraction, true);
   doc.addEventListener("selectionchange", () => {
     rememberNonCollapsedSelection();
     scheduleFormatTools();
@@ -638,6 +668,43 @@ function setInteractionMode(mode: InteractionMode): void {
   interactionMode = mode;
 }
 
+const GENERATED_CLASS_BASELINE = "data-xyle-generated-class-baseline";
+const GENERATED_CLASS_WAS_PRESENT = "data-xyle-generated-class-was-present";
+
+function rememberGeneratedClassBaseline(element: Element): void {
+  if (element.hasAttribute(GENERATED_CLASS_BASELINE)) return;
+  const authoredClass = element.getAttribute("class");
+  element.setAttribute(GENERATED_CLASS_BASELINE, authoredClass ?? "");
+  if (authoredClass !== null) element.setAttribute(GENERATED_CLASS_WAS_PRESENT, "");
+}
+
+function restoreGeneratedClassBaseline(element: Element): void {
+  if (!element.hasAttribute(GENERATED_CLASS_BASELINE)) return;
+  const authoredClass = element.getAttribute(GENERATED_CLASS_BASELINE) ?? "";
+  if (element.hasAttribute(GENERATED_CLASS_WAS_PRESENT))
+    element.setAttribute("class", authoredClass);
+  else element.removeAttribute("class");
+  element.removeAttribute(GENERATED_CLASS_BASELINE);
+  element.removeAttribute(GENERATED_CLASS_WAS_PRESENT);
+}
+
+function addGeneratedClass(element: Element, className: string, marker: string): void {
+  rememberGeneratedClassBaseline(element);
+  element.classList.add(className);
+  element.setAttribute(marker, "");
+}
+
+function removeGeneratedClass(element: Element, className: string, marker: string): void {
+  element.classList.remove(className);
+  element.removeAttribute(marker);
+  if (
+    !element.hasAttribute("data-xyle-generated-hover") &&
+    !element.hasAttribute("data-xyle-generated-editing")
+  ) {
+    restoreGeneratedClassBaseline(element);
+  }
+}
+
 function beginCandidateHover(el: HTMLElement): void {
   window.clearTimeout(hoverClearTimer);
   // A toolbar or inline editor owns the interaction until it explicitly closes.
@@ -645,11 +712,10 @@ function beginCandidateHover(el: HTMLElement): void {
   if (toolbarActionInProgress || toolbarOwnsInteraction()) return;
   if (activeToolsTarget && activeToolsTarget !== el) closeContextTools(false);
   if (hoveredCandidate && hoveredCandidate !== el) {
-    hoveredCandidate.classList.remove("xyle-hover");
+    removeGeneratedClass(hoveredCandidate, "xyle-hover", "data-xyle-generated-hover");
   }
   hoveredCandidate = el;
-  el.classList.add("xyle-hover");
-  el.setAttribute("data-xyle-generated-hover", "");
+  addGeneratedClass(el, "xyle-hover", "data-xyle-generated-hover");
   toolbarPhase = "hovered";
   if (!session && !activeTools) setInteractionMode("hover");
   refreshEditabilityOverlay();
@@ -660,8 +726,7 @@ function endCandidateHover(el: HTMLElement): void {
   if (activeToolsTarget === el || toolbarOwnsInteraction()) return;
   hoverClearTimer = window.setTimeout(() => {
     if (hoveredCandidate !== el || activeToolsTarget === el || session?.el === el) return;
-    el.classList.remove("xyle-hover");
-    el.removeAttribute("data-xyle-generated-hover");
+    removeGeneratedClass(el, "xyle-hover", "data-xyle-generated-hover");
     hoveredCandidate = null;
     if (!session && !activeTools) {
       toolbarPhase = "idle";
@@ -1322,7 +1387,7 @@ function setRegionOrder(targetId: string, order: RegionOrder): { id: string; ord
     sequence: allocateStructuralSequence(),
   };
   applyRegionOrderToDom(target, order);
-  applyOp(current.pagePath, operation, "Swap order", order === "original" ? null : operation);
+  applyOp(current.pagePath, operation, "Swap sides", order === "original" ? null : operation);
   return { id: targetId, order };
 }
 
@@ -1425,7 +1490,10 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
       const capability = layoutCapability(layoutTarget);
       const layoutTools = document.createElement("div");
       layoutTools.className = "xyle-layout-tools";
+      layoutTools.setAttribute("role", "group");
+      layoutTools.setAttribute("aria-label", "Layout");
       const label = document.createElement("strong");
+      label.className = "xyle-tool-group-label";
       label.textContent = "Layout";
       layoutTools.append(label);
       for (const [preset, text] of [
@@ -1435,6 +1503,8 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
         const button = document.createElement("button");
         button.type = "button";
         button.textContent = text;
+        button.dataset.state = capability.current === preset ? "on" : "off";
+        button.setAttribute("aria-pressed", String(capability.current === preset));
         button.disabled = !capability.supported;
         if (!capability.supported) button.title = capability.reason ?? "Layout is unavailable";
         else
@@ -1444,15 +1514,10 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
           });
         layoutTools.append(button);
       }
-      tools.append(layoutTools);
       const currentOrder = regionOrderInDom(layoutTarget);
-      const orderTools = document.createElement("div");
-      orderTools.className = "xyle-layout-tools";
-      const orderLabel = document.createElement("strong");
-      orderLabel.textContent = "Order";
       const orderButton = document.createElement("button");
       orderButton.type = "button";
-      orderButton.textContent = "Swap order";
+      orderButton.textContent = "Swap sides";
       const nextOrder: RegionOrder = currentOrder === "swapped" ? "original" : "swapped";
       const orderSupported = capability.supported && canSetRegionOrder(layoutTarget, nextOrder);
       orderButton.disabled = !orderSupported;
@@ -1462,9 +1527,18 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
           setRegionOrder(meta.id, nextOrder);
           closeContextTools(false);
         });
-      orderTools.append(orderLabel, orderButton);
-      tools.append(orderTools);
+      layoutTools.append(orderButton);
+      tools.append(layoutTools);
     }
+
+    const sectionActions = document.createElement("div");
+    sectionActions.className = "xyle-section-action-tools";
+    sectionActions.setAttribute("role", "group");
+    sectionActions.setAttribute("aria-label", "Section");
+    const sectionLabel = document.createElement("strong");
+    sectionLabel.className = "xyle-tool-group-label";
+    sectionLabel.textContent = "Section";
+    sectionActions.append(sectionLabel);
 
     const parent = section.parentElement;
     const siblings = parent ? sectionChildren(parent) : [];
@@ -1487,7 +1561,7 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
         duplicateSection(meta.id);
         closeContextTools(false);
       });
-    tools.append(duplicate);
+    sectionActions.append(duplicate);
 
     const visibility = document.createElement("button");
     visibility.type = "button";
@@ -1496,7 +1570,7 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
       updateSectionVisibility(meta.id, Boolean(section.hidden));
       closeContextTools(false);
     });
-    tools.append(visibility);
+    sectionActions.append(visibility);
 
     const index = siblings.indexOf(section);
     const addMove = (label: string, target: HTMLElement | undefined, before: boolean): void => {
@@ -1511,13 +1585,14 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
           moveSection(meta.id, target.getAttribute("data-xyle-node")!, before);
           closeContextTools(false);
         });
-      tools.append(button);
+      sectionActions.append(button);
     };
     addMove("Move up", siblings[index - 1], true);
     addMove("Move down", siblings[index + 1], false);
-    registerContextTools(tools, section, "above");
+    tools.append(sectionActions);
+    registerContextTools(tools, section, "inside-bottom");
     overlay.append(tools);
-    positionContextTools(tools, previewElementRect(section), "above");
+    positionContextTools(tools, previewElementRect(section), "inside-bottom");
     if (focusFirst) tools.querySelector("button")?.focus();
   }
 }
@@ -1822,8 +1897,7 @@ function startEdit(el: HTMLElement, meta: NodeMeta): void {
   // SAFETY: contentEditable is a standard HTMLElement property, but the local
   // DOM type omits the editor's writable assignment.
   (el as unknown as { contentEditable: string }).contentEditable = "true";
-  el.classList.add("xyle-editing");
-  el.setAttribute("data-xyle-generated-editing", "");
+  addGeneratedClass(el, "xyle-editing", "data-xyle-generated-editing");
   setInteractionMode("editing");
   refreshEditabilityOverlay();
   el.focus({ preventScroll: true });
@@ -2099,6 +2173,7 @@ function showFormatTools(): void {
   tools.setAttribute("aria-label", "Text formatting");
   const currentSelectionForInline = currentSelection;
   const blockRunIds = listBlockRun(target);
+  const supportsBlockStyle = isBlockTag(session.meta.tag) || session.meta.tag === "li";
 
   const addInlineButton = (format: "bold" | "italic" | "underline", label: string): void => {
     const button = document.createElement("button");
@@ -2123,28 +2198,54 @@ function showFormatTools(): void {
     addInlineButton("underline", "Underline");
     updateFormatToolState(tools, target, currentSelection.range);
 
-    const separator = document.createElement("span");
-    separator.setAttribute("role", "separator");
-    tools.append(separator);
+    if (supportsBlockStyle) {
+      const separator = document.createElement("span");
+      separator.setAttribute("role", "separator");
+      tools.append(separator);
+    }
   }
 
   if (listGroup) {
-    for (const [format, label] of [
+    const block = document.createElement("select");
+    block.setAttribute("aria-label", "Block style");
+    block.setAttribute("title", "Block style");
+    for (const [value, label] of [
+      ["paragraph", "Paragraph"],
       ["unordered-list", "Bulleted list"],
       ["ordered-list", "Numbered list"],
     ] as const) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = label;
-      button.setAttribute("aria-label", label);
-      button.setAttribute("title", label);
-      button.addEventListener("pointerdown", (event) => event.preventDefault());
-      button.addEventListener("click", () => {
-        toggleListFormatting(listGroup.ids, format);
-        closeContextTools(false);
-      });
-      tools.append(button);
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      block.append(option);
     }
+    const firstElement = currentNodeElement(listGroup.ids[0]!);
+    const currentListTag =
+      firstElement?.tagName.toLowerCase() === "li"
+        ? firstElement.parentElement?.tagName.toLowerCase()
+        : "";
+    const listRunIds = firstElement ? listBlockRun(firstElement) : [];
+    block.value = isListTag(currentListTag) ? blockFormattingFor(currentListTag) : "paragraph";
+    block.addEventListener("change", () => {
+      const format = block.value as "paragraph" | "unordered-list" | "ordered-list";
+      const ids = isListTag(currentListTag) && listRunIds.length > 0 ? listRunIds : listGroup.ids;
+      if (format === "paragraph") {
+        if (isListTag(currentListTag)) {
+          toggleListFormatting(ids, currentListTag === "ul" ? "unordered-list" : "ordered-list");
+        }
+      } else {
+        toggleListFormatting(ids, format);
+      }
+      closeContextTools(false);
+    });
+    tools.append(block);
+    registerContextTools(tools, target, "above");
+    overlay.append(tools);
+    positionContextTools(tools, selected.rect, "above", previewElementRect(target));
+    return;
+  }
+
+  if (!supportsBlockStyle) {
     registerContextTools(tools, target, "above");
     overlay.append(tools);
     positionContextTools(tools, selected.rect, "above", previewElementRect(target));
@@ -2154,27 +2255,34 @@ function showFormatTools(): void {
   const block = document.createElement("select");
   block.setAttribute("aria-label", "Block style");
   block.setAttribute("title", "Block style");
-  for (const [value, label] of [
-    ["paragraph", "Paragraph"],
-    ["heading-1", "Heading 1"],
-    ["heading-2", "Heading 2"],
-    ["heading-3", "Heading 3"],
-    ["heading-4", "Heading 4"],
-    ["heading-5", "Heading 5"],
-    ["heading-6", "Heading 6"],
-    ["unordered-list", "Bulleted list"],
-    ["ordered-list", "Numbered list"],
-  ] as const) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    block.append(option);
-  }
   const currentBlockTag = session.el.tagName.toLowerCase();
   const currentListTag =
     currentBlockTag === "li" && session.el.parentElement
       ? session.el.parentElement.tagName.toLowerCase()
       : "";
+  const blockOptions: ReadonlyArray<readonly [Formatting, string]> = isListTag(currentListTag)
+    ? [
+        ["paragraph", "Paragraph"],
+        ["unordered-list", "Bulleted list"],
+        ["ordered-list", "Numbered list"],
+      ]
+    : [
+        ["paragraph", "Paragraph"],
+        ["heading-1", "Heading 1"],
+        ["heading-2", "Heading 2"],
+        ["heading-3", "Heading 3"],
+        ["heading-4", "Heading 4"],
+        ["heading-5", "Heading 5"],
+        ["heading-6", "Heading 6"],
+        ["unordered-list", "Bulleted list"],
+        ["ordered-list", "Numbered list"],
+      ];
+  for (const [value, label] of blockOptions) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    block.append(option);
+  }
   block.value = isBlockTag(currentBlockTag)
     ? blockFormattingFor(currentBlockTag)
     : isListTag(currentBlockTag)
@@ -2182,14 +2290,17 @@ function showFormatTools(): void {
       : isListTag(currentListTag)
         ? blockFormattingFor(currentListTag)
         : "paragraph";
-  block.disabled = !isBlockTag(session.meta.tag) && session.meta.tag !== "li";
-  block.addEventListener("pointerdown", (event) => event.preventDefault());
   block.addEventListener("change", () => {
     if (!session) return;
     const format = block.value as Formatting;
     if (format === "unordered-list" || format === "ordered-list") {
       const ids = getSelectedListGroup()?.ids ?? blockRunIds;
       toggleListFormatting(ids.length > 0 ? ids : [session.meta.id], format);
+    } else if (isListTag(currentListTag)) {
+      toggleListFormatting(
+        blockRunIds.length > 0 ? blockRunIds : [session.meta.id],
+        currentListTag === "ul" ? "unordered-list" : "ordered-list",
+      );
     } else {
       updateFormatting(session.meta.id, format);
     }
@@ -2419,8 +2530,7 @@ function endEdit(recordChanges: boolean): void {
   s.el.removeEventListener("mouseup", scheduleFormatTools);
   s.el.removeEventListener("paste", onPaste, true);
   if (activeTools?.classList.contains("xyle-format-tools")) closeContextTools(false);
-  s.el.classList.remove("xyle-editing");
-  s.el.removeAttribute("data-xyle-generated-editing");
+  removeGeneratedClass(s.el, "xyle-editing", "data-xyle-generated-editing");
   refreshEditabilityOverlay();
   // Restore authored contenteditable state; do not leave editor instrumentation
   // in the preview for later structural snapshots.
@@ -2537,12 +2647,13 @@ function positionContextTools(
   const centeredTop = targetRect.top + (targetRect.height - height) / 2;
   const candidates: Array<{ left: number; top: number }> = [];
   const inside = targetRect.bottom - height - 6;
+  const insideTop = targetRect.top + 6;
   const above = targetRect.top - height - 6;
   const below = targetRect.bottom + 6;
   const right = targetRect.right + 8;
   const left = targetRect.left - width - 8;
   if (placement === "inside-bottom" && targetRect.height >= height * 2) {
-    candidates.push({ left: centeredLeft, top: inside });
+    candidates.push({ left: centeredLeft, top: inside }, { left: centeredLeft, top: insideTop });
   }
   const preferred = placement === "below" ? [below, above] : [above, below];
   for (const top of preferred) candidates.push({ left: centeredLeft, top });
@@ -2765,7 +2876,7 @@ function openSeoEditor(): void {
     }
   });
   document.body.append(drawer);
-  trapDialogFocus(drawer, close);
+  configureEditorDrawer(drawer, close);
   drawer.querySelector<HTMLInputElement>("[name=title]")?.focus();
 }
 
@@ -2783,19 +2894,17 @@ function returnToSelectedToolbar(target: HTMLElement, reopen: () => void): void 
 function openHrefEditor(el: HTMLElement, meta: NodeMeta, tools: HTMLElement): void {
   const currentHref = el.getAttribute("href") ?? "";
   rememberOriginalAttr(meta.pagePath, meta.id, "href", currentHref);
-  const internalTarget = resolveInternalPath(currentHref);
   tools.dataset.xyleEditingUrl = "1";
   toolbarActionInProgress = true;
   toolbarPhase = "inline";
   tools.replaceChildren(
     document.createRange().createContextualFragment(`
     <form class="xyle-inline-tool-form" novalidate>
-      <label class="xyle-inline-tool-label">URL or path
-        <input class="xyle-inline-tool-input" name="href" value="" autocomplete="off" aria-describedby="xyle-link-edit-error">
+      <label class="xyle-inline-tool-label"><span class="xyle-sr-only">Link destination</span>
+        <input class="xyle-inline-tool-input" name="href" value="" autocomplete="off" placeholder="https://example.com or /about" aria-describedby="xyle-link-edit-error">
       </label>
       <p id="xyle-link-edit-error" class="xyle-inline-tool-error" role="status" aria-live="polite"></p>
       <div class="xyle-inline-tool-actions">
-        ${internalTarget ? `<button type="submit" value="follow">Follow</button>` : ""}
         <button type="button" data-cancel>Cancel</button>
         <button type="submit" value="save">Save</button>
       </div>
@@ -2812,11 +2921,11 @@ function openHrefEditor(el: HTMLElement, meta: NodeMeta, tools: HTMLElement): vo
   tools.querySelector("form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const action = ((event as SubmitEvent).submitter as HTMLButtonElement | null)?.value;
-    const value = hrefInput.value;
     if (action === "save") {
+      const value = normalizeEditableUrl(hrefInput.value);
       if (!isSafeUrl(value)) {
         tools.querySelector<HTMLElement>(".xyle-inline-tool-error")!.textContent =
-          "Use a relative path, https:, http:, mailto: or tel:";
+          "Use /path, https://, http://, mailto: or tel:.";
         hrefInput.setAttribute("aria-invalid", "true");
         hrefInput.focus();
         return;
@@ -2824,14 +2933,6 @@ function openHrefEditor(el: HTMLElement, meta: NodeMeta, tools: HTMLElement): vo
       applyOp(meta.pagePath, { type: "href", nodeId: meta.id, value }, "Edit link");
       el.setAttribute("href", value);
       restore();
-    } else if (action === "follow") {
-      const target = resolveInternalPath(value) ?? internalTarget;
-      if (target) {
-        restore();
-        loadPage(target, { pushHistory: true }).then(() => restoreOpsIntoDom());
-      } else {
-        flash("Only internal pages can be followed in edit mode.");
-      }
     }
   });
   tools.addEventListener("keydown", (event) => {
@@ -2859,6 +2960,13 @@ function resolveInternalPath(href: string): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizeEditableUrl(url: string): string {
+  const trimmed = url.trim();
+  const bareDomain =
+    /^(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?::\d{1,5})?(?:[/?#].*)?$/i;
+  return bareDomain.test(trimmed) ? `https://${trimmed}` : trimmed;
 }
 
 function isSafeUrl(url: string): boolean {
@@ -3582,11 +3690,13 @@ function openAltEditor(img: HTMLImageElement, meta: NodeMeta, tools: HTMLElement
   toolbarPhase = "inline";
   tools.replaceChildren(
     document.createRange().createContextualFragment(`
-    <form class="xyle-inline-tool-form" novalidate>
-      <label class="xyle-inline-tool-label">Alt text
-        <input class="xyle-inline-tool-input" name="alt" value="" autocomplete="off">
+    <form class="xyle-inline-tool-form xyle-alt-form" novalidate>
+      <label class="xyle-inline-tool-label">Image description
+        <input class="xyle-inline-tool-input" name="alt" value="" autocomplete="off" aria-describedby="xyle-alt-help xyle-alt-error">
       </label>
-      <label class="xyle-inline-tool-check"><input type="checkbox" name="decorative"> Decorative</label>
+      <label class="xyle-inline-tool-check"><input type="checkbox" name="decorative"> The page makes sense without this image</label>
+      <p id="xyle-alt-help" class="xyle-inline-tool-help">Choose this for a background or visual detail. Screen readers will skip the image.</p>
+      <p id="xyle-alt-error" class="xyle-inline-tool-error" role="alert"></p>
       <div class="xyle-inline-tool-actions">
         <button type="button" data-cancel>Cancel</button>
         <button type="submit">Save</button>
@@ -3595,7 +3705,14 @@ function openAltEditor(img: HTMLImageElement, meta: NodeMeta, tools: HTMLElement
   );
   const altInput = tools.querySelector("input[name=alt]") as HTMLInputElement;
   const decorative = tools.querySelector("input[name=decorative]") as HTMLInputElement;
+  const error = tools.querySelector("#xyle-alt-error") as HTMLElement;
   altInput.value = existing;
+  decorative.checked = img.hasAttribute("alt") && existing === "";
+  const syncDecorativeState = (): void => {
+    altInput.disabled = decorative.checked;
+  };
+  decorative.addEventListener("change", syncDecorativeState);
+  syncDecorativeState();
   const restore = (save: boolean): void => {
     if (save) {
       applyMediaPatch(
@@ -3616,6 +3733,12 @@ function openAltEditor(img: HTMLImageElement, meta: NodeMeta, tools: HTMLElement
   tools.querySelector<HTMLButtonElement>("[data-cancel]")?.addEventListener("click", cancel);
   tools.querySelector("form")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!decorative.checked && altInput.value.trim() === "") {
+      error.textContent = "Describe the image, or confirm that the page makes sense without it.";
+      altInput.focus();
+      return;
+    }
+    error.textContent = "";
     restore(true);
   });
   tools.addEventListener("keydown", (event) => {
@@ -3724,7 +3847,7 @@ function openSectionDrawer(): void {
     list.append(row);
   }
   document.body.append(drawer);
-  trapDialogFocus(drawer, () => closeSectionDrawer());
+  configureEditorDrawer(drawer, () => closeSectionDrawer());
   closeButton.focus();
 }
 
@@ -3843,7 +3966,7 @@ function renderMediaDrawer(items: MediaItem[], drawerState: MediaDrawerState = "
           <button data-tab="used" class="xyle-media-tab" aria-pressed="false">Used</button>
           <button data-tab="uploads" class="xyle-media-tab" aria-pressed="false">Uploads</button>
         </nav>
-        <p class="xyle-media-help">${selectedImage ? "Choose a thumbnail to use it on the selected image." : "Upload images here. Select an image on the page to use one."}</p>
+        <p class="xyle-media-help">${selectedImage ? "The current image is marked. Choose another thumbnail to replace it." : "Upload images here. Select an image on the page to use one."}</p>
         <div id="xyle-media-grid" class="xyle-media-grid"></div>
         <button id="xyle-media-upload" class="xyle-media-upload">Upload to library</button>`
       : `<p class="xyle-empty-state" role="status" aria-live="polite">${statusMessage}</p>`;
@@ -3859,7 +3982,7 @@ function renderMediaDrawer(items: MediaItem[], drawerState: MediaDrawerState = "
   document.body.append(drawer);
   const closeButton = $<HTMLButtonElement>("#xyle-media-close", drawer);
   closeButton.addEventListener("click", () => closeMediaDrawer());
-  trapDialogFocus(drawer, () => closeMediaDrawer());
+  configureEditorDrawer(drawer, () => closeMediaDrawer());
   if (drawerState !== "ready") {
     closeButton.focus();
     return;
@@ -3867,6 +3990,12 @@ function renderMediaDrawer(items: MediaItem[], drawerState: MediaDrawerState = "
 
   const grid = $<HTMLElement>("#xyle-media-grid", drawer);
   const search = $<HTMLInputElement>("#xyle-media-search", drawer);
+  const currentMediaPath = selectedImage
+    ? mediaSourcePath(
+        currentMediaState(selectedImage.meta.pagePath, selectedImage.meta.id, selectedImage.el)
+          .source,
+      )
+    : null;
   let tab = "all";
 
   const drawGrid = (): void => {
@@ -3879,14 +4008,23 @@ function renderMediaDrawer(items: MediaItem[], drawerState: MediaDrawerState = "
       if (query && !item.path.toLowerCase().includes(query)) continue;
       visibleItems += 1;
       const cell = document.createElement("button");
+      const isCurrent = item.path === currentMediaPath;
       cell.className = "xyle-media-cell";
-      cell.setAttribute("aria-label", `Choose ${item.path}`);
+      cell.classList.toggle("is-current", isCurrent);
+      cell.setAttribute("aria-label", `Choose ${item.path}${isCurrent ? " (currently used)" : ""}`);
+      if (isCurrent) cell.setAttribute("aria-current", "true");
       const thumb = document.createElement("img");
       thumb.src = item.previewUrl ?? item.path;
       thumb.alt = item.path.split("/").pop() ?? "";
       thumb.loading = "lazy";
       thumb.className = "xyle-media-thumb";
       cell.append(thumb);
+      if (isCurrent) {
+        const badge = document.createElement("span");
+        badge.className = "xyle-media-current";
+        badge.textContent = "Current";
+        cell.append(badge);
+      }
       cell.title = item.path;
       cell.addEventListener("click", () => chooseMedia(item));
       grid.append(cell);
@@ -4188,16 +4326,23 @@ function stripPreviewInstrumentation(
     const generatedTabIndex = element.hasAttribute("data-xyle-generated-tabindex");
     const generatedHover = element.hasAttribute("data-xyle-generated-hover");
     const generatedEditing = element.hasAttribute("data-xyle-generated-editing");
+    const hasClassBaseline = element.hasAttribute(GENERATED_CLASS_BASELINE);
+    const removeLegacyEmptyClass =
+      element.getAttribute("data-xyle-generated-hover") === "class-absent" ||
+      element.getAttribute("data-xyle-generated-editing") === "class-absent";
     if (generatedTabIndex) element.removeAttribute("tabindex");
     if (element.hasAttribute("data-xyle-generated-aria-description"))
       element.removeAttribute("aria-description");
     if (element.hasAttribute("data-xyle-generated-aria-keyshortcuts"))
       element.removeAttribute("aria-keyshortcuts");
-    if (generatedHover) element.classList.remove("xyle-hover");
+    if (generatedHover && !hasClassBaseline) element.classList.remove("xyle-hover");
     if (generatedEditing) {
-      element.classList.remove("xyle-editing");
+      if (!hasClassBaseline) element.classList.remove("xyle-editing");
       element.removeAttribute("contenteditable");
     }
+    if (hasClassBaseline) restoreGeneratedClassBaseline(element);
+    else if (removeLegacyEmptyClass && element.classList.length === 0)
+      element.removeAttribute("class");
     for (const attribute of [
       ...(options.keepNodeMarkers ? [] : ["data-xyle-node"]),
       "data-xyle-format",
@@ -4205,6 +4350,8 @@ function stripPreviewInstrumentation(
       "data-xyle-generated-tabindex",
       "data-xyle-generated-hover",
       "data-xyle-generated-editing",
+      GENERATED_CLASS_BASELINE,
+      GENERATED_CLASS_WAS_PRESENT,
       "data-xyle-generated-aria-description",
       "data-xyle-generated-aria-keyshortcuts",
       "data-xyle-keyboard-target",
@@ -6058,17 +6205,19 @@ function restoreSelectionBookmark(bookmark: SelectionBookmark | null): void {
   }
 }
 
-function toggleListFormatting(
+interface ListFormattingElement {
+  meta: NodeMeta;
+  element: HTMLElement;
+}
+
+function resolveListFormattingElements(
+  current: PageData,
   nodeIds: string[],
-  format: "unordered-list" | "ordered-list",
-): ListFormattingUpdateResult {
-  if (session) commitEdit();
-  const current = state.current;
-  if (!current) throw new Error("No page is loaded");
+): ListFormattingElement[] {
   if (nodeIds.length < 1 || nodeIds.length > 20 || new Set(nodeIds).size !== nodeIds.length) {
     throw new Error("A list group requires 1 to 20 unique text blocks");
   }
-  const elements = nodeIds.map((nodeId) => {
+  return nodeIds.map((nodeId) => {
     const meta = current.nodes.find((candidate) => candidate.id === nodeId);
     const element = currentNodeElement(nodeId);
     if (
@@ -6084,16 +6233,17 @@ function toggleListFormatting(
     }
     return { meta, element };
   });
+}
+
+function orderListFormattingElements(elements: ListFormattingElement[]): HTMLElement {
   const parent = elements[0]!.element.parentElement;
   if (!parent || elements.some(({ element }) => element.parentElement !== parent)) {
     throw new Error("List blocks must be siblings");
   }
   const children = [...parent.children];
-  elements.sort(({ element: left }, { element: right }) => {
-    const leftIndex = children.indexOf(left);
-    const rightIndex = children.indexOf(right);
-    return leftIndex - rightIndex;
-  });
+  elements.sort(
+    ({ element: left }, { element: right }) => children.indexOf(left) - children.indexOf(right),
+  );
   const indexes = elements.map(({ element }) => children.indexOf(element));
   if (
     indexes.some((index) => index < 0) ||
@@ -6101,9 +6251,16 @@ function toggleListFormatting(
   ) {
     throw new Error("List blocks must be contiguous siblings");
   }
+  return parent;
+}
+
+function currentListFormattingState(
+  elements: ListFormattingElement[],
+  parent: HTMLElement,
+): "plain" | "ul" | "ol" {
   const firstTag = elements[0]!.element.tagName.toLowerCase();
   const parentTag = parent.tagName.toLowerCase();
-  const before: "plain" | "ul" | "ol" =
+  const before =
     firstTag === "li" && (parentTag === "ul" || parentTag === "ol") ? parentTag : "plain";
   if (
     elements.some(
@@ -6112,6 +6269,19 @@ function toggleListFormatting(
   ) {
     throw new Error("List selection cannot mix list items and plain blocks");
   }
+  return before;
+}
+
+function toggleListFormatting(
+  nodeIds: string[],
+  format: "unordered-list" | "ordered-list",
+): ListFormattingUpdateResult {
+  if (session) commitEdit();
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const elements = resolveListFormattingElements(current, nodeIds);
+  const parent = orderListFormattingElements(elements);
+  const before = currentListFormattingState(elements, parent);
   const requested = format === "unordered-list" ? "ul" : "ol";
   const after = before === requested ? "plain" : requested;
   const selectionRoot = before === "plain" ? parent : parent.parentElement;
@@ -6233,7 +6403,8 @@ function updateLink(nodeId: string, text?: string, href?: string): LinkUpdateRes
   if (!current) throw new Error("No page is loaded");
   const meta = current.nodes.find((candidate) => candidate.id === nodeId);
   if (!meta || meta.kind !== "link") throw new Error(`Unknown Xyle link ${nodeId}`);
-  validateLinkUpdateInput(text, href);
+  const normalizedHref = href === undefined ? undefined : normalizeEditableUrl(href);
+  validateLinkUpdateInput(text, normalizedHref);
 
   const element = currentNodeElement(nodeId) as HTMLAnchorElement | null;
   if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
@@ -6245,8 +6416,8 @@ function updateLink(nodeId: string, text?: string, href?: string): LinkUpdateRes
     applyOpToDom(current.pagePath, textOperation);
     applyOp(current.pagePath, textOperation, "Edit link text");
   }
-  if (href !== undefined) {
-    const hrefOperation: Op = { type: "href", nodeId, value: href };
+  if (normalizedHref !== undefined) {
+    const hrefOperation: Op = { type: "href", nodeId, value: normalizedHref };
     rememberOriginalAttr(current.pagePath, nodeId, "href", element.getAttribute("href") ?? "");
     applyOpToDom(current.pagePath, hrefOperation);
     applyOp(current.pagePath, hrefOperation, "Edit link");
@@ -6458,7 +6629,9 @@ function buildChrome(): void {
 
   document.addEventListener("keydown", (event) => {
     if (!(event.ctrlKey || event.metaKey)) return;
-    const inField = (document.activeElement as HTMLElement | null)?.isContentEditable === true;
+    const active = document.activeElement as HTMLElement | null;
+    const inField =
+      active?.isContentEditable === true || active?.matches("input, textarea, select") === true;
     if (event.key === "z" || event.key === "Z") {
       if (inField) return; // browser-native field handling wins
       event.preventDefault();
@@ -6886,21 +7059,37 @@ function changeParts(before: string, after: string): { before: ChangePart[]; aft
   ) {
     suffix += 1;
   }
-  const beforeEnd = before.length - suffix;
-  const afterEnd = after.length - suffix;
-  const beforeMiddle = before.slice(prefix, beforeEnd);
-  const afterMiddle = after.slice(prefix, afterEnd);
+  if (prefix === before.length && prefix === after.length) {
+    return {
+      before: [{ value: before, changed: false }],
+      after: [{ value: after, changed: false }],
+    };
+  }
+
+  const prefixValue = before.slice(0, prefix);
+  const suffixValue = before.slice(before.length - suffix);
+  const lineStart = prefixValue.lastIndexOf("\n") + 1;
+  const lineEnd = suffixValue.indexOf("\n");
+  const prefixLine = prefixValue.slice(lineStart);
+  const suffixLine = lineEnd >= 0 ? suffixValue.slice(0, lineEnd) : suffixValue;
+  const maxLineContext = 120;
+  const visiblePrefixLine =
+    prefixLine.length > maxLineContext ? `…${prefixLine.slice(-maxLineContext)}` : prefixLine;
+  const visibleSuffixLine =
+    suffixLine.length > maxLineContext ? `${suffixLine.slice(0, maxLineContext)}…` : suffixLine;
+  const visiblePrefix = `${lineStart > 0 ? "…\n" : ""}${visiblePrefixLine}`;
+  const visibleSuffix = `${visibleSuffixLine}${lineEnd >= 0 ? "\n…" : ""}`;
+  const unchangedPrefix = { value: visiblePrefix, changed: false };
+  const unchangedSuffix = { value: visibleSuffix, changed: false };
+  const beforeMiddle = before.slice(prefix, before.length - suffix);
+  const afterMiddle = after.slice(prefix, after.length - suffix);
   return {
-    before: [
-      { value: before.slice(0, prefix), changed: false },
-      { value: beforeMiddle, changed: true },
-      { value: before.slice(before.length - suffix), changed: false },
-    ].filter((part) => part.value),
-    after: [
-      { value: after.slice(0, prefix), changed: false },
-      { value: afterMiddle, changed: true },
-      { value: after.slice(after.length - suffix), changed: false },
-    ].filter((part) => part.value),
+    before: [unchangedPrefix, { value: beforeMiddle, changed: true }, unchangedSuffix].filter(
+      (part) => part.value,
+    ),
+    after: [unchangedPrefix, { value: afterMiddle, changed: true }, unchangedSuffix].filter(
+      (part) => part.value,
+    ),
   };
 }
 
@@ -6954,7 +7143,7 @@ function openChangesDrawer(): void {
   document.body.append(drawer);
   const closeButton = $("#xyle-changes-close", drawer);
   closeButton.addEventListener("click", () => closeChangesDrawer());
-  trapDialogFocus(drawer, () => closeChangesDrawer());
+  configureEditorDrawer(drawer, () => closeChangesDrawer());
   $("#xyle-discard", drawer).addEventListener("click", () => {
     if (
       !confirmDiscard("reload the published page", () => {

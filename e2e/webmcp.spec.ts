@@ -781,12 +781,17 @@ test.describe("WebMCP editor tools", () => {
     await expect(linkLocator).toHaveAttribute("href", "/contact.html");
 
     await expect(
+      invokeTool(page, "update_link", { id: link!.id, href: "google.com/search?q=xyle" }),
+    ).resolves.toMatchObject({ href: "https://google.com/search?q=xyle" });
+    await expect(linkLocator).toHaveAttribute("href", "https://google.com/search?q=xyle");
+
+    await expect(
       invokeTool(page, "update_link", {
         id: link!.id,
         href: "javascript:alert(1)",
       }),
     ).resolves.toEqual({ error: "Unsafe link destination rejected" });
-    await expect(linkLocator).toHaveAttribute("href", "/contact.html");
+    await expect(linkLocator).toHaveAttribute("href", "https://google.com/search?q=xyle");
     expect(originalHref).toBe("/about.html");
   });
 
