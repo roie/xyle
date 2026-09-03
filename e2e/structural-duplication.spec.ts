@@ -91,7 +91,7 @@ test("duplicates a safe section through its complete independent lifecycle", asy
     .locator("main > section.work-standard[data-xyle-node]")
     .nth(1);
   await createdSection.press("Enter");
-  const duplicateAgain = page.getByRole("button", { name: "Duplicate section" });
+  const duplicateAgain = page.getByRole("button", { name: "Duplicate section", exact: true });
   await expect(duplicateAgain).toBeDisabled();
   await expect(duplicateAgain).toHaveAttribute(
     "title",
