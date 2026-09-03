@@ -826,6 +826,32 @@ test.describe("changes drawer and undo", () => {
     expect(text.endsWith("X")).toBe(false);
   });
 
+  test("Locate reports when a changed target is no longer available", async ({ page }) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const id = await findNodeByText(page, "This Xyle demo starts");
+    await editNode(page, id!);
+    await focusCaret(page, id!, "end");
+    await page.keyboard.type(" stale target");
+    await clickOutsideCommit(page);
+
+    await page.evaluate((nodeId) => {
+      const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
+      doc?.querySelector(`[data-xyle-node="${nodeId}"]`)?.remove();
+    }, id);
+    await page.click("#xyle-changes");
+    await page
+      .locator("#xyle-changes-drawer .xyle-change-row")
+      .first()
+      .getByRole("button", { name: "Locate" })
+      .click();
+
+    await expect(page.locator("#xyle-flash")).toContainText(
+      "This change target is no longer available",
+    );
+    expect(await opsCount(page)).toBe(1);
+    await expect(page.locator("#xyle-dirty")).toBeVisible();
+  });
+
   test("Changes drawer can discard the whole draft and reload published content", async ({
     page,
   }) => {

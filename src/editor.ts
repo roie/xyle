@@ -8169,7 +8169,10 @@ function focusChange(pagePath: string, nodeId: string): void {
     const target =
       previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${baseId}"]`) ??
       previewDoc()?.querySelector<HTMLElement>(`[data-xyle-group-item="${baseId}"]`);
-    if (!target) return;
+    if (!target) {
+      flash("This change target is no longer available. Revert the change or reload the page.");
+      return;
+    }
     window.clearTimeout(focusedChangeTimer);
     focusedChangeKey = changeKey;
     document.querySelectorAll<HTMLElement>(".xyle-change-row").forEach((row) => {
