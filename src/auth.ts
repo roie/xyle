@@ -85,6 +85,7 @@ export async function createSessionCookie(
   secret: Uint8Array,
   now: number,
   maxAgeSeconds: number = SESSION_MAX_AGE_SECONDS,
+  secure = false,
 ): Promise<string> {
   const token = await createSessionToken(secret, now, maxAgeSeconds);
   return [
@@ -93,11 +94,19 @@ export async function createSessionCookie(
     "SameSite=Strict",
     "Path=/",
     `Max-Age=${maxAgeSeconds}`,
+    ...(secure ? ["Secure"] : []),
   ].join("; ");
 }
 
-export function logoutCookie(): string {
-  return `${SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+export function logoutCookie(secure = false): string {
+  return [
+    `${SESSION_COOKIE_NAME}=`,
+    "HttpOnly",
+    "SameSite=Strict",
+    "Path=/",
+    "Max-Age=0",
+    ...(secure ? ["Secure"] : []),
+  ].join("; ");
 }
 
 export function readSessionCookie(cookieHeader: string | null): string | null {

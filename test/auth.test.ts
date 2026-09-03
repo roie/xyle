@@ -66,6 +66,13 @@ describe("session cookie", () => {
     expect(await verifySessionCookie(value, secret, NOW)).toBe(false);
   });
 
+  it("adds Secure only for HTTPS sessions", async () => {
+    expect(await createSessionCookie(secret, NOW)).not.toContain("; Secure");
+    expect(await createSessionCookie(secret, NOW, 60, true)).toContain("; Secure");
+    expect(logoutCookie()).not.toContain("; Secure");
+    expect(logoutCookie(true)).toContain("; Secure");
+  });
+
   it("logout clears the cookie", () => {
     expect(logoutCookie()).toContain("Max-Age=0");
   });

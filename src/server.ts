@@ -755,6 +755,12 @@ async function loadEditorBundle(): Promise<Response | null> {
 export function createXyleHandler(
   context: RuntimeContext,
 ): (request: Request) => Promise<Response> {
+  let secureCookies = false;
+  try {
+    secureCookies = new URL(context.publicBaseUrl).protocol === "https:";
+  } catch {
+    throw new Error("Xyle publicBaseUrl must be an absolute HTTP or HTTPS URL");
+  }
   return async (request: Request): Promise<Response> => {
     try {
       const url = new URL(request.url);
@@ -795,6 +801,7 @@ export function createXyleHandler(
           context.auth.sessionSecret,
           Date.now(),
           context.auth.sessionMaxAgeSeconds ?? 8 * 60 * 60,
+          secureCookies,
         );
         return json({ ok: true }, 200, { "set-cookie": cookie });
       }
@@ -805,7 +812,7 @@ export function createXyleHandler(
         }
         assertMutationAllowed(request, context);
         await requireSession(request, context);
-        return json({ ok: true }, 200, { "set-cookie": logoutCookie() });
+        return json({ ok: true }, 200, { "set-cookie": logoutCookie(secureCookies) });
       }
 
       if (pathname === "/__xyle/api/session") {

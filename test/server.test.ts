@@ -104,6 +104,40 @@ describe("auth", () => {
     expect(res.status).toBe(401);
   });
 
+  it("sets Secure on cookies when the configured public URL uses HTTPS", async () => {
+    const secure = await startXyleDevServer({
+      directory: root,
+      port: 0,
+      publicBaseUrl: "https://owner.example",
+    });
+    try {
+      const address = secure.server.address();
+      if (!address || typeof address === "string") throw new Error("test server did not start");
+      const localBase = `http://127.0.0.1:${address.port}`;
+      const signedIn = await fetch(`${localBase}/__xyle/api/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: editorKey }),
+      });
+      expect(signedIn.headers.get("set-cookie")).toContain("; Secure");
+      const cookie = signedIn.headers.get("set-cookie")?.split(";")[0] ?? "";
+      const signedOut = await fetch(`${localBase}/__xyle/api/logout`, {
+        method: "POST",
+        headers: {
+          cookie,
+          origin: "https://owner.example",
+          "content-type": "application/json",
+          "x-xyle-request": "1",
+        },
+        body: "{}",
+      });
+      expect(signedOut.status, await signedOut.clone().text()).toBe(200);
+      expect(signedOut.headers.get("set-cookie")).toContain("; Secure");
+    } finally {
+      secure.server.close();
+    }
+  });
+
   it("shows editor shell once authenticated", async () => {
     const cookie = await login();
     const res = await fetch(`${base}/edit`, { headers: { cookie } });
