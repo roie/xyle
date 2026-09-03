@@ -1,14 +1,4 @@
-import {
-  appendFile,
-  chmod,
-  link,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { appendFile, link, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { join, resolve } from "node:path";
 import { generateEditorKey } from "./auth.ts";
@@ -28,33 +18,110 @@ interface Secrets {
   sessionSecretB64: string;
 }
 
+function isValidEditorKey(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 32 &&
+    value.length <= 256 &&
+    !/[\u0000-\u0020\u007f]/.test(value)
+  );
+}
+
+function isCanonicalSessionSecret(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const decoded = Buffer.from(value, "base64");
+  return decoded.byteLength === 32 && decoded.toString("base64") === value;
+}
+
+function validateSecrets(value: unknown): Secrets {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("secrets must be an object");
+  }
+  const secrets = value as Record<string, unknown>;
+  if (
+    Object.keys(secrets).length !== 2 ||
+    !Object.hasOwn(secrets, "editorKey") ||
+    !Object.hasOwn(secrets, "sessionSecretB64")
+  ) {
+    throw new Error("secrets have missing or unknown fields");
+  }
+  if (!isValidEditorKey(secrets.editorKey)) {
+    throw new Error("editorKey must contain 32 to 256 non-whitespace characters");
+  }
+  if (!isCanonicalSessionSecret(secrets.sessionSecretB64)) {
+    throw new Error("sessionSecretB64 must encode exactly 32 bytes");
+  }
+  return {
+    editorKey: secrets.editorKey,
+    sessionSecretB64: secrets.sessionSecretB64,
+  };
+}
+
+function parseSecrets(contents: string, secretsPath: string): Secrets {
+  try {
+    return validateSecrets(JSON.parse(contents));
+  } catch (error) {
+    throw new Error(`Invalid Xyle secrets file ${secretsPath}: ${(error as Error).message}`, {
+      cause: error,
+    });
+  }
+}
+
+async function readSecretsIfPresent(secretsPath: string): Promise<Secrets | null> {
+  try {
+    return parseSecrets(await readFile(secretsPath, "utf8"), secretsPath);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return null;
+    throw error;
+  }
+}
+
+async function ensureSecretsIgnored(directory: string): Promise<void> {
+  const gitignorePath = join(directory, ".gitignore");
+  let existing: string;
+  try {
+    existing = await readFile(gitignorePath, "utf8");
+  } catch (error) {
+    if (!hasErrorCode(error, "ENOENT")) throw error;
+    try {
+      await writeFileAtomically(gitignorePath, `${SECRETS_DIR}/\n`, { createOnly: true });
+      return;
+    } catch (createError) {
+      if (!hasErrorCode(createError, "EEXIST")) throw createError;
+      return ensureSecretsIgnored(directory);
+    }
+  }
+  if (existing.split(/\r?\n/).includes(`${SECRETS_DIR}/`)) return;
+  const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+  await appendFile(gitignorePath, `${separator}${SECRETS_DIR}/\n`);
+}
+
 export async function loadOrCreateSecrets(
   directory: string,
 ): Promise<{ secrets: Secrets; freshKey: string | null }> {
   const secretsDir = join(directory, SECRETS_DIR);
   const secretsPath = join(secretsDir, SECRETS_FILE);
+  const existing = await readSecretsIfPresent(secretsPath);
+  if (existing) return { secrets: existing, freshKey: null };
+
+  const generated: Secrets = {
+    editorKey: generateEditorKey(),
+    sessionSecretB64: Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"),
+  };
+  await mkdir(secretsDir, { recursive: true });
   try {
-    const parsed = JSON.parse(await readFile(secretsPath, "utf8")) as Secrets;
-    return { secrets: parsed, freshKey: null };
-  } catch {
-    const secrets: Secrets = {
-      editorKey: generateEditorKey(),
-      sessionSecretB64: Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"),
-    };
-    await mkdir(secretsDir, { recursive: true });
-    await writeFile(secretsPath, JSON.stringify(secrets, null, 2), { mode: 0o600 });
-    await chmod(secretsPath, 0o600);
-    // keep local secrets out of git
-    const gitignore = join(directory, ".gitignore");
-    try {
-      const existing = await readFile(gitignore, "utf8");
-      if (!existing.includes(`${SECRETS_DIR}/`)) {
-        await appendFile(gitignore, `\n${SECRETS_DIR}/\n`);
-      }
-    } catch {
-      await writeFile(gitignore, `${SECRETS_DIR}/\n`);
-    }
-    return { secrets, freshKey: secrets.editorKey };
+    await writeFileAtomically(secretsPath, `${JSON.stringify(generated, null, 2)}\n`, {
+      mode: 0o600,
+      createOnly: true,
+    });
+    await ensureSecretsIgnored(directory);
+    return { secrets: generated, freshKey: generated.editorKey };
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST")) throw error;
+    const concurrentSecrets = await readSecretsIfPresent(secretsPath);
+    if (!concurrentSecrets) throw error;
+    await ensureSecretsIgnored(directory);
+    return { secrets: concurrentSecrets, freshKey: null };
   }
 }
 
@@ -62,9 +129,10 @@ export async function buildAuthConfig(
   secrets: Secrets,
   maxAgeSeconds = 8 * 60 * 60,
 ): Promise<AuthConfig> {
-  const sessionSecret = new Uint8Array(Buffer.from(secrets.sessionSecretB64, "base64"));
+  const validSecrets = validateSecrets(secrets);
+  const sessionSecret = new Uint8Array(Buffer.from(validSecrets.sessionSecretB64, "base64"));
   return {
-    editorKeyDigest: await digestBytes(new TextEncoder().encode(secrets.editorKey)),
+    editorKeyDigest: await digestBytes(new TextEncoder().encode(validSecrets.editorKey)),
     sessionSecret,
     sessionMaxAgeSeconds: maxAgeSeconds,
   };

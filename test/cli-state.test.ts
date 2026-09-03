@@ -1,8 +1,13 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readOrCreateState, updateState } from "../src/cli.ts";
+import {
+  buildAuthConfig,
+  loadOrCreateSecrets,
+  readOrCreateState,
+  updateState,
+} from "../src/cli.ts";
 
 let root: string;
 
@@ -12,6 +17,77 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
+});
+
+describe("local Xyle secrets", () => {
+  it("creates one valid secret file without rotating it", async () => {
+    const first = await loadOrCreateSecrets(root);
+    const second = await loadOrCreateSecrets(root);
+
+    expect(first.freshKey).toBe(first.secrets.editorKey);
+    expect(second).toEqual({ secrets: first.secrets, freshKey: null });
+    expect(Buffer.from(first.secrets.editorKey, "base64url")).toHaveLength(32);
+    expect(Buffer.from(first.secrets.sessionSecretB64, "base64")).toHaveLength(32);
+    expect((await stat(join(root, ".xyle", "secrets.local.json"))).mode & 0o777).toBe(0o600);
+    expect((await readFile(join(root, ".gitignore"), "utf8")).split(/\r?\n/)).toContain(".xyle/");
+  });
+
+  it("fails closed and preserves malformed secrets", async () => {
+    const secretsDir = join(root, ".xyle");
+    const secretsPath = join(secretsDir, "secrets.local.json");
+    await mkdir(secretsDir);
+    const malformed = "{not valid JSON";
+    await writeFile(secretsPath, malformed);
+
+    await expect(loadOrCreateSecrets(root)).rejects.toThrow(/Invalid Xyle secrets file/);
+    expect(await readFile(secretsPath, "utf8")).toBe(malformed);
+  });
+
+  it("rejects invalid existing keys and session secrets without replacing them", async () => {
+    const secretsDir = join(root, ".xyle");
+    const secretsPath = join(secretsDir, "secrets.local.json");
+    await mkdir(secretsDir);
+    const invalidValues = [
+      { editorKey: "short", sessionSecretB64: Buffer.alloc(32).toString("base64") },
+      { editorKey: Buffer.alloc(32).toString("base64url"), sessionSecretB64: "short" },
+    ];
+
+    for (const invalid of invalidValues) {
+      const contents = JSON.stringify(invalid);
+      await writeFile(secretsPath, contents);
+      await expect(loadOrCreateSecrets(root)).rejects.toThrow(/Invalid Xyle secrets file/);
+      expect(await readFile(secretsPath, "utf8")).toBe(contents);
+    }
+  });
+
+  it("does not replace a secrets path that cannot be read as a file", async () => {
+    const secretsPath = join(root, ".xyle", "secrets.local.json");
+    await mkdir(secretsPath, { recursive: true });
+
+    await expect(loadOrCreateSecrets(root)).rejects.toThrow();
+    expect((await stat(secretsPath)).isDirectory()).toBe(true);
+  });
+
+  it("creates one complete secret file under concurrent initialization", async () => {
+    const results = await Promise.all([
+      loadOrCreateSecrets(root),
+      loadOrCreateSecrets(root),
+      loadOrCreateSecrets(root),
+    ]);
+
+    expect(results.filter((result) => result.freshKey !== null)).toHaveLength(1);
+    expect(results[1]!.secrets).toEqual(results[0]!.secrets);
+    expect(results[2]!.secrets).toEqual(results[0]!.secrets);
+    expect(
+      (await readdir(join(root, ".xyle"))).filter((name) => name.includes(".xyle-tmp-")),
+    ).toEqual([]);
+  });
+
+  it("validates secrets again when building authentication config", async () => {
+    await expect(
+      buildAuthConfig({ editorKey: "invalid", sessionSecretB64: "invalid" }),
+    ).rejects.toThrow(/editorKey must contain 32 to 256 non-whitespace characters/);
+  });
 });
 
 describe("local Xyle state", () => {
