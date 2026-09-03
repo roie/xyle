@@ -99,6 +99,7 @@ export interface ChangeInfo {
     | "src"
     | "alt"
     | "format"
+    | "setBlockFormat"
     | "formatBlock"
     | "html"
     | "media"

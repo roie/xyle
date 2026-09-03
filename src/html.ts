@@ -1147,6 +1147,261 @@ interface SourcePatch {
   replacement: string;
 }
 
+function candidateAttributes(source: string, candidate: Candidate): string {
+  return source.slice(
+    candidate.startTagStart + 1 + candidate.tag.length,
+    candidate.startTagEnd - 1,
+  );
+}
+
+function renderCandidateBlock(
+  source: string,
+  candidate: Candidate,
+  tag: string,
+  contentOverrides?: ReadonlyMap<string, string>,
+): string {
+  const content =
+    contentOverrides?.get(candidate.id) ??
+    source.slice(candidate.contentStart!, candidate.contentEnd!);
+  return `<${tag}${candidateAttributes(source, candidate)}>${content}</${tag}>`;
+}
+
+function renderCandidateList(
+  source: string,
+  candidates: Candidate[],
+  tag: "ul" | "ol",
+  template?: Candidate,
+  contentOverrides?: ReadonlyMap<string, string>,
+  retainUniqueAttributes = true,
+  leadingContent = "",
+  trailingContent = "",
+): string {
+  let opening = template
+    ? source
+        .slice(template.parentStart!, template.parentStartTagEnd!)
+        .replace(new RegExp(`^<${template.parentTag}\\b`, "i"), `<${tag}`)
+    : `<${tag}>`;
+  if (!retainUniqueAttributes) {
+    opening = opening.replace(/\s+id\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i, "");
+  }
+  const closing = template
+    ? source
+        .slice(template.parentEndTagStart!, template.parentEnd!)
+        .replace(new RegExp(`^</${template.parentTag}\\s*>$`, "i"), `</${tag}>`)
+    : `</${tag}>`;
+  const items = candidates.map((candidate, index) => {
+    const content =
+      contentOverrides?.get(candidate.id) ??
+      source.slice(candidate.contentStart!, candidate.contentEnd!);
+    const previous = candidates[index - 1];
+    const separator = previous
+      ? source.slice(previous.elementEnd!, candidate.startTagStart) || "\n"
+      : "";
+    return `${separator}<li${candidateAttributes(source, candidate)}>${content}</li>`;
+  });
+  return `${opening}${leadingContent}${items.join("")}${trailingContent}${closing}`;
+}
+
+function setBlockFormatSourcePatches(
+  source: string,
+  analysis: PageAnalysis,
+  operation: import("./types.ts").SetBlockFormatOperation,
+  contentOverrides?: ReadonlyMap<string, string>,
+): SourcePatch[] {
+  if (
+    operation.targets.length < 1 ||
+    operation.targets.length > 20 ||
+    new Set(operation.targets.map((target) => target.nodeId)).size !== operation.targets.length ||
+    operation.targets.some((target) => !/^(p|h[1-6]|ul|ol)$/.test(target.value))
+  ) {
+    throw new Error("invalid block format target");
+  }
+  const targetMap = new Map(operation.targets.map((target) => [target.nodeId, target.value]));
+  const selected = operation.targets.map((target) => analysis.candidates.get(target.nodeId));
+  if (
+    selected.some(
+      (candidate) =>
+        !candidate ||
+        candidate.kind !== "text" ||
+        !candidate.textEditable ||
+        (!isTextBlockTag(candidate.tag) && candidate.tag !== "li") ||
+        candidate.contentStart === undefined ||
+        candidate.contentEnd === undefined ||
+        candidate.elementEnd === undefined,
+    )
+  ) {
+    throw new Error("block format selection contains an unsafe text block");
+  }
+  const resolved = selected as Candidate[];
+  const parentStart = resolved[0]!.parentStart;
+  const parentEnd = resolved[0]!.parentEnd;
+  const parentTag = resolved[0]!.parentTag;
+  const authoredList = resolved[0]!.tag === "li";
+  if (resolved.some((candidate) => (candidate.tag === "li") !== authoredList)) {
+    throw new Error("block format targets cannot mix list items and scalar blocks");
+  }
+  if (
+    resolved.some(
+      (candidate) =>
+        candidate.parentStart !== parentStart ||
+        candidate.parentEnd !== parentEnd ||
+        candidate.parentTag !== parentTag,
+    )
+  ) {
+    throw new Error("block format targets must share one authored parent");
+  }
+  if (
+    authoredList &&
+    (parentStart === undefined || parentEnd === undefined || !parentTag || !isListTag(parentTag))
+  ) {
+    throw new Error("list items require a mapped list parent");
+  }
+  const mappedSiblings = [...analysis.candidates.values()]
+    .filter(
+      (candidate) =>
+        candidate.kind === "text" &&
+        candidate.textEditable &&
+        candidate.parentStart === parentStart &&
+        candidate.parentEnd === parentEnd &&
+        candidate.parentTag === parentTag &&
+        (authoredList ? candidate.tag === "li" : isTextBlockTag(candidate.tag)),
+    )
+    .sort((left, right) => left.startTagStart - right.startTagStart);
+  let siblings = mappedSiblings;
+  if (!authoredList) {
+    const regions: Candidate[][] = [];
+    for (const candidate of mappedSiblings) {
+      const region = regions.at(-1);
+      const previous = region?.at(-1);
+      const gap = previous ? source.slice(previous.elementEnd!, candidate.startTagStart) : "";
+      if (!region || gap.replace(/<!--[\s\S]*?-->/g, "").trim()) regions.push([candidate]);
+      else region.push(candidate);
+    }
+    siblings = regions.find((region) => region[0]?.id === operation.nodeId) ?? [];
+    if (resolved.some((candidate) => !siblings.includes(candidate))) {
+      throw new Error("block format targets contain unsupported sibling content");
+    }
+  }
+  if (operation.nodeId !== siblings[0]?.id) throw new Error("block format anchor changed");
+
+  if (authoredList) {
+    const template = siblings[0]!;
+    if (template.parentStartTagEnd === undefined || template.parentEndTagStart === undefined) {
+      throw new Error("list source mapping is ambiguous");
+    }
+    const leadingContent = source.slice(template.parentStartTagEnd, siblings[0]!.startTagStart);
+    const trailingContent = source.slice(siblings.at(-1)!.elementEnd!, template.parentEndTagStart);
+    const gaps = [
+      leadingContent,
+      ...siblings
+        .slice(1)
+        .map((candidate, index) =>
+          source.slice(siblings[index]!.elementEnd!, candidate.startTagStart),
+        ),
+      trailingContent,
+    ];
+    if (gaps.some((gap) => gap.replace(/<!--[\s\S]*?-->/g, "").trim())) {
+      throw new Error("list contains unsupported non-item content");
+    }
+    const pieces: Array<{ html: string; start: number; end: number; list: boolean }> = [];
+    let emittedListRuns = 0;
+    let listRun: { tag: "ul" | "ol"; candidates: Candidate[] } | null = null;
+    const flush = (): void => {
+      if (!listRun) return;
+      pieces.push({
+        html: renderCandidateList(
+          source,
+          listRun.candidates,
+          listRun.tag,
+          template,
+          contentOverrides,
+          emittedListRuns === 0,
+          listRun.candidates[0] === siblings[0] ? leadingContent : "",
+          listRun.candidates.at(-1) === siblings.at(-1) ? trailingContent : "",
+        ),
+        start: listRun.candidates[0]!.startTagStart,
+        end: listRun.candidates.at(-1)!.elementEnd!,
+        list: true,
+      });
+      emittedListRuns += 1;
+      listRun = null;
+    };
+    for (const candidate of siblings) {
+      const target = targetMap.get(candidate.id) ?? (parentTag as "ul" | "ol");
+      if (isListTag(target)) {
+        const runTag: "ul" | "ol" | undefined = (
+          listRun as { tag: "ul" | "ol"; candidates: Candidate[] } | null
+        )?.tag;
+        if (runTag !== target) {
+          flush();
+          listRun = { tag: target, candidates: [] };
+        }
+        (listRun as { tag: "ul" | "ol"; candidates: Candidate[] }).candidates.push(candidate);
+      } else {
+        flush();
+        pieces.push({
+          html: renderCandidateBlock(source, candidate, target, contentOverrides),
+          start: candidate.startTagStart,
+          end: candidate.elementEnd!,
+          list: false,
+        });
+      }
+    }
+    flush();
+    let replacement = pieces
+      .map((piece, index) => {
+        const previous = pieces[index - 1];
+        const separator = previous ? source.slice(previous.end, piece.start) || "\n" : "";
+        return `${separator}${piece.html}`;
+      })
+      .join("");
+    if (!pieces[0]!.list) replacement = leadingContent + replacement;
+    if (!pieces.at(-1)!.list) replacement += trailingContent;
+    return [{ start: parentStart!, end: parentEnd!, replacement }];
+  }
+
+  const patches: SourcePatch[] = [];
+  const selectedIds = new Set(operation.targets.map((target) => target.nodeId));
+  for (let index = 0; index < siblings.length; index += 1) {
+    const candidate = siblings[index]!;
+    const target = targetMap.get(candidate.id);
+    if (!target) continue;
+    if (!isListTag(target)) {
+      if (candidate.tag === target) continue;
+      if (
+        candidate.tagNameStart === undefined ||
+        candidate.tagNameEnd === undefined ||
+        candidate.endTagNameStart === undefined ||
+        candidate.endTagNameEnd === undefined
+      ) {
+        throw new Error("block tag source mapping is ambiguous");
+      }
+      patches.push(
+        { start: candidate.tagNameStart, end: candidate.tagNameEnd, replacement: target },
+        { start: candidate.endTagNameStart, end: candidate.endTagNameEnd, replacement: target },
+      );
+      continue;
+    }
+    const run = [candidate];
+    while (index + 1 < siblings.length) {
+      const next = siblings[index + 1]!;
+      if (!selectedIds.has(next.id) || targetMap.get(next.id) !== target) break;
+      const gap = source.slice(run.at(-1)!.elementEnd!, next.startTagStart);
+      if (gap.replace(/<!--[\s\S]*?-->/g, "").trim()) {
+        throw new Error("block format targets contain unsupported sibling content");
+      }
+      run.push(next);
+      index += 1;
+    }
+    patches.push({
+      start: run[0]!.startTagStart,
+      end: run.at(-1)!.elementEnd!,
+      replacement: renderCandidateList(source, run, target, undefined, contentOverrides),
+    });
+  }
+  return patches;
+}
+
 function allElementIds(root: P5Node): string[] {
   const ids: string[] = [];
   const visit = (node: P5Node): void => {
@@ -1222,6 +1477,19 @@ function remapSnapshotOperation(
       targetId,
       firstRegionId: layoutRegionId(targetId, 0),
       secondRegionId: layoutRegionId(targetId, 1),
+    };
+  }
+  if (operation.type === "setBlockFormat") {
+    const remap = (id: string): string => {
+      const base = id.split("#")[0]!;
+      const local = sourceToLocalMap.get(base);
+      if (!local) throw new Error("snapshot operation targets an unknown descendant");
+      return local + id.slice(base.length);
+    };
+    return {
+      ...operation,
+      nodeId: remap(operation.nodeId),
+      targets: operation.targets.map((target) => ({ ...target, nodeId: remap(target.nodeId) })),
     };
   }
   if (operation.type === "toggleList") {
@@ -1327,6 +1595,19 @@ function remapCreatedOperation(
       targetId,
       firstRegionId: layoutRegionId(targetId, 0),
       secondRegionId: layoutRegionId(targetId, 1),
+    };
+  }
+  if (operation.type === "setBlockFormat") {
+    const remap = (id: string): string => {
+      const base = id.split("#")[0]!;
+      const local = createdToLocalMap.get(base);
+      if (!local) throw new Error("created operation targets an unknown descendant");
+      return local + id.slice(base.length);
+    };
+    return {
+      ...operation,
+      nodeId: remap(operation.nodeId),
+      targets: operation.targets.map((target) => ({ ...target, nodeId: remap(target.nodeId) })),
     };
   }
   if (operation.type === "toggleList") {
@@ -1437,6 +1718,7 @@ export async function patchHtml(
   const attrOps: { candidate: Candidate; op: PageOperation & { type: "href" | "src" | "alt" } }[] =
     [];
   const formatOps: { candidate: Candidate; op: PageOperation & { type: "format" } }[] = [];
+  const setBlockFormatOps: import("./types.ts").SetBlockFormatOperation[] = [];
   const formatBlockOps: {
     candidate: Candidate;
     op: PageOperation & { type: "formatBlock" };
@@ -1843,7 +2125,10 @@ export async function patchHtml(
           if (snapshot.type === "setRegionOrder" && !ownedNodeIds.has(snapshot.targetId)) {
             throw new Error("snapshot operation crosses the duplicated section boundary");
           }
-          if (snapshot.type === "toggleList") {
+          if (snapshot.type === "setBlockFormat") {
+            if (snapshot.targets.some((target) => !ownedNodeIds.has(target.nodeId.split("#")[0]!)))
+              throw new Error("snapshot operation crosses the duplicated section boundary");
+          } else if (snapshot.type === "toggleList") {
             if (snapshot.nodeIds.some((id) => !ownedNodeIds.has(id.split("#")[0]!)))
               throw new Error("snapshot operation crosses the duplicated section boundary");
           } else if (snapshot.type === "moveSection" || snapshot.type === "seo") {
@@ -1874,7 +2159,10 @@ export async function patchHtml(
           if (created.type === "setRegionOrder" && !inverseNodeMap.has(created.targetId)) {
             throw new Error("created operation crosses the duplicated section boundary");
           }
-          if (created.type === "toggleList") {
+          if (created.type === "setBlockFormat") {
+            if (created.targets.some((target) => !inverseNodeMap.has(target.nodeId.split("#")[0]!)))
+              throw new Error("created operation crosses the duplicated section boundary");
+          } else if (created.type === "toggleList") {
             if (created.nodeIds.some((id) => !inverseNodeMap.has(id.split("#")[0]!)))
               throw new Error("created operation crosses the duplicated section boundary");
           } else if (created.type === "moveSection" || created.type === "seo") {
@@ -1942,6 +2230,10 @@ export async function patchHtml(
           throw new Error(`duplicate media op on ${candidate.id}`);
         }
         mediaOps.push({ candidate, op: { ...op, value } });
+        break;
+      }
+      case "setBlockFormat": {
+        setBlockFormatOps.push(op);
         break;
       }
       case "formatBlock": {
@@ -2236,9 +2528,26 @@ export async function patchHtml(
     }
   }
 
+  const initialBlockFormatPatches = setBlockFormatOps.flatMap((operation) =>
+    setBlockFormatSourcePatches(sourceText, analysis, operation),
+  );
+  const blockFormatOwnsContent = (candidate: Candidate): boolean =>
+    initialBlockFormatPatches.some(
+      (patch) =>
+        candidate.contentStart !== undefined &&
+        candidate.contentEnd !== undefined &&
+        patch.start <= candidate.contentStart &&
+        patch.end >= candidate.contentEnd,
+    );
+  const blockContentOverrides = new Map<string, string>();
+
   for (const { candidate, op } of htmlOps) {
     if (htmlOps.filter((item) => item.candidate.id === candidate.id).length > 1) {
       throw new Error(`duplicate html op on ${candidate.id}`);
+    }
+    if (blockFormatOwnsContent(candidate) && !candidate.previewWrapper) {
+      blockContentOverrides.set(candidate.id, op.value);
+      continue;
     }
     patches.push({
       start: candidate.previewWrapper ? candidate.startTagStart : candidate.contentStart!,
@@ -2815,7 +3124,12 @@ export async function patchHtml(
             ) {
               return false;
             }
-            const ids = operation.type === "toggleList" ? operation.nodeIds : [operation.nodeId];
+            const ids =
+              operation.type === "toggleList"
+                ? operation.nodeIds
+                : operation.type === "setBlockFormat"
+                  ? operation.targets.map((target) => target.nodeId)
+                  : [operation.nodeId];
             return ids.some((id) => ownedSourceIds.has(id.split("#")[0]!));
           })
           .map((operation) => {
@@ -3108,7 +3422,8 @@ export async function patchHtml(
   for (const { candidate, op: operations } of formatGroups.values()) {
     const contentStart = candidate.contentStart!;
     const contentEnd = candidate.contentEnd!;
-    let inner = sourceText.slice(contentStart, contentEnd);
+    let inner =
+      blockContentOverrides.get(candidate.id) ?? sourceText.slice(contentStart, contentEnd);
     const nestedIntents = [...textIntents.entries()]
       .filter(
         ([, intent]) => intent.segment.start >= contentStart && intent.segment.end <= contentEnd,
@@ -3170,7 +3485,35 @@ export async function patchHtml(
       const tag = formatTag(op.value);
       inner = `${inner.slice(0, start)}<${tag}>${inner.slice(start, end)}</${tag}>${inner.slice(end)}`;
     }
-    patches.push({ start: contentStart, end: contentEnd, replacement: inner });
+    if (blockFormatOwnsContent(candidate)) {
+      blockContentOverrides.set(candidate.id, inner);
+    } else {
+      patches.push({ start: contentStart, end: contentEnd, replacement: inner });
+    }
+  }
+
+  const blockTextGroups = new Map<string, typeof textIntents>();
+  for (const [key, intent] of textIntents) {
+    if (formattedTextKeys.has(key) || !blockFormatOwnsContent(intent.candidate)) continue;
+    const group = blockTextGroups.get(intent.candidate.id) ?? new Map();
+    group.set(key, intent);
+    blockTextGroups.set(intent.candidate.id, group);
+  }
+  for (const [candidateId, intents] of blockTextGroups) {
+    const candidate = intents.values().next().value!.candidate;
+    const contentStart = candidate.contentStart!;
+    let inner =
+      blockContentOverrides.get(candidateId) ??
+      sourceText.slice(contentStart, candidate.contentEnd!);
+    for (const [key, intent] of [...intents].sort(
+      ([, left], [, right]) => right.segment.start - left.segment.start,
+    )) {
+      const start = intent.segment.start - contentStart;
+      const end = intent.segment.end - contentStart;
+      inner = inner.slice(0, start) + intent.markup + inner.slice(end);
+      formattedTextKeys.add(key);
+    }
+    blockContentOverrides.set(candidateId, inner);
   }
 
   for (const [key, intent] of textIntents) {
@@ -3180,6 +3523,12 @@ export async function patchHtml(
       end: intent.segment.end,
       replacement: intent.markup,
     });
+  }
+
+  for (const operation of setBlockFormatOps) {
+    patches.push(
+      ...setBlockFormatSourcePatches(sourceText, analysis, operation, blockContentOverrides),
+    );
   }
 
   for (const { candidate, op } of formatBlockOps) {

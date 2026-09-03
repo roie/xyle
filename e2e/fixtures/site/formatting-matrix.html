@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Formatting matrix fixture</title>
+  </head>
+  <body>
+    <main>
+      <ul id="formatting-examples" class="authored-list" aria-label="Formatting examples">
+        <!-- authored list start -->
+        <li>Alpha <strong>item</strong></li>
+        <li data-kind="selected">Beta item</li>
+        <li>Gamma item</li>
+        <!-- authored list end -->
+      </ul>
+      <p>Plain block</p>
+      <!-- scalar separator -->
+      <h2>Heading block</h2>
+      <section>
+        <p>Before divider</p>
+        <img src="/assets/hero-fallback.jpg" alt="Divider" />
+        <p>After divider</p>
+      </section>
+      <section><p>Before orphan text</p>authored separator<p>After orphan text</p></section>
+      <ul>
+        <li>Unsafe list item</li>
+        authored list separator
+        <li>Unsafe list sibling</li>
+      </ul>
+    </main>
+  </body>
+</html>

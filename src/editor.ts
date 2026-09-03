@@ -53,6 +53,7 @@ import type {
   SeoField,
   SeoState,
   AssetReference,
+  BlockFormat,
   DuplicateGroupItemOperation,
   GroupDescriptor,
   GroupItemDescriptor,
@@ -63,6 +64,7 @@ import type {
   MoveGroupItemOperation,
   SetLayoutPresetOperation,
   SetRegionOrderOperation,
+  SetBlockFormatOperation,
   SnapshotOperation,
 } from "./types.ts";
 
@@ -112,6 +114,7 @@ type Op =
       sourceStart?: number;
       sourceEnd?: number;
     }
+  | SetBlockFormatOperation
   | { type: "formatBlock"; nodeId: string; value: BlockTag }
   | {
       type: "toggleList";
@@ -552,6 +555,7 @@ function wirePreview(): void {
 
   metaById.clear();
   for (const meta of state.current.nodes) metaById.set(meta.id, meta);
+  captureBlockFormatRegions(doc, state.current.pagePath);
 
   for (const el of doc.querySelectorAll<HTMLElement>("[data-xyle-node]")) {
     const id = el.getAttribute("data-xyle-node")!;
@@ -2064,6 +2068,90 @@ function updateFormatToolState(tools: HTMLElement, target: HTMLElement, range: R
   }
 }
 
+function blockFormatForElement(element: HTMLElement): BlockFormat | null {
+  const tag = element.tagName.toLowerCase();
+  if (tag === "p" || /^h[1-6]$/.test(tag)) return tag as BlockFormat;
+  const parentTag = element.parentElement?.tagName.toLowerCase();
+  return tag === "li" && (parentTag === "ul" || parentTag === "ol") ? parentTag : null;
+}
+
+function captureBlockFormatRegions(doc: Document, pagePath: string, scope?: HTMLElement): void {
+  const elements = scope
+    ? [
+        ...(scope.matches("[data-xyle-node]") ? [scope] : []),
+        ...scope.querySelectorAll<HTMLElement>("[data-xyle-node]"),
+      ]
+    : [...doc.querySelectorAll<HTMLElement>("[data-xyle-node]")];
+  for (const element of elements) {
+    const nodeId = element.dataset.xyleNode;
+    const authoredFormat = blockFormatForElement(element);
+    const parent = element.parentElement;
+    if (!nodeId || !authoredFormat || !parent) continue;
+    const isMappedBlock = (candidate: Node): candidate is HTMLElement => {
+      if (candidate.nodeType !== Node.ELEMENT_NODE) return false;
+      const sibling = candidate as HTMLElement;
+      return Boolean(sibling.dataset.xyleNode) && blockFormatForElement(sibling) !== null;
+    };
+    const isTransparentSibling = (candidate: Node): boolean =>
+      candidate.nodeType === Node.COMMENT_NODE ||
+      (candidate.nodeType === Node.TEXT_NODE && !(candidate.textContent ?? "").trim());
+    const before: HTMLElement[] = [];
+    let cursor = element.previousSibling;
+    while (cursor) {
+      if (isTransparentSibling(cursor)) {
+        cursor = cursor.previousSibling;
+        continue;
+      }
+      if (!isMappedBlock(cursor)) break;
+      before.unshift(cursor);
+      cursor = cursor.previousSibling;
+    }
+    const after: HTMLElement[] = [];
+    cursor = element.nextSibling;
+    while (cursor) {
+      if (isTransparentSibling(cursor)) {
+        cursor = cursor.nextSibling;
+        continue;
+      }
+      if (!isMappedBlock(cursor)) break;
+      after.push(cursor);
+      cursor = cursor.nextSibling;
+    }
+    const siblings = [...before, element, ...after];
+    const nodeIds = siblings.map((candidate) => candidate.dataset.xyleNode!);
+    const anchorId = nodeIds[0] ?? nodeId;
+    const regionKey = segmentIdentity(pagePath, anchorId);
+    let region = blockFormatRegions.get(regionKey);
+    if (!region) {
+      region = { anchorId, nodeIds, authored: new Map() };
+      blockFormatRegions.set(regionKey, region);
+    }
+    if (element.tagName === "LI" && isListTag(parent.tagName.toLowerCase())) {
+      if (!region.authoredListTemplate) {
+        region.authoredListTemplate = {
+          tag: parent.tagName.toLowerCase() as "ul" | "ol",
+          attributes: [...parent.attributes]
+            .filter((attribute) => !attribute.name.startsWith("data-xyle-"))
+            .map((attribute) => [attribute.name, attribute.value]),
+        };
+      }
+      const first = siblings[0]!;
+      const last = siblings.at(-1)!;
+      const childNodes = [...parent.childNodes];
+      const firstIndex = childNodes.indexOf(first);
+      const lastIndex = childNodes.indexOf(last);
+      region.leadingBoundaryNodes = childNodes.slice(0, firstIndex);
+      region.trailingBoundaryNodes = childNodes.slice(lastIndex + 1);
+    }
+    for (const sibling of siblings) {
+      const siblingId = sibling.dataset.xyleNode!;
+      const siblingFormat = blockFormatForElement(sibling);
+      if (siblingFormat) region.authored.set(siblingId, siblingFormat);
+      blockFormatRegions.set(segmentIdentity(pagePath, siblingId), region);
+    }
+  }
+}
+
 function getSelectedListGroup(): { ids: string[]; range: Range; rect: ViewportRect } | null {
   const selection = previewSelection();
   const current = state.current;
@@ -2098,11 +2186,18 @@ function getSelectedListGroup(): { ids: string[]; range: Range; rect: ViewportRe
       !meta ||
       meta.kind !== "text" ||
       !meta.textEditable ||
-      (meta.tag !== "p" && meta.tag !== "li") ||
+      (!isBlockTag(meta.tag) && meta.tag !== "li") ||
       meta.segmentCount === 0
     )
       return null;
     ids.push(id);
+  }
+  const region = blockFormatRegions.get(segmentIdentity(current.pagePath, ids[0]!));
+  if (
+    !region ||
+    ids.some((id) => blockFormatRegions.get(segmentIdentity(current.pagePath, id)) !== region)
+  ) {
+    return null;
   }
   const frameRect = iframe.getBoundingClientRect();
   const selectionRect = range.getBoundingClientRect();
@@ -2118,32 +2213,6 @@ function getSelectedListGroup(): { ids: string[]; range: Range; rect: ViewportRe
       height: selectionRect.height,
     },
   };
-}
-
-function listBlockRun(element: HTMLElement): string[] {
-  const current = state.current;
-  const parent = element.parentElement;
-  if (!current || !parent) return [];
-  const children = [...parent.children];
-  const index = children.indexOf(element);
-  if (index < 0) return [];
-  const isEligible = (candidate: Element): string | null => {
-    const id = (candidate as HTMLElement).dataset.xyleNode;
-    const meta = id ? current.nodes.find((entry) => entry.id === id) : undefined;
-    return id &&
-      meta?.kind === "text" &&
-      meta.textEditable &&
-      (meta.tag === "p" || meta.tag === "li") &&
-      (meta.segmentCount ?? 0) > 0
-      ? id
-      : null;
-  };
-  if (!isEligible(element)) return [];
-  let start = index;
-  let end = index;
-  while (start > 0 && isEligible(children[start - 1]!)) start -= 1;
-  while (end + 1 < children.length && isEligible(children[end + 1]!)) end += 1;
-  return children.slice(start, end + 1).map((child) => isEligible(child)!);
 }
 
 function showFormatTools(): void {
@@ -2172,7 +2241,6 @@ function showFormatTools(): void {
   tools.setAttribute("role", "toolbar");
   tools.setAttribute("aria-label", "Text formatting");
   const currentSelectionForInline = currentSelection;
-  const blockRunIds = listBlockRun(target);
   const supportsBlockStyle = isBlockTag(session.meta.tag) || session.meta.tag === "li";
 
   const addInlineButton = (format: "bold" | "italic" | "underline", label: string): void => {
@@ -2205,47 +2273,7 @@ function showFormatTools(): void {
     }
   }
 
-  if (listGroup) {
-    const block = document.createElement("select");
-    block.setAttribute("aria-label", "Block style");
-    block.setAttribute("title", "Block style");
-    for (const [value, label] of [
-      ["paragraph", "Paragraph"],
-      ["unordered-list", "Bulleted list"],
-      ["ordered-list", "Numbered list"],
-    ] as const) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      block.append(option);
-    }
-    const firstElement = currentNodeElement(listGroup.ids[0]!);
-    const currentListTag =
-      firstElement?.tagName.toLowerCase() === "li"
-        ? firstElement.parentElement?.tagName.toLowerCase()
-        : "";
-    const listRunIds = firstElement ? listBlockRun(firstElement) : [];
-    block.value = isListTag(currentListTag) ? blockFormattingFor(currentListTag) : "paragraph";
-    block.addEventListener("change", () => {
-      const format = block.value as "paragraph" | "unordered-list" | "ordered-list";
-      const ids = isListTag(currentListTag) && listRunIds.length > 0 ? listRunIds : listGroup.ids;
-      if (format === "paragraph") {
-        if (isListTag(currentListTag)) {
-          toggleListFormatting(ids, currentListTag === "ul" ? "unordered-list" : "ordered-list");
-        }
-      } else {
-        toggleListFormatting(ids, format);
-      }
-      closeContextTools(false);
-    });
-    tools.append(block);
-    registerContextTools(tools, target, "above");
-    overlay.append(tools);
-    positionContextTools(tools, selected.rect, "above", previewElementRect(target));
-    return;
-  }
-
-  if (!supportsBlockStyle) {
+  if (!supportsBlockStyle && !listGroup) {
     registerContextTools(tools, target, "above");
     overlay.append(tools);
     positionContextTools(tools, selected.rect, "above", previewElementRect(target));
@@ -2260,23 +2288,17 @@ function showFormatTools(): void {
     currentBlockTag === "li" && session.el.parentElement
       ? session.el.parentElement.tagName.toLowerCase()
       : "";
-  const blockOptions: ReadonlyArray<readonly [Formatting, string]> = isListTag(currentListTag)
-    ? [
-        ["paragraph", "Paragraph"],
-        ["unordered-list", "Bulleted list"],
-        ["ordered-list", "Numbered list"],
-      ]
-    : [
-        ["paragraph", "Paragraph"],
-        ["heading-1", "Heading 1"],
-        ["heading-2", "Heading 2"],
-        ["heading-3", "Heading 3"],
-        ["heading-4", "Heading 4"],
-        ["heading-5", "Heading 5"],
-        ["heading-6", "Heading 6"],
-        ["unordered-list", "Bulleted list"],
-        ["ordered-list", "Numbered list"],
-      ];
+  const blockOptions: ReadonlyArray<readonly [Formatting, string]> = [
+    ["paragraph", "Paragraph"],
+    ["heading-1", "Heading 1"],
+    ["heading-2", "Heading 2"],
+    ["heading-3", "Heading 3"],
+    ["heading-4", "Heading 4"],
+    ["heading-5", "Heading 5"],
+    ["heading-6", "Heading 6"],
+    ["unordered-list", "Bulleted list"],
+    ["ordered-list", "Numbered list"],
+  ];
   for (const [value, label] of blockOptions) {
     const option = document.createElement("option");
     option.value = value;
@@ -2290,20 +2312,11 @@ function showFormatTools(): void {
       : isListTag(currentListTag)
         ? blockFormattingFor(currentListTag)
         : "paragraph";
+  const blockIds = listGroup?.ids ?? [session.meta.id];
   block.addEventListener("change", () => {
     if (!session) return;
-    const format = block.value as Formatting;
-    if (format === "unordered-list" || format === "ordered-list") {
-      const ids = getSelectedListGroup()?.ids ?? blockRunIds;
-      toggleListFormatting(ids.length > 0 ? ids : [session.meta.id], format);
-    } else if (isListTag(currentListTag)) {
-      toggleListFormatting(
-        blockRunIds.length > 0 ? blockRunIds : [session.meta.id],
-        currentListTag === "ul" ? "unordered-list" : "ordered-list",
-      );
-    } else {
-      updateFormatting(session.meta.id, format);
-    }
+    const format = block.value as BlockFormatting;
+    setBlockFormatting(blockIds, blockTagFor(format));
     closeContextTools(false);
   });
   tools.append(block);
@@ -4154,6 +4167,7 @@ function cleanupUnreachableAssets(includeHistory = true): void {
 }
 
 function operationMatchesAuthoredBaseline(pagePath: string, op: Op): boolean {
+  if (op.type === "setBlockFormat") return op.targets.length === 0;
   if (isRichContentOp(op)) {
     const region =
       regionForNode(pagePath, richNodeIds(op)[0]!) ?? ensureRichContentRegion(pagePath, op);
@@ -4215,7 +4229,8 @@ function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null =
     if (!isCurrent()) return;
     replacePendingOp(pagePath, key, previous?.op ?? null, previousChangeSet);
     pendingRevisions.set(key, previous ? (opRevisions.get(previous.op) ?? revision) : revision);
-    if (previous) applyOpToDom(pagePath, previous.op);
+    if (op.type === "setBlockFormat") renderPreview();
+    else if (previous) applyOpToDom(pagePath, previous.op);
     else revertOpInDom(pagePath, op);
     reconcileRichContent(pagePath);
     updateDirtyUi();
@@ -4230,7 +4245,8 @@ function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null =
       return;
     replacePendingOp(pagePath, key, effectivePendingOp, changeSet);
     pendingRevisions.set(key, revision);
-    applyOpToDom(pagePath, op);
+    if (op.type === "setBlockFormat") renderPreview();
+    else applyOpToDom(pagePath, op);
     if (isRichContentOp(op)) {
       ensureRichContentRegion(pagePath, op);
       reconcileRichContent(pagePath);
@@ -4256,10 +4272,14 @@ function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null =
 
 function isRichContentOp(
   op: Op,
-): op is Extract<Op, { type: "text" | "format" | "formatBlock" | "toggleList" | "html" }> {
+): op is Extract<
+  Op,
+  { type: "text" | "format" | "setBlockFormat" | "formatBlock" | "toggleList" | "html" }
+> {
   return (
     op.type === "text" ||
     op.type === "format" ||
+    op.type === "setBlockFormat" ||
     op.type === "formatBlock" ||
     op.type === "toggleList" ||
     op.type === "html"
@@ -4267,11 +4287,16 @@ function isRichContentOp(
 }
 
 function richNodeIds(
-  op: Extract<Op, { type: "text" | "format" | "formatBlock" | "toggleList" | "html" }>,
+  op: Extract<
+    Op,
+    { type: "text" | "format" | "setBlockFormat" | "formatBlock" | "toggleList" | "html" }
+  >,
 ): string[] {
   return op.type === "toggleList"
     ? op.nodeIds.map((id) => id.split("#")[0]!)
-    : [op.nodeId.split("#")[0]!];
+    : op.type === "setBlockFormat"
+      ? op.targets.map((target) => target.nodeId.split("#")[0]!)
+      : [op.nodeId.split("#")[0]!];
 }
 
 function stableTargetIdForNode(pagePath: string, nodeId: string): string {
@@ -4411,25 +4436,22 @@ function serializeRichRegion(doc: Document, nodeIds: string[]): string {
 function sourceRichRegionHtml(pagePath: string, nodeIds: string[]): string {
   const current = state.current;
   if (!current || current.pagePath !== pagePath) return "";
-  const createdId = nodeIds
-    .map((nodeId) =>
-      state.ops.find(
-        ({ op }) =>
-          op.type === "duplicateSection" &&
-          (op.createdId === nodeId || Object.values(op.nodeMap).includes(nodeId)),
-      ),
+  const duplicate = state.ops
+    .filter(
+      (
+        entry,
+      ): entry is PendingOp & {
+        op: Extract<Op, { type: "duplicateSection" | "duplicateGroupItem" }>;
+      } => entry.op.type === "duplicateSection" || entry.op.type === "duplicateGroupItem",
     )
-    .find(
-      (entry): entry is PendingOp & { op: Extract<Op, { type: "duplicateSection" }> } => !!entry,
-    )?.op.createdId;
-  if (createdId) {
-    const duplicate = state.ops.find(
-      ({ op }) => op.type === "duplicateSection" && op.createdId === createdId,
+    .find(({ op }) =>
+      nodeIds.some(
+        (nodeId) => op.createdId === nodeId || Object.values(op.nodeMap).includes(nodeId),
+      ),
     )?.op;
-    if (duplicate?.type === "duplicateSection" && duplicate.previewHtml) {
-      const snapshot = new DOMParser().parseFromString(duplicate.previewHtml, "text/html");
-      return serializeRichRegion(snapshot, nodeIds);
-    }
+  if (duplicate?.previewHtml) {
+    const snapshot = new DOMParser().parseFromString(duplicate.previewHtml, "text/html");
+    return serializeRichRegion(snapshot, nodeIds);
   }
   const base = new DOMParser().parseFromString(current.html, "text/html");
   return serializeRichRegion(base, nodeIds);
@@ -4451,7 +4473,10 @@ function regionForNode(pagePath: string, nodeId: string): RichContentRegion | un
 
 function ensureRichContentRegion(
   pagePath: string,
-  op: Extract<Op, { type: "text" | "format" | "formatBlock" | "toggleList" | "html" }>,
+  op: Extract<
+    Op,
+    { type: "text" | "format" | "setBlockFormat" | "formatBlock" | "toggleList" | "html" }
+  >,
 ): RichContentRegion {
   const ids = [...new Set(richNodeIds(op))];
   const matches = [...richContentRegions.values()].filter(
@@ -4523,6 +4548,7 @@ function reconcileRichContent(pagePath?: string): void {
 }
 
 function opKey(op: Op): string {
+  if (op.type === "setBlockFormat") return `${op.type}@${op.nodeId}`;
   if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") {
     return `${op.type}@${op.createdId}`;
   }
@@ -5128,11 +5154,13 @@ function registerCreatedSubtreeNodes(
   current.nodes = current.nodes.filter((node) => !createdIds.has(node.id));
   current.nodes.push(...createdNodes);
   for (const node of createdNodes) {
+    metaById.set(node.id, node);
     const element = clone.ownerDocument.querySelector<HTMLElement>(
       `[data-xyle-node="${CSS.escape(node.id)}"]`,
     );
     if (element) wireCandidate(element, node);
   }
+  captureBlockFormatRegions(clone.ownerDocument, current.pagePath, clone);
 }
 
 function registerCreatedSectionNodes(
@@ -5186,13 +5214,15 @@ function opTargetsElement(op: Op, root: HTMLElement): boolean {
   const ids =
     op.type === "toggleList"
       ? op.nodeIds
-      : op.type === "duplicateSection"
-        ? [op.sourceId]
-        : op.type === "setRegionOrder"
-          ? [op.targetId]
-          : "nodeId" in op
-            ? [op.nodeId]
-            : [];
+      : op.type === "setBlockFormat"
+        ? op.targets.map((target) => target.nodeId)
+        : op.type === "duplicateSection"
+          ? [op.sourceId]
+          : op.type === "setRegionOrder"
+            ? [op.targetId]
+            : "nodeId" in op
+              ? [op.nodeId]
+              : [];
   return ids.some((id) => {
     const baseId = id.split("#")[0]!;
     return (
@@ -5449,21 +5479,23 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
     type: op.type,
     before: originalValue(pagePath, op),
     after:
-      op.type === "formatBlock"
-        ? blockFormattingFor(op.value)
-        : op.type === "toggleList"
-          ? op.after === "plain"
-            ? "paragraphs"
-            : op.after
-          : op.type === "media"
-            ? mediaStateDescription(op.value)
-            : op.type === "sectionVisibility"
-              ? op.visible
-                ? "visible"
-                : "hidden"
-              : op.type === "moveSection"
-                ? `Moved “${displayNameForNode(pagePath, op.nodeId)}” ${sectionMoveDirection(op)}`
-                : op.value,
+      op.type === "setBlockFormat"
+        ? op.targets.map((target) => blockFormattingFor(target.value)).join(", ")
+        : op.type === "formatBlock"
+          ? blockFormattingFor(op.value)
+          : op.type === "toggleList"
+            ? op.after === "plain"
+              ? "paragraphs"
+              : op.after
+            : op.type === "media"
+              ? mediaStateDescription(op.value)
+              : op.type === "sectionVisibility"
+                ? op.visible
+                  ? "visible"
+                  : "hidden"
+                : op.type === "moveSection"
+                  ? `Moved “${displayNameForNode(pagePath, op.nodeId)}” ${sectionMoveDirection(op)}`
+                  : op.value,
     ...(entry.changeSetId
       ? {
           changeSetId: entry.changeSetId,
@@ -5673,7 +5705,14 @@ function revertPendingOperation(index: number): void {
         )
           return false;
         const createdIds = new Set([duplicate.createdId, ...Object.values(duplicate.nodeMap)]);
-        const ids = op.type === "toggleList" ? op.nodeIds : "nodeId" in op ? [op.nodeId] : [];
+        const ids =
+          op.type === "toggleList"
+            ? op.nodeIds
+            : op.type === "setBlockFormat"
+              ? op.targets.map((target) => target.nodeId)
+              : "nodeId" in op
+                ? [op.nodeId]
+                : [];
         return ids.some((id) => createdIds.has(id.split("#")[0]!));
       })
     : [];
@@ -5807,15 +5846,12 @@ function applyChangeSet(label: string, changes: ChangeSetOperation[]): ChangeSet
     }
     if (change.type === "formatting") {
       if (isBlockFormatting(change.format)) {
-        if (meta.kind !== "text" || !meta.textEditable || !isBlockTag(meta.tag)) {
-          throw new Error(`Xyle node ${change.id} does not support block formatting`);
-        }
         if (
-          meta.segmentCount !== 1 &&
-          change.format !== "unordered-list" &&
-          change.format !== "ordered-list"
+          meta.kind !== "text" ||
+          !meta.textEditable ||
+          (!isBlockTag(meta.tag) && meta.tag !== "li")
         ) {
-          throw new Error(`Xyle node ${change.id} has ambiguous text mapping`);
+          throw new Error(`Xyle node ${change.id} does not support block formatting`);
         }
       } else if ((meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
         throw new Error(`Xyle node ${change.id} does not support formatting`);
@@ -6128,221 +6164,96 @@ function updateFormatting(
   return { id: nodeId, pagePath: current.pagePath, format };
 }
 
-interface SelectionBookmark {
-  root: HTMLElement;
-  anchorTextOffset: number;
-  focusTextOffset: number;
-  direction: "forward" | "backward";
-}
-
-function textOffsetAt(root: HTMLElement, node: Node, offset: number): number | null {
-  if (!root.contains(node) && node !== root) return null;
-  const range = root.ownerDocument.createRange();
-  try {
-    range.setStart(root, 0);
-    range.setEnd(node, offset);
-  } catch {
-    return null;
+function setBlockFormatting(nodeIds: string[], value: BlockFormat): FormattingUpdateResult {
+  if (session) commitEdit();
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const uniqueIds = [...new Set(nodeIds)];
+  if (uniqueIds.length < 1 || uniqueIds.length > 20) {
+    throw new Error("Block formatting requires 1 to 20 unique text blocks");
   }
-  return range.toString().length;
-}
-
-function textBoundaryAt(root: HTMLElement, offset: number): { node: Text; offset: number } | null {
-  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let remaining = Math.max(0, offset);
-  let node: Text | null;
-  for (;;) {
-    node = walker.nextNode() as Text | null;
-    if (!node) break;
-    if (remaining <= node.length) return { node, offset: remaining };
-    remaining -= node.length;
-  }
-  const last = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let final: Text | null = null;
-  for (;;) {
-    node = last.nextNode() as Text | null;
-    if (!node) break;
-    final = node;
-  }
-  return final ? { node: final, offset: final.length } : null;
-}
-
-function captureSelectionBookmark(root: HTMLElement): SelectionBookmark | null {
-  const selection = root.ownerDocument.getSelection();
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
-  const range = selection.getRangeAt(0);
-  const anchorTextOffset = textOffsetAt(root, selection.anchorNode!, selection.anchorOffset);
-  const focusTextOffset = textOffsetAt(root, selection.focusNode!, selection.focusOffset);
-  if (anchorTextOffset === null || focusTextOffset === null) return null;
-  const direction =
-    range.startContainer === selection.anchorNode && range.startOffset === selection.anchorOffset
-      ? "forward"
-      : "backward";
-  return { root, anchorTextOffset, focusTextOffset, direction };
-}
-
-function restoreSelectionBookmark(bookmark: SelectionBookmark | null): void {
-  if (!bookmark) return;
-  const anchor = textBoundaryAt(bookmark.root, bookmark.anchorTextOffset);
-  const focus = textBoundaryAt(bookmark.root, bookmark.focusTextOffset);
-  if (!anchor || !focus) return;
-  const selection = bookmark.root.ownerDocument.getSelection();
-  if (!selection) return;
-  selection.removeAllRanges();
-  const range = bookmark.root.ownerDocument.createRange();
-  if (bookmark.direction === "forward") {
-    range.setStart(anchor.node, anchor.offset);
-    range.setEnd(focus.node, focus.offset);
-    selection.addRange(range);
-  } else {
-    range.setStart(focus.node, focus.offset);
-    range.setEnd(anchor.node, anchor.offset);
-    selection.addRange(range);
-    if (selection.extend) {
-      selection.collapse(anchor.node, anchor.offset);
-      selection.extend(focus.node, focus.offset);
-    }
-  }
-}
-
-interface ListFormattingElement {
-  meta: NodeMeta;
-  element: HTMLElement;
-}
-
-function resolveListFormattingElements(
-  current: PageData,
-  nodeIds: string[],
-): ListFormattingElement[] {
-  if (nodeIds.length < 1 || nodeIds.length > 20 || new Set(nodeIds).size !== nodeIds.length) {
-    throw new Error("A list group requires 1 to 20 unique text blocks");
-  }
-  return nodeIds.map((nodeId) => {
-    const meta = current.nodes.find((candidate) => candidate.id === nodeId);
-    const element = currentNodeElement(nodeId);
-    if (
-      !meta ||
-      meta.kind !== "text" ||
-      !meta.textEditable ||
-      (meta.tag !== "p" && meta.tag !== "li")
-    ) {
-      throw new Error(`Xyle node ${nodeId} is not a safe list block`);
-    }
-    if ((meta.segmentCount ?? 0) === 0 || !element) {
-      throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
-    }
-    return { meta, element };
-  });
-}
-
-function orderListFormattingElements(elements: ListFormattingElement[]): HTMLElement {
-  const parent = elements[0]!.element.parentElement;
-  if (!parent || elements.some(({ element }) => element.parentElement !== parent)) {
-    throw new Error("List blocks must be siblings");
-  }
-  const children = [...parent.children];
-  elements.sort(
-    ({ element: left }, { element: right }) => children.indexOf(left) - children.indexOf(right),
-  );
-  const indexes = elements.map(({ element }) => children.indexOf(element));
+  const region = blockFormatRegions.get(segmentIdentity(current.pagePath, uniqueIds[0]!));
   if (
-    indexes.some((index) => index < 0) ||
-    indexes.some((index, position) => index !== indexes[0]! + position)
-  ) {
-    throw new Error("List blocks must be contiguous siblings");
-  }
-  return parent;
-}
-
-function currentListFormattingState(
-  elements: ListFormattingElement[],
-  parent: HTMLElement,
-): "plain" | "ul" | "ol" {
-  const firstTag = elements[0]!.element.tagName.toLowerCase();
-  const parentTag = parent.tagName.toLowerCase();
-  const before =
-    firstTag === "li" && (parentTag === "ul" || parentTag === "ol") ? parentTag : "plain";
-  if (
-    elements.some(
-      ({ element }) => (element.tagName.toLowerCase() === "li") !== (before !== "plain"),
+    !region ||
+    uniqueIds.some(
+      (nodeId) => blockFormatRegions.get(segmentIdentity(current.pagePath, nodeId)) !== region,
     )
   ) {
-    throw new Error("List selection cannot mix list items and plain blocks");
+    throw new Error("Selected blocks must share one authored formatting region");
   }
-  return before;
+  const selectedIndexes = uniqueIds
+    .map((nodeId) => region.nodeIds.indexOf(nodeId))
+    .sort((a, b) => a - b);
+  if (
+    selectedIndexes.some((index) => index < 0) ||
+    selectedIndexes.some(
+      (index, position) => position > 0 && index !== selectedIndexes[position - 1]! + 1,
+    )
+  ) {
+    throw new Error("Selected blocks must be contiguous");
+  }
+  const previous = state.ops.find(
+    (entry) =>
+      entry.pagePath === current.pagePath &&
+      entry.op.type === "setBlockFormat" &&
+      entry.op.nodeId === region.anchorId,
+  );
+  const targets = new Map(
+    previous?.op.type === "setBlockFormat"
+      ? previous.op.targets.map((target) => [target.nodeId, target.value] as const)
+      : [],
+  );
+  let changed = false;
+  for (const nodeId of uniqueIds) {
+    const element = currentNodeElement(nodeId);
+    if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
+    if (element.tagName === "LI" && element.parentElement) {
+      if (listHasUnsupportedChildren(element.parentElement)) {
+        throw new Error("List contains unsupported non-item content");
+      }
+    }
+    if (blockFormatForElement(element) !== value) changed = true;
+    if (region.authored.get(nodeId) === value) targets.delete(nodeId);
+    else targets.set(nodeId, value);
+  }
+  if (!changed) {
+    return { id: uniqueIds[0]!, pagePath: current.pagePath, format: blockFormattingFor(value) };
+  }
+  const operation: SetBlockFormatOperation = {
+    type: "setBlockFormat",
+    nodeId: region.anchorId,
+    targets: region.nodeIds.flatMap((nodeId) => {
+      const target = targets.get(nodeId);
+      return target ? [{ nodeId, value: target }] : [];
+    }),
+  };
+  applySetBlockFormatToDom(current.pagePath, {
+    type: "setBlockFormat",
+    nodeId: region.anchorId,
+    targets: uniqueIds.map((nodeId) => ({ nodeId, value })),
+  });
+  applyOp(
+    current.pagePath,
+    operation,
+    "Change block style",
+    operation.targets.length > 0 ? operation : null,
+  );
+  if (operation.targets.length === 0) renderPreview();
+  return { id: uniqueIds[0]!, pagePath: current.pagePath, format: blockFormattingFor(value) };
 }
 
 function toggleListFormatting(
   nodeIds: string[],
   format: "unordered-list" | "ordered-list",
 ): ListFormattingUpdateResult {
-  if (session) commitEdit();
   const current = state.current;
   if (!current) throw new Error("No page is loaded");
-  const elements = resolveListFormattingElements(current, nodeIds);
-  const parent = orderListFormattingElements(elements);
-  const before = currentListFormattingState(elements, parent);
-  const requested = format === "unordered-list" ? "ul" : "ol";
-  const after = before === requested ? "plain" : requested;
-  const selectionRoot = before === "plain" ? parent : parent.parentElement;
-  const bookmark = selectionRoot ? captureSelectionBookmark(selectionRoot) : null;
-  for (const { meta } of elements) {
-    const stateKey = segmentIdentity(current.pagePath, meta.id);
-    if (!originalListStates.has(stateKey)) originalListStates.set(stateKey, before);
-    originalBlockTags.set(stateKey, (meta.tag === "li" ? "p" : meta.tag) as BlockTag);
-  }
-  const operation: Op = {
-    type: "toggleList",
-    nodeId: elements[0]!.meta.id,
-    nodeIds: elements.map(({ meta }) => meta.id),
-    value: requested,
-    before,
-    after,
-  };
-  applyToggleListToDom(current.pagePath, operation, after);
-  restoreSelectionBookmark(bookmark);
-  const returnsToOriginal = operation.nodeIds.every(
-    (nodeId) => originalListStates.get(segmentIdentity(current.pagePath, nodeId)) === after,
-  );
-  applyOp(current.pagePath, operation, "Update list", returnsToOriginal ? null : operation);
+  setBlockFormatting(nodeIds, format === "unordered-list" ? "ul" : "ol");
   return { ids: [...nodeIds], pagePath: current.pagePath, format };
 }
 
 function updateBlockFormatting(nodeId: string, format: BlockFormatting): FormattingUpdateResult {
-  if (session) commitEdit();
-  const current = state.current;
-  if (!current) throw new Error("No page is loaded");
-  const isListFormat = format === "unordered-list" || format === "ordered-list";
-  if (isListFormat) {
-    toggleListFormatting([nodeId], format);
-    return { id: nodeId, pagePath: current.pagePath, format };
-  }
-  const meta = current.nodes.find((candidate) => candidate.id === nodeId);
-  if (!meta || meta.kind !== "text" || !meta.textEditable || !isBlockTag(meta.tag)) {
-    throw new Error(`Unknown or non-block-formatting Xyle node ${nodeId}`);
-  }
-  if (meta.segmentCount !== 1) {
-    throw new Error(`Xyle node ${nodeId} has ambiguous text mapping`);
-  }
-  const element = currentNodeElement(nodeId);
-  if (!element) throw new Error(`Xyle node ${nodeId} is not present in the preview`);
-  const currentTag = element.tagName.toLowerCase();
-  if (!isBlockTag(currentTag) && !isListTag(currentTag)) {
-    throw new Error(`Xyle node ${nodeId} is not safely list-formattable`);
-  }
-  const tag = blockTagFor(format);
-  if (currentTag === tag) return { id: nodeId, pagePath: current.pagePath, format };
-
-  const identity = segmentIdentity(current.pagePath, nodeId);
-  if (!originalBlockTags.has(identity)) originalBlockTags.set(identity, meta.tag);
-  const operation: Op = { type: "formatBlock", nodeId, value: tag };
-  applyBlockFormatToDom(current.pagePath, operation);
-  applyOp(
-    current.pagePath,
-    operation,
-    isListTag(tag) || isListTag(currentTag) ? "Change list style" : "Change heading level",
-  );
-  return { id: nodeId, pagePath: current.pagePath, format };
+  return setBlockFormatting([nodeId], blockTagFor(format));
 }
 
 function updateText(nodeId: string, text: string): TextUpdateResult {
@@ -6772,6 +6683,7 @@ function discardAll(): void {
   originalFormats.clear();
   originalBlockTags.clear();
   originalListStates.clear();
+  blockFormatRegions.clear();
   pendingRevisions.clear();
 }
 
@@ -6953,6 +6865,7 @@ function changeTypeLabel(type: ChangeInfo["type"]): string {
     case "media":
       return "Image";
     case "format":
+    case "setBlockFormat":
     case "formatBlock":
     case "toggleList":
     case "html":
@@ -6985,6 +6898,8 @@ function opLabel(op: Op): string {
       return "Alt text";
     case "format":
       return "Formatting";
+    case "setBlockFormat":
+      return "Block style";
     case "formatBlock":
       return isListTag(op.value) ? "List style" : "Heading level";
     case "toggleList":
@@ -7018,6 +6933,12 @@ function originalValue(pagePath: string, op: Op): string {
   }
   if (op.type === "format") {
     return originalFormats.get(segmentIdentity(pagePath, op.nodeId)) ?? "none";
+  }
+  if (op.type === "setBlockFormat") {
+    const region = blockFormatRegions.get(segmentIdentity(pagePath, op.nodeId));
+    return op.targets
+      .map((target) => blockFormattingFor(region?.authored.get(target.nodeId) ?? "p"))
+      .join(", ");
   }
   if (op.type === "formatBlock") {
     const original = originalBlockTags.get(segmentIdentity(pagePath, op.nodeId));
@@ -7366,6 +7287,10 @@ function applyOpToDom(pagePath: string, op: Op): void {
     applySeoToDom(op.field, op.value);
     return;
   }
+  if (op.type === "setBlockFormat") {
+    applySetBlockFormatToDom(pagePath, op);
+    return;
+  }
   if (op.type === "formatBlock") {
     const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
     if (el) applyBlockFormatToDom(pagePath, op);
@@ -7466,6 +7391,8 @@ function revertOpInDom(pagePath: string, op: Op): void {
         }
       }
     }
+  } else if (op.type === "setBlockFormat") {
+    renderPreview();
   } else if (op.type === "formatBlock") {
     restoreOriginalBlockFormat(pagePath, op.nodeId);
   } else if (op.type === "toggleList") {
@@ -7536,6 +7463,18 @@ const duplicateSourceLabels = new Map<string, string>();
 const originalFormats = new Map<string, "bold" | "italic" | "underline" | "none">();
 const originalBlockTags = new Map<string, BlockTag>();
 const originalListStates = new Map<string, "plain" | "ul" | "ol">();
+interface BlockFormatRegion {
+  anchorId: string;
+  nodeIds: string[];
+  authored: Map<string, BlockFormat>;
+  authoredListTemplate?: {
+    tag: "ul" | "ol";
+    attributes: Array<[name: string, value: string]>;
+  };
+  leadingBoundaryNodes?: Node[];
+  trailingBoundaryNodes?: Node[];
+}
+const blockFormatRegions = new Map<string, BlockFormatRegion>();
 const pendingRevisions = new Map<string, number>();
 const opRevisions = new WeakMap<object, number>();
 let nextOpRevision = 0;
@@ -7697,6 +7636,263 @@ function mergeAdjacentLists(list: HTMLElement): HTMLElement {
     next.remove();
   }
   return merged;
+}
+
+function blockFromListItem(item: HTMLElement, tag: Exclude<BlockFormat, "ul" | "ol">): HTMLElement {
+  const block = item.ownerDocument.createElement(tag);
+  copyElementAttributes(item, block, "");
+  while (item.firstChild) block.append(item.firstChild);
+  wireListElement(block, block.dataset.xyleNode ?? "");
+  return block;
+}
+
+function listItemFromBlock(block: HTMLElement): HTMLElement {
+  const item = block.ownerDocument.createElement("li");
+  copyElementAttributes(block, item, "");
+  while (block.firstChild) item.append(block.firstChild);
+  wireListElement(item, item.dataset.xyleNode ?? "");
+  return item;
+}
+
+function formattedList(
+  tag: "ul" | "ol",
+  items: HTMLElement[],
+  template?: HTMLElement,
+  retainUniqueAttributes = true,
+): HTMLElement {
+  const list = items[0]?.ownerDocument.createElement(tag) ?? document.createElement(tag);
+  if (template) copyElementAttributes(template, list, "");
+  if (!retainUniqueAttributes) list.removeAttribute("id");
+  for (const item of items) list.append(item);
+  return list;
+}
+
+function authoredListTemplateFor(block: HTMLElement): HTMLElement | undefined {
+  const nodeId = block.dataset.xyleNode;
+  const pagePath = state.current?.pagePath;
+  const template =
+    nodeId && pagePath
+      ? blockFormatRegions.get(segmentIdentity(pagePath, nodeId))?.authoredListTemplate
+      : undefined;
+  if (!template) return undefined;
+  const element = block.ownerDocument.createElement(template.tag);
+  for (const [name, value] of template.attributes) element.setAttribute(name, value);
+  return element;
+}
+
+function listHasUnsupportedChildren(list: HTMLElement): boolean {
+  return [...list.childNodes].some((child) => {
+    if (child.nodeType === Node.COMMENT_NODE) return false;
+    if (child.nodeType === Node.TEXT_NODE) return Boolean((child.textContent ?? "").trim());
+    if (child.nodeType !== Node.ELEMENT_NODE) return true;
+    const item = child as HTMLElement;
+    const nodeId = item.dataset.xyleNode;
+    const meta = nodeId ? metaById.get(nodeId) : undefined;
+    return item.tagName !== "LI" || meta?.kind !== "text" || !meta.textEditable;
+  });
+}
+
+function applyListRegionBlockFormats(list: HTMLElement, targets: Map<string, BlockFormat>): void {
+  const currentFormat = list.tagName.toLowerCase() as "ul" | "ol";
+  if (!list.parentElement || !isListTag(currentFormat)) return;
+  if (listHasUnsupportedChildren(list)) {
+    throw new Error("List contains unsupported non-item content");
+  }
+  const childNodes = [...list.childNodes];
+  const items = childNodes.filter(
+    (child): child is HTMLElement =>
+      child.nodeType === Node.ELEMENT_NODE && (child as HTMLElement).tagName === "LI",
+  );
+  const gaps: Node[][] = Array.from({ length: items.length + 1 }, () => []);
+  let itemIndex = 0;
+  for (const child of childNodes) {
+    if (child.nodeType === Node.ELEMENT_NODE && (child as HTMLElement).tagName === "LI") {
+      itemIndex += 1;
+    } else gaps[itemIndex]!.push(child);
+  }
+
+  const pieces: Array<{ element: HTMLElement; items: HTMLElement[] }> = [];
+  let emittedListRuns = 0;
+  let pendingList: { tag: "ul" | "ol"; items: HTMLElement[] } | null = null;
+  const flushList = (): void => {
+    if (!pendingList) return;
+    pieces.push({
+      element: formattedList(pendingList.tag, pendingList.items, list, emittedListRuns === 0),
+      items: [...pendingList.items],
+    });
+    emittedListRuns += 1;
+    pendingList = null;
+  };
+  for (const item of items) {
+    const nodeId = item.dataset.xyleNode ?? "";
+    const target = targets.get(nodeId) ?? currentFormat;
+    if (isListTag(target)) {
+      const activeTag: "ul" | "ol" | undefined = (
+        pendingList as { tag: "ul" | "ol"; items: HTMLElement[] } | null
+      )?.tag;
+      if (activeTag !== target) {
+        flushList();
+        pendingList = { tag: target, items: [] };
+      }
+      (pendingList as { tag: "ul" | "ol"; items: HTMLElement[] }).items.push(item);
+    } else {
+      flushList();
+      pieces.push({ element: blockFromListItem(item, target), items: [item] });
+    }
+  }
+  flushList();
+
+  const fragment = list.ownerDocument.createDocumentFragment();
+  for (const piece of pieces) {
+    const firstIndex = items.indexOf(piece.items[0]!);
+    const leading = gaps[firstIndex]!;
+    if (firstIndex === 0 && (piece.element.tagName === "UL" || piece.element.tagName === "OL")) {
+      for (const node of leading) piece.element.insertBefore(node, piece.element.firstChild);
+    } else {
+      for (const node of leading) fragment.append(node);
+    }
+    if (piece.element.tagName === "UL" || piece.element.tagName === "OL") {
+      for (const item of piece.items.slice(1)) {
+        const index = items.indexOf(item);
+        for (const node of gaps[index]!) piece.element.insertBefore(node, item);
+      }
+    }
+    fragment.append(piece.element);
+  }
+  const trailing = gaps[items.length]!;
+  const lastPiece = pieces.at(-1)?.element;
+  if (lastPiece && (lastPiece.tagName === "UL" || lastPiece.tagName === "OL")) {
+    for (const node of trailing) lastPiece.append(node);
+  } else {
+    for (const node of trailing) fragment.append(node);
+  }
+  list.replaceWith(fragment);
+}
+
+function applyScalarRegionBlockFormats(
+  parent: HTMLElement,
+  targets: Map<string, BlockFormat>,
+): void {
+  const children = [...parent.children] as HTMLElement[];
+  for (let index = 0; index < children.length; index += 1) {
+    const element = children[index]!;
+    const nodeId = element.dataset.xyleNode;
+    const target = nodeId ? targets.get(nodeId) : undefined;
+    if (!target) continue;
+    if (!isListTag(target)) {
+      if (element.tagName.toLowerCase() !== target) replaceBlockElement(element, target);
+      continue;
+    }
+    const run: HTMLElement[] = [element];
+    while (index + 1 < children.length) {
+      const next = children[index + 1]!;
+      const nextId = next.dataset.xyleNode;
+      if (!nextId || targets.get(nextId) !== target) break;
+      run.push(next);
+      index += 1;
+    }
+    const gaps = run.slice(1).map((block, runIndex) => {
+      const nodes: Node[] = [];
+      let cursor = run[runIndex]!.nextSibling;
+      while (cursor && cursor !== block) {
+        if (
+          cursor.nodeType !== Node.COMMENT_NODE &&
+          (cursor.nodeType !== Node.TEXT_NODE || Boolean((cursor.textContent ?? "").trim()))
+        ) {
+          throw new Error("Block format targets contain unsupported sibling content");
+        }
+        nodes.push(cursor);
+        cursor = cursor.nextSibling;
+      }
+      return nodes;
+    });
+    const items = run.map(listItemFromBlock);
+    const firstNodeId = run[0]!.dataset.xyleNode;
+    const region =
+      firstNodeId && state.current
+        ? blockFormatRegions.get(segmentIdentity(state.current.pagePath, firstNodeId))
+        : undefined;
+    const list = formattedList(target, items, authoredListTemplateFor(run[0]!));
+    for (let itemIndex = 1; itemIndex < items.length; itemIndex += 1) {
+      for (const node of gaps[itemIndex - 1]!) list.insertBefore(node, items[itemIndex]!);
+    }
+    if (region && firstNodeId === region.nodeIds[0]) {
+      for (const node of region.leadingBoundaryNodes ?? []) {
+        if (node.parentNode === parent) list.insertBefore(node, items[0]!);
+      }
+    }
+    if (region && run.at(-1)?.dataset.xyleNode === region.nodeIds.at(-1)) {
+      for (const node of region.trailingBoundaryNodes ?? []) {
+        if (node.parentNode === parent) list.append(node);
+      }
+    }
+    parent.insertBefore(list, run[0]!);
+    for (const block of run) block.remove();
+  }
+}
+
+function reconcileAdjacentRegionLists(pagePath: string, operation: SetBlockFormatOperation): void {
+  const doc = previewDoc();
+  if (!doc) return;
+  const regions = new Set(
+    operation.targets
+      .map((target) => blockFormatRegions.get(segmentIdentity(pagePath, target.nodeId)))
+      .filter((region): region is BlockFormatRegion => Boolean(region)),
+  );
+  for (const region of regions) {
+    const listsForRegion = (): HTMLElement[] =>
+      [...doc.querySelectorAll<HTMLElement>("ul, ol")].filter((list) => {
+        const firstId = list.querySelector<HTMLElement>(":scope > li[data-xyle-node]")?.dataset
+          .xyleNode;
+        return Boolean(firstId && region.nodeIds.includes(firstId));
+      });
+    const lists = listsForRegion();
+    for (const list of lists) {
+      let next = list.nextElementSibling as HTMLElement | null;
+      while (next && next.tagName === list.tagName) {
+        const nextId = next.querySelector<HTMLElement>(":scope > li[data-xyle-node]")?.dataset
+          .xyleNode;
+        if (!nextId || !region.nodeIds.includes(nextId)) break;
+        if (!list.id && next.id) list.id = next.id;
+        next.removeAttribute("id");
+        while (list.nextSibling && list.nextSibling !== next) list.append(list.nextSibling);
+        while (next.firstChild) list.append(next.firstChild);
+        next.remove();
+        next = list.nextElementSibling as HTMLElement | null;
+      }
+    }
+    if (region.authoredListTemplate) {
+      for (const [index, list] of listsForRegion().entries()) {
+        for (const [name, value] of region.authoredListTemplate.attributes) {
+          if (name === "id" && index > 0) list.removeAttribute("id");
+          else list.setAttribute(name, value);
+        }
+      }
+    }
+  }
+}
+
+function applySetBlockFormatToDom(pagePath: string, operation: SetBlockFormatOperation): void {
+  if (pagePath !== state.current?.pagePath || operation.targets.length === 0) return;
+  const doc = previewDoc();
+  if (!doc) return;
+  const targets = new Map(
+    operation.targets.map((target) => [target.nodeId, target.value] as const),
+  );
+  const processedParents = new Set<HTMLElement>();
+  for (const target of operation.targets) {
+    const element = doc.querySelector<HTMLElement>(`[data-xyle-node="${target.nodeId}"]`);
+    const parent = element?.parentElement;
+    if (!element || !parent || processedParents.has(parent)) continue;
+    processedParents.add(parent);
+    if (element.tagName === "LI" && isListTag(parent.tagName.toLowerCase())) {
+      applyListRegionBlockFormats(parent, targets);
+    } else {
+      applyScalarRegionBlockFormats(parent, targets);
+    }
+  }
+  reconcileAdjacentRegionLists(pagePath, operation);
+  refreshMarkers();
 }
 
 function applyToggleListToDom(
@@ -7869,6 +8065,8 @@ function restoreOpsIntoDom(): void {
     } else if (op.type === "format") {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) applyFormatOperationToElement(el, op);
+    } else if (op.type === "setBlockFormat") {
+      applySetBlockFormatToDom(pagePath, op);
     } else if (op.type === "formatBlock") {
       applyBlockFormatToDom(pagePath, op);
     } else if (op.type === "toggleList") {
@@ -8045,6 +8243,7 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     originalFormats.clear();
     originalBlockTags.clear();
     originalListStates.clear();
+    blockFormatRegions.clear();
     pendingRevisions.clear();
     selectedImage = null;
     label.textContent = "Published ✓";
@@ -8097,9 +8296,11 @@ function collectPageOps(): PageOps[] {
             const ids =
               candidate.type === "toggleList"
                 ? candidate.nodeIds
-                : "nodeId" in candidate
-                  ? [candidate.nodeId]
-                  : [];
+                : candidate.type === "setBlockFormat"
+                  ? candidate.targets.map((target) => target.nodeId)
+                  : "nodeId" in candidate
+                    ? [candidate.nodeId]
+                    : [];
             return ids.some((id) => createdNodeIds.has(id.split("#")[0]!));
           })
           .map((candidate) => structuredClone(candidate) as SnapshotOperation);
@@ -8117,7 +8318,14 @@ function collectPageOps(): PageOps[] {
       } else if (op.type === "moveGroupItem") {
         operations.push(op);
       } else {
-        const ids = op.type === "toggleList" ? op.nodeIds : "nodeId" in op ? [op.nodeId] : [];
+        const ids =
+          op.type === "toggleList"
+            ? op.nodeIds
+            : op.type === "setBlockFormat"
+              ? op.targets.map((target) => target.nodeId)
+              : "nodeId" in op
+                ? [op.nodeId]
+                : [];
         if (ids.some((id) => owned.has(id.split("#")[0]!))) continue;
         operations.push(op);
       }

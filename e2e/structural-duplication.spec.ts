@@ -61,6 +61,11 @@ test("duplicates a safe section through its complete independent lifecycle", asy
   const originalHeading = await findNodeByText(page, "No hidden content model.");
   expect(originalHeading).toBeTruthy();
   await editText(page, originalHeading!, "Original before duplication");
+  await editNode(page, originalHeading!);
+  await setSelection(page, { nodeId: originalHeading!, selectAll: true });
+  await page
+    .locator('.xyle-format-tools select[aria-label="Block style"]')
+    .selectOption("heading-3");
 
   const originalImage = page
     .frameLocator("#xyle-preview")
@@ -96,7 +101,7 @@ test("duplicates a safe section through its complete independent lifecycle", asy
   const duplicateHeading = await page.evaluate(() => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
     return [...doc.querySelectorAll("main > section.work-standard[data-xyle-node]")][1]
-      ?.querySelector("h2[data-xyle-node]")
+      ?.querySelector("h1[data-xyle-node],h2[data-xyle-node],h3[data-xyle-node],h4[data-xyle-node],h5[data-xyle-node],h6[data-xyle-node]")
       ?.getAttribute("data-xyle-node");
   });
   const duplicateImage = page
@@ -105,6 +110,23 @@ test("duplicates a safe section through its complete independent lifecycle", asy
     .nth(1)
     .locator("img");
   expect(duplicateHeading).toBeTruthy();
+  for (const format of ["paragraph", "heading-3"]) {
+    await editNode(page, originalHeading!);
+    await setSelection(page, { nodeId: originalHeading!, selectAll: true });
+    await page.locator('.xyle-format-tools select[aria-label="Block style"]').selectOption(format);
+  }
+  await expect(
+    page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${originalHeading}"]`),
+  ).toHaveJSProperty("tagName", "H3");
+
+  await editNode(page, duplicateHeading!);
+  await setSelection(page, { nodeId: duplicateHeading!, selectAll: true });
+  await page
+    .locator('.xyle-format-tools select[aria-label="Block style"]')
+    .selectOption("heading-4");
+  await expect(
+    page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${duplicateHeading}"]`),
+  ).toHaveJSProperty("tagName", "H4");
   await editText(page, duplicateHeading!, "Duplicate final heading");
   await cropImage(page, duplicateImage, "78", "31");
   await editText(page, originalHeading!, "Original final heading");
@@ -168,10 +190,16 @@ test("duplicates a safe section through its complete independent lifecycle", asy
         fit: image?.style.objectFit ?? "",
         position: image?.style.objectPosition ?? "",
       })),
-      references: sections.map((section) => ({
-        reference: section.getAttribute("aria-labelledby") ?? "",
-        heading: section.querySelector("h2")?.id ?? "",
-      })),
+      references: sections.map((section) => {
+        const heading = section.querySelector<HTMLElement>(
+          "h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]",
+        );
+        return {
+          reference: section.getAttribute("aria-labelledby") ?? "",
+          heading: heading?.id ?? "",
+          tag: heading?.tagName ?? "",
+        };
+      }),
       uniqueIds: new Set(ids).size === ids.length,
       hasEditorMarkup: /data-xyle-|xyle-(editing|hover|show-editables)/.test(
         document.documentElement.outerHTML,
@@ -193,6 +221,7 @@ test("duplicates a safe section through its complete independent lifecycle", asy
   ]);
   expect(published.references[0]!.reference).toBe(published.references[0]!.heading);
   expect(published.references[1]!.reference).toBe(published.references[1]!.heading);
+  expect(published.references.map((reference) => reference.tag)).toEqual(["H4", "H3"]);
   expect(published.references[0]!.reference).not.toBe(published.references[1]!.reference);
   expect(published.uniqueIds).toBe(true);
   expect(published.hasEditorMarkup).toBe(false);

@@ -303,6 +303,7 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
             "alt",
             "format",
             "formatBlock",
+            "setBlockFormat",
             "html",
             "media",
             "seo",

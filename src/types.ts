@@ -37,6 +37,14 @@ export interface SeoState {
 }
 export type BlockFormat = "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol";
 
+export interface SetBlockFormatOperation {
+  type: "setBlockFormat";
+  /** Stable anchor for one authored sibling region. */
+  nodeId: string;
+  /** Final target formats, relative to the authored source. */
+  targets: Array<{ nodeId: string; value: BlockFormat }>;
+}
+
 export interface Point {
   x: number;
   y: number;
@@ -87,6 +95,7 @@ export type RegionOrder = "original" | "swapped";
 
 export type PageOperation =
   | { type: "text"; nodeId: string; value: string }
+  | SetBlockFormatOperation
   | {
       type: "format";
       nodeId: string;

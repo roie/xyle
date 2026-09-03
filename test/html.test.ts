@@ -16,7 +16,7 @@ import {
   replayGroupOrder,
 } from "../src/structural.ts";
 import { sourceTargetIdentity } from "../src/identity.ts";
-import type { PageChange, SnapshotOperation, XyleDigest } from "../src/types.ts";
+import type { BlockFormat, PageChange, SnapshotOperation, XyleDigest } from "../src/types.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -700,6 +700,218 @@ describe("patchHtml text fidelity", () => {
       ]),
     ).resolves.toBe(
       `<p><strong>Serving Edmonton and surrounding areas<br />with calm, capable help for<br />the leaks that cannot wait.</strong></p>`,
+    );
+  });
+
+  const blockFormats: BlockFormat[] = ["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol"];
+  const blockFormatCases = blockFormats.flatMap((source) =>
+    blockFormats.map((target) => ({ source, target })),
+  );
+
+  it.each(blockFormatCases)(
+    "sets $source to the final $target target",
+    async ({ source: sourceFormat, target }) => {
+      const inline = "Text <strong>with emphasis</strong>";
+      const source =
+        sourceFormat === "ul" || sourceFormat === "ol"
+          ? `<${sourceFormat} class="authored-list" aria-label="Items"><li class="authored-item">${inline}</li></${sourceFormat}>`
+          : `<${sourceFormat} class="authored-block">${inline}</${sourceFormat}>`;
+      const candidates = [...analyzePage(source).candidates.values()];
+      const nodeId = candidates[0]!.id;
+      const output = await patchAndGetText(source, [
+        { type: "setBlockFormat", nodeId, targets: [{ nodeId, value: target }] },
+      ]);
+      if (target === "ul" || target === "ol") {
+        const expected =
+          sourceFormat === "ul" || sourceFormat === "ol"
+            ? `<${target} class="authored-list" aria-label="Items"><li class="authored-item">${inline}</li></${target}>`
+            : `<${target}><li class="authored-block">${inline}</li></${target}>`;
+        expect(output).toBe(expected);
+      } else {
+        const className =
+          sourceFormat === "ul" || sourceFormat === "ol" ? "authored-item" : "authored-block";
+        expect(output).toBe(`<${target} class="${className}">${inline}</${target}>`);
+      }
+    },
+  );
+
+  it("combines canonical block and inline formatting on one source block", async () => {
+    const source = `<p class="lead">Hello world</p>`;
+    const candidate = [...analyzePage(source).candidates.values()][0]!;
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "setBlockFormat",
+          nodeId: candidate.id,
+          targets: [{ nodeId: candidate.id, value: "ul" }],
+        },
+        {
+          type: "format",
+          nodeId: candidate.id,
+          value: "bold",
+          start: 0,
+          end: 5,
+          sourceStart: candidate.segments[0]!.start,
+          sourceEnd: candidate.segments[0]!.start + 5,
+        },
+      ]),
+    ).resolves.toBe(`<ul><li class="lead"><strong>Hello</strong> world</li></ul>`);
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "text",
+          nodeId: `${candidate.id}#0`,
+          value: "Updated text",
+        },
+        {
+          type: "setBlockFormat",
+          nodeId: candidate.id,
+          targets: [{ nodeId: candidate.id, value: "ol" }],
+        },
+      ]),
+    ).resolves.toBe(`<ol><li class="lead">Updated text</li></ol>`);
+  });
+
+  it("combines an authored-list split with inline formatting in the same list", async () => {
+    const source = `<ul class="steps"><li>Alpha</li><li>Beta</li></ul>`;
+    const items = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.tag === "li",
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "format",
+          nodeId: items[0]!.id,
+          value: "bold",
+          start: 0,
+          end: 5,
+          sourceStart: items[0]!.segments[0]!.start,
+          sourceEnd: items[0]!.segments[0]!.end,
+        },
+        {
+          type: "setBlockFormat",
+          nodeId: items[0]!.id,
+          targets: [{ nodeId: items[1]!.id, value: "h2" }],
+        },
+      ]),
+    ).resolves.toBe(`<ul class="steps"><li><strong>Alpha</strong></li></ul>\n<h2>Beta</h2>`);
+  });
+
+  it("preserves boundary comments and unique wrapper IDs when splitting an authored list", async () => {
+    const source = `<ul id="steps" class="steps"><!-- head --><li>A</li><!-- keep --><li data-kind="focus">B</li><li>C</li><!-- tail --></ul>`;
+    const items = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.tag === "li",
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "setBlockFormat",
+          nodeId: items[0]!.id,
+          targets: [{ nodeId: items[1]!.id, value: "h2" }],
+        },
+      ]),
+    ).resolves.toBe(
+      `<ul id="steps" class="steps"><!-- head --><li>A</li></ul><!-- keep --><h2 data-kind="focus">B</h2>\n<ul class="steps"><li>C</li><!-- tail --></ul>`,
+    );
+  });
+
+  it("rejects list grouping across unsupported sibling content", async () => {
+    const source = `<main><p>A</p><img src="/divider.png" alt=""><p>B</p></main>`;
+    const paragraphs = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.tag === "p",
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "setBlockFormat",
+          nodeId: paragraphs[0]!.id,
+          targets: paragraphs.map((candidate) => ({ nodeId: candidate.id, value: "ul" })),
+        },
+      ]),
+    ).rejects.toThrow(/unsupported sibling content/);
+
+    const orphanSource = `<main><p>A</p>authored separator<p>B</p></main>`;
+    const orphanParagraphs = [...analyzePage(orphanSource).candidates.values()].filter(
+      (candidate) => candidate.tag === "p",
+    );
+    await expect(
+      patchAndGetText(orphanSource, [
+        {
+          type: "setBlockFormat",
+          nodeId: orphanParagraphs[0]!.id,
+          targets: orphanParagraphs.map((candidate) => ({
+            nodeId: candidate.id,
+            value: "ol",
+          })),
+        },
+      ]),
+    ).rejects.toThrow(/unsupported sibling content/);
+  });
+
+  it("formats a later root block in an implicit body", async () => {
+    const source = `<p>A</p><p>B</p>`;
+    const paragraphs = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.tag === "p",
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "setBlockFormat",
+          nodeId: paragraphs[0]!.id,
+          targets: [{ nodeId: paragraphs[1]!.id, value: "h2" }],
+        },
+      ]),
+    ).resolves.toBe(`<p>A</p><h2>B</h2>`);
+  });
+
+  it("formats a scalar region after unsupported sibling content", async () => {
+    const source = `<main><p>A</p><img src="/divider.png" alt=""><p>B</p></main>`;
+    const paragraphs = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.tag === "p",
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "setBlockFormat",
+          nodeId: paragraphs[1]!.id,
+          targets: [{ nodeId: paragraphs[1]!.id, value: "h3" }],
+        },
+      ]),
+    ).resolves.toBe(`<main><p>A</p><img src="/divider.png" alt=""><h3>B</h3></main>`);
+  });
+
+  it("rejects authored lists with unsupported non-item elements", async () => {
+    const source = `<ul><li>A</li><template>Keep me</template><li>B</li></ul>`;
+    const items = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.tag === "li",
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "setBlockFormat",
+          nodeId: items[0]!.id,
+          targets: [{ nodeId: items[0]!.id, value: "h2" }],
+        },
+      ]),
+    ).rejects.toThrow(/unsupported non-item content/);
+  });
+
+  it("splits an authored list around exactly the selected target", async () => {
+    const source = `<ul class="steps" aria-label="Steps"><li>A</li><li data-kind="focus">B</li><li>C</li></ul>`;
+    const items = [...analyzePage(source).candidates.values()].filter(
+      (candidate) => candidate.tag === "li",
+    );
+    const anchor = items[0]!.id;
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "setBlockFormat",
+          nodeId: anchor,
+          targets: [{ nodeId: items[1]!.id, value: "h2" }],
+        },
+      ]),
+    ).resolves.toBe(
+      `<ul class="steps" aria-label="Steps"><li>A</li></ul>\n<h2 data-kind="focus">B</h2>\n<ul class="steps" aria-label="Steps"><li>C</li></ul>`,
     );
   });
 

@@ -107,15 +107,27 @@ export async function editNode(page: Page, nodeId: string): Promise<void> {
 
 export async function setSelection(
   page: Page,
-  opts: { nodeId: string; startOffset?: number; endOffset?: number; selectAll?: boolean },
+  opts: {
+    nodeId: string;
+    endNodeId?: string;
+    startOffset?: number;
+    endOffset?: number;
+    selectAll?: boolean;
+  },
 ): Promise<void> {
-  await page.evaluate(({ nodeId, startOffset, endOffset, selectAll }) => {
+  await page.evaluate(({ nodeId, endNodeId, startOffset, endOffset, selectAll }) => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
     const win = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentWindow!;
     const el = doc.querySelector(`[data-xyle-node="${nodeId}"]`) as HTMLElement;
+    const endElement = endNodeId
+      ? (doc.querySelector(`[data-xyle-node="${endNodeId}"]`) as HTMLElement)
+      : el;
     const selection = win.getSelection()!;
     const range = doc.createRange();
-    if (selectAll) {
+    if (selectAll && endNodeId) {
+      range.setStart(el, 0);
+      range.setEnd(endElement, endElement.childNodes.length);
+    } else if (selectAll) {
       range.selectNodeContents(el);
     } else {
       const textNodes: Text[] = [];

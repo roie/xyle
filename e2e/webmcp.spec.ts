@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
   clickOutsideToCommit,
+  currentOps,
   editNode,
   focusCaret,
   loginAndOpenEditor,
@@ -193,6 +194,16 @@ test.describe("WebMCP editor tools", () => {
     ]);
     await page.keyboard.press("Control+z");
     await expect(headingLocator).toHaveJSProperty("tagName", "H1");
+    const restoredFormattingOps = await currentOps(page);
+    expect(restoredFormattingOps).toEqual([
+      expect.objectContaining({
+        op: expect.objectContaining({
+          type: "html",
+          value: expect.stringContaining("<strong"),
+        }),
+      }),
+    ]);
+    await expect(headingLocator.locator("strong")).toHaveText(heading!.preview);
     await expect(invokeTool(page, "list_changes", {})).resolves.toMatchObject([
       { type: "html", after: expect.stringContaining("<h1") },
     ]);
@@ -693,6 +704,124 @@ test.describe("WebMCP editor tools", () => {
     expect(await opsCount(page)).toBe(0);
   });
 
+  test("rejects a WebMCP list selection across unsupported sibling content", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/formatting-matrix.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const before = content.find((item) => item.preview === "Before divider");
+    const after = content.find((item) => item.preview === "After divider");
+    const beforeOrphan = content.find((item) => item.preview === "Before orphan text");
+    const afterOrphan = content.find((item) => item.preview === "After orphan text");
+    const unsafeListItem = content.find((item) => item.preview === "Unsafe list item");
+    expect(before?.id).toBeTruthy();
+    expect(after?.id).toBeTruthy();
+    expect(beforeOrphan?.id).toBeTruthy();
+    expect(afterOrphan?.id).toBeTruthy();
+    expect(unsafeListItem?.id).toBeTruthy();
+
+    await expect(
+      invokeTool(page, "update_list", {
+        ids: [before!.id, after!.id],
+        format: "unordered-list",
+      }),
+    ).resolves.toEqual({ error: "Selected blocks must share one authored formatting region" });
+    await expect(
+      invokeTool(page, "update_list", {
+        ids: [beforeOrphan!.id, afterOrphan!.id],
+        format: "unordered-list",
+      }),
+    ).resolves.toEqual({ error: "Selected blocks must share one authored formatting region" });
+    await expect(
+      invokeTool(page, "update_formatting", {
+        id: unsafeListItem!.id,
+        format: "heading-2",
+      }),
+    ).resolves.toEqual({ error: "List contains unsupported non-item content" });
+    expect(await opsCount(page)).toBe(0);
+    const preview = page.frameLocator("#xyle-preview");
+    await expect(preview.locator(`[data-xyle-node="${before!.id}"]`)).toHaveJSProperty(
+      "tagName",
+      "P",
+    );
+    await expect(preview.getByRole("img", { name: "Divider" })).toBeVisible();
+    await expect(preview.locator(`[data-xyle-node="${after!.id}"]`)).toHaveJSProperty(
+      "tagName",
+      "P",
+    );
+  });
+
+  test("reconciles authored list formatting in one WebMCP change set", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/formatting-matrix.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const listItem = content.find((item) => item.preview === "Beta item");
+    const paragraph = content.find((item) => item.preview === "Plain block");
+    expect(listItem?.id).toBeTruthy();
+    expect(paragraph?.id).toBeTruthy();
+    const preview = page.frameLocator("#xyle-preview");
+    const listItemLocator = preview.locator(`[data-xyle-node="${listItem!.id}"]`);
+    const paragraphLocator = preview.locator(`[data-xyle-node="${paragraph!.id}"]`);
+
+    await expect(
+      invokeTool(page, "update_formatting", { id: listItem!.id, format: "heading-2" }),
+    ).resolves.toMatchObject({ id: listItem!.id, format: "heading-2" });
+    await expect(listItemLocator).toHaveJSProperty("tagName", "H2");
+    await expect(
+      invokeTool(page, "update_formatting", { id: listItem!.id, format: "unordered-list" }),
+    ).resolves.toMatchObject({ id: listItem!.id, format: "unordered-list" });
+    await expect(listItemLocator).toHaveJSProperty("tagName", "LI");
+    await expect(invokeTool(page, "list_changes", {})).resolves.toEqual([]);
+
+    const result = (await invokeTool(page, "apply_change_set", {
+      label: "Reshape two blocks",
+      changes: [
+        { type: "formatting", id: listItem!.id, format: "ordered-list" },
+        { type: "formatting", id: paragraph!.id, format: "heading-4" },
+      ],
+    })) as { changeSetId: string; changes: Array<{ changeSetId?: string }> };
+    expect(result.changes).toHaveLength(2);
+    await expect(listItemLocator.locator("..")).toHaveJSProperty("tagName", "OL");
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "H4");
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual([
+      "setBlockFormat",
+      "setBlockFormat",
+    ]);
+
+    await page.keyboard.press("Control+z");
+    await expect(listItemLocator.locator("..")).toHaveJSProperty("tagName", "UL");
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "P");
+    expect(await opsCount(page)).toBe(0);
+
+    await page.keyboard.press("Control+Shift+z");
+    await expect(listItemLocator.locator("..")).toHaveJSProperty("tagName", "OL");
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "H4");
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/formatting-matrix.html");
+    await expect(page.locator("ol.authored-list > li")).toHaveText("Beta item");
+    await expect(page.getByRole("heading", { level: 4, name: "Plain block" })).toBeVisible();
+  });
+
   test("formats a safely mapped text block as a list", async ({ page, browserName }) => {
     test.skip(
       browserName !== "chromium" || test.info().project.name !== "webmcp",
@@ -731,6 +860,12 @@ test.describe("WebMCP editor tools", () => {
     await expect(
       invokeTool(page, "update_formatting", { id: paragraph!.id, format: "unordered-list" }),
     ).resolves.toMatchObject({ id: paragraph!.id, format: "unordered-list" });
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "LI");
+    expect(await opsCount(page)).toBe(1);
+
+    await expect(
+      invokeTool(page, "update_formatting", { id: paragraph!.id, format: "paragraph" }),
+    ).resolves.toMatchObject({ id: paragraph!.id, format: "paragraph" });
     await expect(paragraphLocator).toHaveJSProperty("tagName", "P");
     await expect(invokeTool(page, "list_changes", {})).resolves.toEqual([]);
     expect(await opsCount(page)).toBe(0);
@@ -739,11 +874,16 @@ test.describe("WebMCP editor tools", () => {
       invokeTool(page, "update_formatting", { id: paragraph!.id, format: "ordered-list" }),
     ).resolves.toMatchObject({ id: paragraph!.id, format: "ordered-list" });
     await expect(paragraphLocator.locator("..")).toHaveJSProperty("tagName", "OL");
-    const orderedListChangeId = await firstChangeId(page, "html");
     await expect(
-      invokeTool(page, "revert_change", { changeId: orderedListChangeId }),
+      invokeTool(page, "update_formatting", { id: paragraph!.id, format: "heading-3" }),
+    ).resolves.toMatchObject({ id: paragraph!.id, format: "heading-3" });
+    await expect(paragraphLocator).toHaveJSProperty("tagName", "H3");
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["setBlockFormat"]);
+    const headingChangeId = await firstChangeId(page, "html");
+    await expect(
+      invokeTool(page, "revert_change", { changeId: headingChangeId }),
     ).resolves.toMatchObject({
-      changeId: orderedListChangeId,
+      changeId: headingChangeId,
       undone: true,
     });
     await expect(paragraphLocator).toHaveJSProperty("tagName", "P");
@@ -1041,6 +1181,29 @@ test.describe("WebMCP editor tools", () => {
     }, duplicate.id);
     expect(titleId).toBeTruthy();
     expect(imageId).toBeTruthy();
+    await expect(
+      invokeTool(page, "update_formatting", { id: titleId, format: "heading-3" }),
+    ).resolves.toMatchObject({ id: titleId, format: "heading-3" });
+    const formattingChange = (
+      (await invokeTool(page, "list_changes", {})) as Array<{
+        changeId: string;
+        elementId: string;
+        type: string;
+        before: string;
+        after: string;
+      }>
+    ).find((change) => change.elementId === titleId && change.type === "html");
+    expect(formattingChange).toMatchObject({
+      before: expect.stringContaining("<h2"),
+      after: expect.stringContaining("<h3"),
+    });
+    await expect(
+      invokeTool(page, "revert_change", { changeId: formattingChange!.changeId }),
+    ).resolves.toMatchObject({ undone: true });
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${titleId}"]`),
+    ).toHaveJSProperty("tagName", "H2");
+    await invokeTool(page, "update_formatting", { id: titleId, format: "heading-3" });
     await invokeTool(page, "update_text", { id: titleId, text: "Duplicated service" });
     await invokeTool(page, "update_media", {
       id: imageId,
@@ -1062,7 +1225,9 @@ test.describe("WebMCP editor tools", () => {
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     await page.goto("/groups.html");
     await expect(page.locator("article")).toHaveCount(3);
-    await expect(page.getByText("Duplicated service")).toHaveCount(1);
+    await expect(page.getByRole("heading", { level: 3, name: "Duplicated service" })).toHaveCount(
+      1,
+    );
   });
 
   test("sets a physical region order through WebMCP", async ({ page, browserName }) => {

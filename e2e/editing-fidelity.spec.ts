@@ -415,8 +415,8 @@ test.describe("editing fidelity gate", () => {
       .locator(`[data-xyle-node="${paragraphId}"]`);
     await expect(changedParagraph).toHaveJSProperty("tagName", "H2");
     expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual([
-      "formatBlock",
-      "formatBlock",
+      "setBlockFormat",
+      "setBlockFormat",
     ]);
 
     await page.locator("#xyle-changes").click();

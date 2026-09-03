@@ -991,17 +991,11 @@ test.describe("changes drawer and undo", () => {
     expect(firstId).toBeTruthy();
     expect(secondId).toBeTruthy();
     await editNode(page, firstId!);
-    await page.evaluate((id) => {
-      const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
-      const doc = frame.contentDocument!;
-      const el = doc.querySelector(`[data-xyle-node="${id}"]`)!;
-      const selection = doc.getSelection()!;
-      const range = doc.createRange();
-      range.selectNodeContents(el);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      doc.dispatchEvent(new Event("selectionchange"));
-    }, firstId);
+    await setSelection(page, {
+      nodeId: firstId!,
+      endNodeId: secondId!,
+      selectAll: true,
+    });
     const blockStyle = page.locator('.xyle-format-tools select[aria-label="Block style"]');
     await expect(blockStyle).toBeVisible();
     await blockStyle.selectOption("unordered-list");
@@ -1021,16 +1015,7 @@ test.describe("changes drawer and undo", () => {
           .evaluate((element) => element.tagName),
       )
       .toBe("LI");
-    await expect
-      .poll(async () =>
-        page.evaluate(() =>
-          (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument
-            ?.getSelection()
-            ?.toString(),
-        ),
-      )
-      .toContain("The first Xyle edits");
-    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["toggleList"]);
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["setBlockFormat"]);
 
     await page.locator("#xyle-changes").click();
     const change = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
@@ -1068,7 +1053,7 @@ test.describe("changes drawer and undo", () => {
     await setSelection(page, { nodeId: firstId!, selectAll: true });
     const blockStyle = page.locator('.xyle-format-tools select[aria-label="Block style"]');
     await expect(blockStyle).toHaveValue("unordered-list");
-    await expect(blockStyle.locator('option[value="heading-1"]')).toHaveCount(0);
+    await expect(blockStyle.locator('option[value="heading-1"]')).toHaveCount(1);
     await blockStyle.selectOption("paragraph");
 
     const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${firstId}"]`);
@@ -1078,6 +1063,280 @@ test.describe("changes drawer and undo", () => {
     await expect.poll(async () => opsCount(page)).toBe(0);
   });
 
+  test("keeps one canonical change through repeated paragraph, heading, and list transitions", async ({
+    page,
+  }) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const id = await findNodeByText(page, "The first Xyle edits");
+    expect(id).toBeTruthy();
+    const transitions = [
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "h5",
+      "h6",
+      "ul",
+      "h2",
+      "ol",
+      "h3",
+      "p",
+      "ul",
+      "ol",
+      "p",
+    ] as const;
+    const optionFor = {
+      p: "paragraph",
+      h1: "heading-1",
+      h2: "heading-2",
+      h3: "heading-3",
+      h4: "heading-4",
+      h5: "heading-5",
+      h6: "heading-6",
+      ul: "unordered-list",
+      ol: "ordered-list",
+    } as const;
+    const target = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${id}"]`);
+
+    for (const transition of transitions) {
+      await editNode(page, id!);
+      await setSelection(page, { nodeId: id!, selectAll: true });
+      await page
+        .locator('.xyle-format-tools select[aria-label="Block style"]')
+        .selectOption(optionFor[transition]);
+      if (transition === "ul" || transition === "ol") {
+        await expect(target).toHaveJSProperty("tagName", "LI");
+        await expect(target.locator("..")).toHaveJSProperty("tagName", transition.toUpperCase());
+      } else {
+        await expect(target).toHaveJSProperty("tagName", transition.toUpperCase());
+      }
+      const operations = await currentOps(page);
+      if (transition === "p") expect(operations).toHaveLength(0);
+      else {
+        expect(operations).toHaveLength(1);
+        expect(operations[0]?.op.type).toBe("setBlockFormat");
+      }
+    }
+
+    await page.keyboard.press("Control+z");
+    await expect(target).toHaveJSProperty("tagName", "LI");
+    await expect(target.locator("..")).toHaveJSProperty("tagName", "OL");
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    await page.keyboard.press("Control+Shift+z");
+    await expect(target).toHaveJSProperty("tagName", "P");
+    await expect.poll(async () => opsCount(page)).toBe(0);
+
+    await editNode(page, id!);
+    await setSelection(page, { nodeId: id!, selectAll: true });
+    await page
+      .locator('.xyle-format-tools select[aria-label="Block style"]')
+      .selectOption("heading-4");
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/about.html");
+    await expect(
+      page.getByRole("heading", { level: 4, name: /The first Xyle edits/ }),
+    ).toBeVisible();
+  });
+
+  test("merges adjacent list items created in separate actions before publication", async ({
+    page,
+  }) => {
+    await loginAndOpenEditor(page, "/formatting-matrix.html");
+    const firstId = await findNodeByText(page, "Plain block");
+    const secondId = await findNodeByText(page, "Heading block");
+    expect(firstId).toBeTruthy();
+    expect(secondId).toBeTruthy();
+
+    for (const id of [firstId!, secondId!]) {
+      await editNode(page, id);
+      await setSelection(page, { nodeId: id, selectAll: true });
+      await page
+        .locator('.xyle-format-tools select[aria-label="Block style"]')
+        .selectOption("ordered-list");
+    }
+
+    const preview = page.frameLocator("#xyle-preview");
+    const draftList = preview.locator("main > ol");
+    await expect(draftList).toHaveCount(1);
+    await expect(draftList.locator(":scope > li")).toHaveCount(2);
+    await expect(
+      draftList.evaluate((list) =>
+        [...list.childNodes]
+          .filter((node) => node.nodeType === Node.COMMENT_NODE)
+          .map((node) => node.textContent?.trim()),
+      ),
+    ).resolves.toContain("scalar separator");
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["setBlockFormat"]);
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/formatting-matrix.html");
+    const publishedList = page.locator("main > ol");
+    await expect(publishedList).toHaveCount(1);
+    await expect(publishedList.locator(":scope > li")).toHaveCount(2);
+    expect(await publishedList.evaluate((list) => list.innerHTML)).toContain(
+      "<!-- scalar separator -->",
+    );
+  });
+
+  test("publishes a block after an unsupported sibling without crossing the boundary", async ({
+    page,
+  }) => {
+    await loginAndOpenEditor(page, "/formatting-matrix.html");
+    const beforeOrphanId = await findNodeByText(page, "Before orphan text");
+    const afterOrphanId = await findNodeByText(page, "After orphan text");
+    expect(beforeOrphanId).toBeTruthy();
+    expect(afterOrphanId).toBeTruthy();
+    await editNode(page, beforeOrphanId!);
+    await setSelection(page, {
+      nodeId: beforeOrphanId!,
+      endNodeId: afterOrphanId!,
+      selectAll: true,
+    });
+    await expect(page.locator('.xyle-format-tools select[aria-label="Block style"]')).toHaveCount(
+      0,
+    );
+
+    const id = await findNodeByText(page, "After divider");
+    expect(id).toBeTruthy();
+    await editNode(page, id!);
+    await setSelection(page, { nodeId: id!, selectAll: true });
+    await page
+      .locator('.xyle-format-tools select[aria-label="Block style"]')
+      .selectOption("heading-3");
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${id}"]`),
+    ).toHaveJSProperty("tagName", "H3");
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/formatting-matrix.html");
+    await expect(page.getByRole("img", { name: "Divider" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 3, name: "After divider" })).toBeVisible();
+  });
+
+  test("restores authored list attributes after all items become scalar blocks", async ({
+    page,
+  }) => {
+    await loginAndOpenEditor(page, "/formatting-matrix.html");
+    const firstId = await findNodeByText(page, "Alpha item");
+    const middleId = await findNodeByText(page, "Beta item");
+    const lastId = await findNodeByText(page, "Gamma item");
+    expect(firstId).toBeTruthy();
+    expect(middleId).toBeTruthy();
+    expect(lastId).toBeTruthy();
+
+    await editNode(page, firstId!);
+    await setSelection(page, {
+      nodeId: firstId!,
+      endNodeId: lastId!,
+      selectAll: true,
+    });
+    await page
+      .locator('.xyle-format-tools select[aria-label="Block style"]')
+      .selectOption("paragraph");
+    const preview = page.frameLocator("#xyle-preview");
+    await expect(preview.locator("ul.authored-list")).toHaveCount(0);
+
+    for (const id of [firstId!, lastId!]) {
+      await editNode(page, id);
+      await setSelection(page, { nodeId: id, selectAll: true });
+      await page
+        .locator('.xyle-format-tools select[aria-label="Block style"]')
+        .selectOption("unordered-list");
+    }
+    const restoredLists = preview.locator("ul.authored-list");
+    await expect(restoredLists).toHaveCount(2);
+    await expect(restoredLists.first()).toHaveAttribute("id", "formatting-examples");
+    await expect(restoredLists.last()).not.toHaveAttribute("id", "formatting-examples");
+    await expect(restoredLists.first()).toHaveAttribute("aria-label", "Formatting examples");
+    await expect(restoredLists.first()).toContainText("Alpha item");
+    await expect(restoredLists.last()).toContainText("Gamma item");
+    expect(await restoredLists.first().evaluate((list) => list.innerHTML)).toContain(
+      "<!-- authored list start -->",
+    );
+    expect(await restoredLists.last().evaluate((list) => list.innerHTML)).toContain(
+      "<!-- authored list end -->",
+    );
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/formatting-matrix.html");
+    const publishedLists = page.locator("ul.authored-list");
+    await expect(publishedLists).toHaveCount(2);
+    await expect(publishedLists.first()).toHaveAttribute("id", "formatting-examples");
+    expect(await publishedLists.first().evaluate((list) => list.innerHTML)).toContain(
+      "<!-- authored list start -->",
+    );
+    expect(await publishedLists.last().evaluate((list) => list.innerHTML)).toContain(
+      "<!-- authored list end -->",
+    );
+  });
+
+  test("reconciles repeated authored-list transitions and preserves wrapper attributes", async ({
+    page,
+  }) => {
+    await loginAndOpenEditor(page, "/formatting-matrix.html");
+    const id = await findNodeByText(page, "Beta item");
+    expect(id).toBeTruthy();
+    const preview = page.frameLocator("#xyle-preview");
+    const target = preview.locator(`[data-xyle-node="${id}"]`);
+    const selectFormat = async (format: string): Promise<void> => {
+      await editNode(page, id!);
+      await setSelection(page, { nodeId: id!, selectAll: true });
+      await page
+        .locator('.xyle-format-tools select[aria-label="Block style"]')
+        .selectOption(format);
+    };
+
+    await selectFormat("heading-2");
+    await expect(target).toHaveJSProperty("tagName", "H2");
+    await expect(preview.locator("ul.authored-list")).toHaveCount(2);
+    await expect
+      .poll(() =>
+        preview.locator("body").evaluate((body) => {
+          const comments: string[] = [];
+          const walker = body.ownerDocument.createTreeWalker(
+            body,
+            body.ownerDocument.defaultView!.NodeFilter.SHOW_COMMENT,
+          );
+          while (walker.nextNode()) comments.push(walker.currentNode.textContent?.trim() ?? "");
+          return comments;
+        }),
+      )
+      .toEqual(expect.arrayContaining(["authored list start", "authored list end"]));
+    await selectFormat("ordered-list");
+    await expect(target).toHaveJSProperty("tagName", "LI");
+    await expect(target.locator("..")).toHaveJSProperty("tagName", "OL");
+    await selectFormat("paragraph");
+    await expect(target).toHaveJSProperty("tagName", "P");
+    await selectFormat("heading-6");
+    await expect(target).toHaveJSProperty("tagName", "H6");
+    await selectFormat("unordered-list");
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await expect(preview.locator("ul.authored-list")).toHaveCount(1);
+    await expect(
+      preview.locator('ul.authored-list[aria-label="Formatting examples"] > li'),
+    ).toHaveCount(3);
+
+    await page.keyboard.press("Control+z");
+    await expect(target).toHaveJSProperty("tagName", "H6");
+    await expect.poll(async () => opsCount(page)).toBe(1);
+    await page.keyboard.press("Control+Shift+z");
+    await expect(target).toHaveJSProperty("tagName", "LI");
+    await expect.poll(async () => opsCount(page)).toBe(0);
+
+    await selectFormat("ordered-list");
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/formatting-matrix.html");
+    await expect(page.locator('ul.authored-list[aria-label="Formatting examples"]')).toHaveCount(2);
+    const selectedList = page.locator('ol.authored-list[aria-label="Formatting examples"]');
+    await expect(selectedList).toHaveCount(1);
+    await expect(selectedList.locator(":scope > li")).toHaveText("Beta item");
+  });
+
   test("publishes a human-created numbered list", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const firstId = await findNodeByText(page, "The first Xyle edits");
@@ -1085,7 +1344,11 @@ test.describe("changes drawer and undo", () => {
     expect(firstId).toBeTruthy();
     expect(secondId).toBeTruthy();
     await editNode(page, firstId!);
-    await setSelection(page, { nodeId: firstId!, selectAll: true });
+    await setSelection(page, {
+      nodeId: firstId!,
+      endNodeId: secondId!,
+      selectAll: true,
+    });
     await page
       .locator('.xyle-format-tools select[aria-label="Block style"]')
       .selectOption("ordered-list");
@@ -1094,6 +1357,7 @@ test.describe("changes drawer and undo", () => {
     await expect(first).toHaveJSProperty("tagName", "LI");
     await expect(second).toHaveJSProperty("tagName", "LI");
     await expect(first.locator("..")).toHaveJSProperty("tagName", "OL");
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["setBlockFormat"]);
 
     await page.locator("#xyle-changes").click();
     const change = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
