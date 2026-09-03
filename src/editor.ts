@@ -20,6 +20,7 @@ import {
   type MediaUpdateResult,
   type SeoUpdateResult,
 } from "./webmcp.ts";
+import { XYLE_LOGO_DATA_URL } from "./brand.ts";
 import { cleanInlineHtml, inlineFormatState, toggleInlineFormat } from "./formatting.ts";
 import { stableIdentity } from "./identity.ts";
 import {
@@ -6396,7 +6397,7 @@ function buildChrome(): void {
   <div id="xyle-flash" role="status" aria-live="polite"></div>
 
   <div id="xyle-control-dock" data-hidden aria-label="Xyle editor controls">
-    <button id="xyle-dock-handle" type="button" aria-label="Show Xyle controls" aria-expanded="false">Xyle <span id="xyle-dock-chevron" aria-hidden="true">⌃</span></button>
+    <button id="xyle-dock-handle" type="button" aria-label="Show Xyle controls" aria-expanded="false"><img class="xyle-brand-logo" src="${XYLE_LOGO_DATA_URL}" alt=""> <span>Xyle</span> <span id="xyle-dock-chevron" aria-hidden="true">⌃</span></button>
     <div id="xyle-control-hitbox" aria-hidden="true"></div>
     <div id="xyle-control-bar">
       <div id="xyle-bar-left">

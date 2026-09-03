@@ -81,15 +81,11 @@ main > section {
   text-decoration: none;
 }
 
-.wordmark span {
-  display: grid;
+.wordmark img {
+  display: block;
   width: 2.25rem;
   height: 2.25rem;
-  place-items: center;
-  background: var(--blue);
-  color: var(--white);
-  font: 900 0.68rem/1 var(--mono);
-  letter-spacing: -0.08em;
+  object-fit: contain;
 }
 
 .wordmark strong {

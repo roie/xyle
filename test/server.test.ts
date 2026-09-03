@@ -89,6 +89,8 @@ describe("auth", () => {
     const html = await res.text();
     expect(html).toContain("Open your site editor");
     expect(html).toContain("Sign in to Xyle");
+    expect(html).toContain('<img src="data:image/png;base64,');
+    expect(html).not.toContain("<svg");
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('aria-invalid="false"');
     expect(html).not.toContain("autofocus");

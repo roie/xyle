@@ -490,6 +490,8 @@ describe("hosted edit entry", () => {
     const html = await response.text();
     expect(html).toContain("Open your site editor");
     expect(html).toContain("Sign in to Xyle");
+    expect(html).toContain('<img src="data:image/png;base64,');
+    expect(html).not.toContain("<svg");
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('aria-describedby="login-description login-error"');
     expect(html).not.toContain("autofocus");

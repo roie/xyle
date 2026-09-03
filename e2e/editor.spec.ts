@@ -47,6 +47,7 @@ test.describe("editor shell and preview", () => {
   test("unauthenticated /edit shows login", async ({ page }) => {
     await page.goto("/edit");
     await expect(page.locator("#key")).toBeVisible();
+    await expect(page.locator('.xyle-logo img[src^="data:image/png;base64,"]')).toBeVisible();
   });
 
   test("login with the editor key opens the shell", async ({ page }) => {
@@ -58,6 +59,9 @@ test.describe("editor shell and preview", () => {
     await page.click("button[type=submit]");
     await page.waitForURL(/\/edit/);
     await waitForEditorReady(page);
+    await expect(
+      page.locator('#xyle-dock-handle img.xyle-brand-logo[src^="data:image/png;base64,"]'),
+    ).toBeVisible();
   });
 
   test("preview renders styles and assets through the injected base", async ({ page }) => {

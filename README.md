@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/brand/xyle-logo.png" alt="" width="96"></p>
+
 # Xyle
 
 **Xyle is an open-source visual editor for non-technical owners of static websites.**

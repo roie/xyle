@@ -1,14 +1,15 @@
+import { XYLE_LOGO_DATA_URL } from "../src/brand.ts";
 import { authenticated, type Env } from "./_auth";
 
 const loginPage = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Xyle — Sign in</title><style>
+<title>Xyle — Sign in</title><link rel="icon" href="${XYLE_LOGO_DATA_URL}"><style>
 :root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#101311;color:#e7ebe8}
 *{box-sizing:border-box}
 body{display:grid;place-items:center;min-height:100svh;margin:0;padding:1rem;background:#101311}
 main{width:min(100%,26rem)}
-.xyle-mark{display:inline-flex;align-items:center;gap:.65rem;margin-bottom:1.5rem;color:#f2f3ef;font-size:.83rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
-.xyle-mark svg{width:1.75rem;height:1.75rem;padding:.35rem;border:1px solid #667a6166;border-radius:6px;background:#667a6126;color:#a1b69a;stroke:currentColor;stroke-width:1.8;fill:none}
+.xyle-logo{display:inline-flex;align-items:center;gap:.65rem;margin-bottom:1.5rem;color:#f2f3ef;font-size:.83rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.xyle-logo img{width:1.75rem;height:1.75rem;object-fit:contain}
 form{display:grid;gap:1.15rem;padding:clamp(1.25rem,7vw,2rem);border:1px solid #2b342e;border-radius:12px;background:#171b18}
 h1{margin:0;color:#e7ebe8;font-size:clamp(1.65rem,8vw,2.15rem);line-height:1.05;letter-spacing:-.045em}
 .description{margin:-.45rem 0 .2rem;color:#a5a8a0;font-size:.95rem;line-height:1.55}
@@ -25,10 +26,10 @@ button:active{transform:translateY(1px)}
 button:focus-visible{outline:3px solid #667a6166;outline-offset:3px}
 button:disabled{cursor:wait;opacity:.7}
 .help{margin:.25rem 0 0;color:#777b73;font-size:.75rem;line-height:1.5;text-align:center}
-@media(max-width:22rem){body{padding:.75rem}form{border-radius:10px}.xyle-mark{margin-left:.25rem;margin-bottom:1rem}}
+@media(max-width:22rem){body{padding:.75rem}form{border-radius:10px}.xyle-logo{margin-left:.25rem;margin-bottom:1rem}}
 @media(prefers-reduced-motion:reduce){button{transition:none}}
 </style></head><body><main>
-<div class="xyle-mark" aria-label="Xyle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5l12 14M18 5L6 19"/></svg><span>Xyle</span></div>
+<div class="xyle-logo" aria-label="Xyle"><img src="${XYLE_LOGO_DATA_URL}" alt=""><span>Xyle</span></div>
 <form id="login" novalidate>
 <h1>Open your site editor</h1>
 <p id="login-description" class="description">Enter the editor key for this site to make and publish content changes.</p>

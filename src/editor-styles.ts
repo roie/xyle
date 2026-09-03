@@ -158,6 +158,12 @@ export const editorStyles = `
     pointer-events: auto;
     touch-action: manipulation;
   }
+  #xyle-dock-handle .xyle-brand-logo {
+    display: block;
+    width: 14px;
+    height: 14px;
+    object-fit: contain;
+  }
   #xyle-dock-handle:hover,
   #xyle-dock-handle:focus-visible {
     background: #30322f;
@@ -1027,6 +1033,10 @@ export const editorStyles = `
     #xyle-dock-handle {
       min-width: 88px;
       min-height: 44px;
+    }
+    #xyle-dock-handle .xyle-brand-logo {
+      width: 18px;
+      height: 18px;
     }
     .xyle-icon-button,
     #xyle-media-drawer .xyle-icon-button,

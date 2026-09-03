@@ -8,6 +8,7 @@
   },
   "files": [
     "dist",
+    "assets/brand/xyle-logo.png",
     "LICENSE",
     "README.md"
   ],

@@ -11,6 +11,7 @@ const contentTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".jpg": "image/jpeg",
+  ".png": "image/png",
   ".webp": "image/webp",
 };
 
@@ -60,6 +61,11 @@ try {
   await page.goto(baseUrl);
   await page.getByRole("heading", { name: "Your static site. Now editable." }).waitFor();
   await page.getByRole("link", { name: "Edit the live demo" }).waitFor();
+  const productLogos = page.locator('.wordmark img[src="/assets/xyle-logo.png"]');
+  if ((await productLogos.count()) !== 2) throw new Error("The product wordmarks do not use the Xyle logo");
+  if (!(await productLogos.first().evaluate((image) => image.naturalWidth > 0))) {
+    throw new Error("The Xyle logo did not load");
+  }
   if (await page.getByLabel("Editor key").count()) {
     throw new Error("The product homepage unexpectedly requires an editor key");
   }
@@ -76,6 +82,9 @@ try {
   await page.getByRole("heading", { name: "Know the editing boundary" }).waitFor();
   await page.getByText("Not supported in v1", { exact: true }).waitFor();
   await page.getByRole("heading", { name: "Put the editor on Cloudflare Pages" }).waitFor();
+  if ((await page.locator('.wordmark img[src="/assets/xyle-logo.png"]').count()) !== 2) {
+    throw new Error("The guide wordmarks do not use the Xyle logo");
+  }
   const guideOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth,
   );
@@ -84,6 +93,7 @@ try {
   await page.goto(baseUrl);
   await page.getByRole("link", { name: "Edit the live demo" }).click();
   await page.locator("#xyle-preview").waitFor({ state: "visible" });
+  await page.locator('#xyle-dock-handle img.xyle-brand-logo[src^="data:image/png;base64,"]').waitFor();
   await page.waitForFunction(() => {
     const frame = document.querySelector("#xyle-preview");
     return frame instanceof HTMLIFrameElement && frame.contentDocument?.body.dataset.xyleWired === "true";

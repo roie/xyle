@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import sharp from "sharp";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const website = join(repository, "website");
@@ -38,6 +39,10 @@ async function prefixDemoUrls(directory) {
 await rm(demoOutput, { recursive: true, force: true });
 await rm(assetsOutput, { recursive: true, force: true });
 await mkdir(assetsOutput, { recursive: true });
+await sharp(join(repository, "assets", "brand", "xyle-logo.png"))
+  .resize(192, 192, { fit: "inside" })
+  .png({ compressionLevel: 9, palette: true, quality: 90 })
+  .toFile(join(assetsOutput, "xyle-logo.png"));
 await cp(join(repository, "dist", "editor.js"), join(assetsOutput, "editor.js"));
 for (const name of await readdir(join(repository, "dist"))) {
   if (name.startsWith("browser-demo-") && name.endsWith(".js")) {
