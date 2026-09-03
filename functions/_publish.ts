@@ -1,7 +1,8 @@
 import type { PageOperation, MediaState } from "../src/types.ts";
 import { digestBytes } from "../src/digest.ts";
-import { MEDIA_PREFIX } from "../src/media.ts";
+import { MAX_UPLOAD_BYTES, MEDIA_PREFIX } from "../src/media.ts";
 import { mediaSourcePath } from "../src/media-state.ts";
+import { BodyTooLargeError, readBodyBytes } from "../src/request-body.ts";
 import { pagesAssetHash, pagesRequest, type PagesEnv } from "./_pages";
 
 export interface PublishFile { path: string; bytes: Uint8Array; contentType: string; }
@@ -18,6 +19,8 @@ export interface CloudflareImagesBinding {
 export interface HostedPublishEnv extends PagesEnv {
   IMAGES?: CloudflareImagesBinding;
 }
+
+const MAX_HOSTED_CROP_BYTES = MAX_UPLOAD_BYTES;
 
 /** Materialize normalized crops using the Workers Images binding or cf.image fetch transforms. */
 export async function materializeHostedMediaOperations(
@@ -37,8 +40,13 @@ export async function materializeHostedMediaOperations(
       continue;
     }
     const sourcePath = mediaSourcePath(operation.value.source);
-    const sourceBytes = submitted.get(sourcePath) ?? files.get(sourcePath)?.bytes;
-    const sourceUrl = toSourceUrl(sourcePath, requestUrl);
+    const staged = submitted.has(sourcePath);
+    const sourceFile = files.get(sourcePath);
+    if (!staged && !sourceFile) {
+      throw new Error("media crop source is not part of the current snapshot or staged uploads");
+    }
+    const sourceBytes = submitted.get(sourcePath) ?? sourceFile?.bytes;
+    const sourceUrl = staged ? null : toSourceUrl(sourcePath, requestUrl);
     const key = `${sourcePath}:${JSON.stringify(operation.value.crop)}`;
     let derivedPath = derivedByKey.get(key);
     if (!derivedPath) {
@@ -47,7 +55,7 @@ export async function materializeHostedMediaOperations(
         sourceBytes,
         sourceUrl,
         operation.value.crop,
-        submitted.has(sourcePath),
+        staged,
       );
       const digest = await digestBytes(bytes);
       derivedPath = `${MEDIA_PREFIX}${digest.slice("sha256:".length)}.webp`;
@@ -69,9 +77,18 @@ export async function materializeHostedMediaOperations(
 }
 
 function toSourceUrl(sourcePath: string, requestUrl: string): string | null {
+  if (!sourcePath.startsWith("/") || sourcePath.startsWith("//")) return null;
   try {
-    const parsed = new URL(sourcePath, requestUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    const requestOrigin = new URL(requestUrl).origin;
+    const parsed = new URL(sourcePath, requestOrigin);
+    if (
+      parsed.origin !== requestOrigin ||
+      parsed.pathname !== sourcePath ||
+      parsed.search.length > 0 ||
+      parsed.hash.length > 0
+    ) {
+      return null;
+    }
     return parsed.toString();
   } catch {
     return null;
@@ -98,10 +115,10 @@ async function transformHostedCrop(
       await env.IMAGES.input(sourceBytes).transform(image).output({ format: "webp", quality: 90 })
     ).response();
   } else {
-    if (!sourceUrl) throw new Error("media crop source is not a fetchable image URL");
     if (staged) {
       throw new Error("Cloudflare crop publishing requires an Images binding for staged uploads");
     }
+    if (!sourceUrl) throw new Error("media crop source is not a fetchable image URL");
     response = await fetch(sourceUrl, { cf: { image } } as RequestInit & { cf: unknown });
   }
   if (!response.ok) throw new Error(`Cloudflare image crop failed (${response.status})`);
@@ -109,12 +126,28 @@ async function transformHostedCrop(
   if (!contentType.includes("image/webp")) {
     throw new Error("Cloudflare image crop did not return WebP output");
   }
-  return new Uint8Array(await response.arrayBuffer());
+  const declaredLength = response.headers.get("content-length");
+  if (
+    declaredLength !== null &&
+    (!Number.isSafeInteger(Number(declaredLength)) ||
+      Number(declaredLength) < 0 ||
+      Number(declaredLength) > MAX_HOSTED_CROP_BYTES)
+  ) {
+    throw new Error("Cloudflare image crop output is too large");
+  }
+  try {
+    return await readBodyBytes(response.body, MAX_HOSTED_CROP_BYTES);
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) {
+      throw new Error("Cloudflare image crop output is too large", { cause: error });
+    }
+    throw error;
+  }
 }
 
 export async function deployCompleteSnapshot(env: PagesEnv & { CLOUDFLARE_PROJECT?: string }, files: PublishFile[]): Promise<string> {
   const projectName = env.CLOUDFLARE_PROJECT ?? "xyle";
-  const assets = await Promise.all(files.map(async (file) => ({ ...file, hash: await pagesAssetHash(file.bytes, file.path) })));
+  const assets = files.map((file) => ({ ...file, hash: pagesAssetHash(file.bytes, file.path) }));
   const tokenResponse = await pagesRequest(env, `/pages/projects/${projectName}/upload-token`);
   if (!tokenResponse.ok) throw new Error(`Cloudflare upload token failed (${tokenResponse.status})`);
   const tokenBody = await tokenResponse.json() as { result?: { jwt?: string }; jwt?: string };

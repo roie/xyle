@@ -1,6 +1,13 @@
-export class RequestBodyTooLargeError extends Error {
+export class BodyTooLargeError extends Error {
   constructor(readonly limit: number) {
-    super(`request body exceeds ${limit} bytes`);
+    super(`body exceeds ${limit} bytes`);
+    this.name = "BodyTooLargeError";
+  }
+}
+
+export class RequestBodyTooLargeError extends BodyTooLargeError {
+  constructor(limit: number) {
+    super(limit);
     this.name = "RequestBodyTooLargeError";
   }
 }
@@ -14,12 +21,12 @@ function assertDeclaredLengthWithinLimit(request: Request, limit: number): void 
   }
 }
 
-/** Buffer a request body only after enforcing the limit against its streamed bytes. */
-export async function bufferRequestBody(request: Request, limit: number): Promise<Request> {
-  assertDeclaredLengthWithinLimit(request, limit);
-  if (!request.body) return request;
-
-  const reader = request.body.getReader();
+export async function readBodyBytes(
+  stream: ReadableStream<Uint8Array> | null,
+  limit: number,
+): Promise<Uint8Array> {
+  if (!stream) return new Uint8Array();
+  const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
@@ -33,7 +40,7 @@ export async function bufferRequestBody(request: Request, limit: number): Promis
         } catch {
           // Cancellation is best effort; the size rejection remains authoritative.
         }
-        throw new RequestBodyTooLargeError(limit);
+        throw new BodyTooLargeError(limit);
       }
       chunks.push(value);
     }
@@ -47,9 +54,23 @@ export async function bufferRequestBody(request: Request, limit: number): Promis
     body.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return body;
+}
+
+/** Buffer a request body only after enforcing the limit against its streamed bytes. */
+export async function bufferRequestBody(request: Request, limit: number): Promise<Request> {
+  assertDeclaredLengthWithinLimit(request, limit);
+  let body: Uint8Array;
+  try {
+    body = await readBodyBytes(request.body, limit);
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) throw new RequestBodyTooLargeError(limit);
+    throw error;
+  }
+  if (!request.body) return request;
   return new Request(request.url, {
     method: request.method,
     headers: request.headers,
-    body,
+    body: Uint8Array.from(body).buffer,
   });
 }

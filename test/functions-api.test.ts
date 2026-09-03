@@ -97,6 +97,71 @@ describe("hosted media publishing", () => {
     expect(result.assets[0]).toMatchObject({ contentType: "image/webp" });
   });
 
+  it("rejects crop sources outside the current snapshot and staged uploads", async () => {
+    const operation = {
+      type: "media" as const,
+      nodeId: "image-1",
+      value: {
+        source: { kind: "existing" as const, src: "https://attacker.invalid/image.jpg" },
+        alt: { present: false, value: "" },
+        crop: { x: 0, y: 0, width: 1, height: 1 },
+        focus: null,
+      },
+    };
+
+    await expect(
+      materializeHostedMediaOperations(
+        {},
+        `${ORIGIN}/__xyle/api/publish`,
+        [operation],
+        new Map(),
+        new Map(),
+      ),
+    ).rejects.toThrow(/current snapshot or staged uploads/);
+  });
+
+  it("rejects oversized crop output before buffering it", async () => {
+    const input = {
+      transform() {
+        return input;
+      },
+      output: async () => ({
+        response: async () =>
+          new Response(new Uint8Array([1]), {
+            headers: {
+              "content-length": String(20 * 1024 * 1024 + 1),
+              "content-type": "image/webp",
+            },
+          }),
+      }),
+    };
+    const operation = {
+      type: "media" as const,
+      nodeId: "image-1",
+      value: {
+        source: { kind: "existing" as const, src: "/photo.jpg" },
+        alt: { present: false, value: "" },
+        crop: { x: 0, y: 0, width: 1, height: 1 },
+        focus: null,
+      },
+    };
+
+    await expect(
+      materializeHostedMediaOperations(
+        { IMAGES: { input: () => input } },
+        `${ORIGIN}/__xyle/api/publish`,
+        [operation],
+        new Map([
+          [
+            "/photo.jpg",
+            { path: "/photo.jpg", bytes: new Uint8Array([1]), contentType: "image/jpeg" },
+          ],
+        ]),
+        new Map(),
+      ),
+    ).rejects.toThrow(/output is too large/);
+  });
+
   it("rejects staged crops when no Images binding is configured", async () => {
     const operation = {
       type: "media" as const,

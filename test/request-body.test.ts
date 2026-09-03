@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { bufferRequestBody, RequestBodyTooLargeError } from "../src/request-body.ts";
+import {
+  BodyTooLargeError,
+  bufferRequestBody,
+  readBodyBytes,
+  RequestBodyTooLargeError,
+} from "../src/request-body.ts";
 
 function postRequest(body: Uint8Array, contentLength?: string): Request {
   const headers = new Headers({ "content-type": "application/octet-stream" });
@@ -28,6 +33,12 @@ describe("bounded request buffering", () => {
     await expect(
       bufferRequestBody(postRequest(new Uint8Array([1, 2, 3, 4]), "1"), 3),
     ).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+  });
+
+  it("caps response-style streams without relying on headers", async () => {
+    const response = new Response(new Uint8Array([1, 2, 3, 4]));
+
+    await expect(readBodyBytes(response.body, 3)).rejects.toBeInstanceOf(BodyTooLargeError);
   });
 
   it("rejects invalid and oversized declared lengths", async () => {
