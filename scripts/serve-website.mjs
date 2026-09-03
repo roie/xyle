@@ -59,11 +59,39 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, host, () => {
-  if (!demoOnly) process.stdout.write(`Xyle website: http://${host}:${port}/\n`);
-  process.stdout.write(`Xyle browser demo: http://${host}:${port}/demo/\n`);
-  process.stdout.write("No editor key is required. Refresh the page to reset the demo.\n");
-});
+const selectPortAutomatically = !portArgument && process.env.PORT === undefined;
+const lastAutomaticPort = Math.min(65_535, port + 20);
+
+function listen(candidatePort) {
+  const onListening = () => {
+    server.off("error", onError);
+    if (!demoOnly) process.stdout.write(`Xyle website: http://${host}:${candidatePort}/\n`);
+    process.stdout.write(`Xyle browser demo: http://${host}:${candidatePort}/demo/\n`);
+    process.stdout.write("No editor key is required. Refresh the page to reset the demo.\n");
+  };
+  const onError = (error) => {
+    server.off("listening", onListening);
+    if (
+      error.code === "EADDRINUSE" &&
+      selectPortAutomatically &&
+      candidatePort < lastAutomaticPort
+    ) {
+      process.stdout.write(`Port ${candidatePort} is in use. Trying ${candidatePort + 1}.\n`);
+      listen(candidatePort + 1);
+      return;
+    }
+    const suggestion = selectPortAutomatically
+      ? "Stop the process that uses this port. Then run the command again."
+      : "Choose a different port with PORT or --port.";
+    process.stderr.write(`Xyle could not use port ${candidatePort}. ${suggestion}\n`);
+    process.exitCode = 1;
+  };
+  server.once("error", onError);
+  server.once("listening", onListening);
+  server.listen(candidatePort, host);
+}
+
+listen(port);
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => server.close(() => process.exit(0)));
