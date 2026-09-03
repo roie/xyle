@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   detectImageType,
@@ -43,14 +44,17 @@ describe("detectImageType", () => {
     expect(detectImageType(svg)).toBeNull();
   });
 
-  it("rejects executable signatures (polyglot guard)", () => {
-    const mz = new Uint8Array(64);
-    mz[0] = 0x4d;
-    mz[1] = 0x5a;
-    // PNG magic glued onto an MZ header must still fail
-    expect(detectImageType(mz)).toBeNull();
-    const polyglot = new Uint8Array(png);
-    expect(detectImageType(polyglot)).toBe("image/png");
+  it("rejects a fixture with executable and embedded PNG signatures", async () => {
+    const polyglot = new Uint8Array(
+      await readFile(new URL("./fixtures/mz-png-polyglot.bin", import.meta.url)),
+    );
+    expect([...polyglot.slice(0, 2)]).toEqual([0x4d, 0x5a]);
+    expect(Buffer.from(polyglot).indexOf(png.slice(0, 8))).toBeGreaterThan(0);
+    expect(detectImageType(polyglot)).toBeNull();
+    expect(validateUpload("malicious.png", polyglot)).toEqual({
+      ok: false,
+      reason: "executable signature rejected",
+    });
   });
 });
 
