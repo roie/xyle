@@ -294,8 +294,7 @@ test.describe("chrome layout rules", () => {
     expect(replaceBox?.height).toBeGreaterThanOrEqual(43.9);
     await touchPage.keyboard.press("Escape");
 
-    await menuButton.tap();
-    await touchPage.getByRole("menuitem", { name: "Structure" }).tap();
+    await touchPage.locator("#xyle-structure-shortcut").tap();
     const drawerClose = touchPage.getByRole("button", { name: "Close structure" });
     const drawerCloseBox = await drawerClose.boundingBox();
     expect(drawerCloseBox?.width).toBeGreaterThanOrEqual(43.9);
@@ -941,8 +940,7 @@ test.describe("changes drawer and undo", () => {
     await expect.poll(async () => opsCount(page)).toBe(1);
 
     await page.locator("#xyle-control-hitbox").hover();
-    await page.locator("#xyle-menu-btn").click();
-    await page.getByRole("menuitem", { name: "SEO" }).click();
+    await page.locator("#xyle-seo-shortcut").click();
     const title = page.getByRole("dialog", { name: "SEO metadata" }).locator('[name="title"]');
     const originalTitle = await title.inputValue();
     await title.press("End");
@@ -1394,8 +1392,7 @@ test.describe("changes drawer and undo", () => {
         (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument?.title ?? "",
     );
     await page.locator("#xyle-control-hitbox").hover();
-    await page.locator("#xyle-menu-btn").click();
-    await page.locator('#xyle-menu button[data-action="seo"]').click();
+    await page.locator("#xyle-seo-shortcut").click();
     const panel = page.getByRole("dialog", { name: "SEO metadata" });
     await expect(panel).toBeVisible();
     await panel.locator('[name="title"]').fill("Updated page title");
@@ -1433,11 +1430,11 @@ test.describe("changes drawer and undo", () => {
     page,
   }) => {
     await loginAndOpenEditor(page, "/index.html");
-    const menuButton = page.locator("#xyle-menu-btn");
+    const seoShortcut = page.locator("#xyle-seo-shortcut");
+    const structureShortcut = page.locator("#xyle-structure-shortcut");
 
     await page.locator("#xyle-control-hitbox").hover();
-    await menuButton.click();
-    await page.getByRole("menuitem", { name: "SEO" }).click();
+    await seoShortcut.click();
     const seo = page.getByRole("dialog", { name: "SEO metadata" });
     const title = seo.locator('[name="title"]');
     await expect(seo).toHaveAttribute("data-xyle-drawer-mode", "companion");
@@ -1447,10 +1444,9 @@ test.describe("changes drawer and undo", () => {
     await expect(title).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(seo).toHaveCount(0);
-    await expect(menuButton).toBeFocused();
+    await expect(seoShortcut).toBeFocused();
 
-    await menuButton.click();
-    await page.getByRole("menuitem", { name: "Structure" }).click();
+    await structureShortcut.click();
     const structure = page.getByRole("dialog", { name: "Structure" });
     await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "companion");
     await expect(structure).not.toHaveAttribute("aria-modal", "true");
@@ -1728,8 +1724,7 @@ test("hides and reorders safe sibling sections", async ({ page }) => {
   await page.getByRole("button", { name: "Hide section" }).click();
   await expect(first).toHaveJSProperty("hidden", true);
   await page.locator("#xyle-control-hitbox").hover();
-  await page.locator("#xyle-menu-btn").click();
-  await page.getByRole("menuitem", { name: "Structure" }).click();
+  await page.locator("#xyle-structure-shortcut").click();
   const structurePanel = page.getByRole("dialog", { name: "Structure" });
   await expect(structurePanel).toBeVisible();
   const heroRow = structurePanel

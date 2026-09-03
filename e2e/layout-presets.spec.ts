@@ -31,8 +31,7 @@ test("Structure panel unifies safe layout controls and unsupported explanations"
 }) => {
   await loginAndOpenEditor(page, "/layouts.html");
   await page.locator("#xyle-control-hitbox").hover();
-  await page.locator("#xyle-menu-btn").click();
-  await page.getByRole("menuitem", { name: "Structure" }).click();
+  await page.locator("#xyle-structure-shortcut").click();
   const structure = page.getByRole("dialog", { name: "Structure" });
 
   const safeLayout = structure.locator(".xyle-structure-row").filter({ hasText: "Safe layout" });

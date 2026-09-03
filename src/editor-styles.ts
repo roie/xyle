@@ -195,6 +195,12 @@ export const editorStyles = `
     border: 0;
     background: transparent;
   }
+  .xyle-dock-separator {
+    width: 1px;
+    height: 20px;
+    margin: 0 2px;
+    background: var(--xyle-line);
+  }
   .xyle-icon-button {
     position: relative;
     display: grid;
@@ -254,7 +260,8 @@ export const editorStyles = `
   .xyle-icon-button--publish {
     color: #fff;
   }
-  #xyle-editables[aria-pressed="true"] {
+  #xyle-editables[aria-pressed="true"],
+  .xyle-icon-button[aria-expanded="true"] {
     background: var(--xyle-accent-soft);
     color: #dce5d9;
   }
@@ -1594,7 +1601,8 @@ export const editorStyles = `
     color: var(--xyle-ink);
   }
 
-  #xyle-editables[aria-pressed="true"] {
+  #xyle-editables[aria-pressed="true"],
+  .xyle-icon-button[aria-expanded="true"] {
     background: var(--xyle-accent-soft);
     color: #b5c8b0;
   }

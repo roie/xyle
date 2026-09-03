@@ -76,8 +76,7 @@ test.describe("media editing", () => {
   test("uploads to the media library before applying an image", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     await page.locator("#xyle-control-hitbox").hover();
-    await page.locator("#xyle-menu-btn").click();
-    await page.getByRole("menuitem", { name: "Media library" }).click();
+    await page.locator("#xyle-media-shortcut").click();
     const drawer = page.locator("#xyle-media-drawer");
     await expect(drawer).toBeVisible();
 
@@ -120,8 +119,7 @@ test.describe("media editing", () => {
   }) => {
     await loginAndOpenEditor(page, "/index.html");
     await page.locator("#xyle-control-hitbox").hover();
-    await page.locator("#xyle-menu-btn").click();
-    await page.getByRole("menuitem", { name: "Media library" }).click();
+    await page.locator("#xyle-media-shortcut").click();
     const drawer = page.locator("#xyle-media-drawer");
 
     const chooserPromise = page.waitForEvent("filechooser");
@@ -422,10 +420,9 @@ test.describe("media editing", () => {
     });
 
     await loginAndOpenEditor(page, "/index.html");
-    const menuButton = page.locator("#xyle-menu-btn");
+    const mediaShortcut = page.locator("#xyle-media-shortcut");
     await page.locator("#xyle-control-hitbox").hover();
-    await menuButton.click();
-    await page.getByRole("menuitem", { name: "Media library" }).click();
+    await mediaShortcut.click();
 
     const drawer = page.getByRole("dialog", { name: "Media" });
     await expect(drawer).toHaveAttribute("data-xyle-drawer-mode", "companion");
@@ -447,7 +444,7 @@ test.describe("media editing", () => {
     await expect(drawer).toHaveCount(0);
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
-    await expect(menuButton).toBeFocused();
+    await expect(mediaShortcut).toBeFocused();
   });
 
   test("media drawer keeps failures visible", async ({ page }) => {
@@ -463,8 +460,7 @@ test.describe("media editing", () => {
 
     await loginAndOpenEditor(page, "/index.html");
     await page.locator("#xyle-control-hitbox").hover();
-    await page.locator("#xyle-menu-btn").click();
-    await page.getByRole("menuitem", { name: "Media library" }).click();
+    await page.locator("#xyle-media-shortcut").click();
 
     const drawer = page.getByRole("dialog", { name: "Media" });
     await expect(drawer.getByRole("status")).toHaveText("Could not load media. Try again.");

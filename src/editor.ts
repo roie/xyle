@@ -296,6 +296,17 @@ const DIALOG_FOCUSABLE_SELECTOR = [
 
 const dialogBackgroundStates = new WeakMap<HTMLElement, Array<[HTMLElement, boolean]>>();
 const drawerModeCleanups = new WeakMap<HTMLElement, () => void>();
+const drawerShortcutIds = new Map([
+  ["xyle-media-drawer", "xyle-media-shortcut"],
+  ["xyle-structure-drawer", "xyle-structure-shortcut"],
+  ["xyle-seo-drawer", "xyle-seo-shortcut"],
+]);
+
+function setDrawerShortcutExpanded(drawer: HTMLElement, expanded: boolean): void {
+  const shortcutId = drawerShortcutIds.get(drawer.id);
+  if (shortcutId)
+    document.getElementById(shortcutId)?.setAttribute("aria-expanded", String(expanded));
+}
 
 function inertDialogBackground(dialog: HTMLElement): void {
   const states: Array<[HTMLElement, boolean]> = [];
@@ -327,6 +338,7 @@ function removeTrappedDialog(dialog: HTMLElement | null): void {
   drawerModeCleanups.get(dialog)?.();
   drawerModeCleanups.delete(dialog);
   releaseDialogFocus(dialog);
+  setDrawerShortcutExpanded(dialog, false);
   dialog.remove();
 }
 
@@ -356,6 +368,7 @@ function trapDialogFocus(dialog: HTMLElement, close: () => void): void {
 }
 
 function configureEditorDrawer(drawer: HTMLElement, close: () => void): void {
+  setDrawerShortcutExpanded(drawer, true);
   const mediaQuery = window.matchMedia("(max-width: 700px)");
   const applyMode = (): void => {
     const modal = mediaQuery.matches;
@@ -6629,15 +6642,22 @@ function buildChrome(): void {
           <div id="xyle-menu" role="menu" aria-label="Xyle menu">
             <button data-action="exit" class="xyle-menu-item" role="menuitem">Exit editor</button>
             <button data-action="live" class="xyle-menu-item" role="menuitem">View live site</button>
-            <button data-action="media" class="xyle-menu-item" role="menuitem">Media library</button>
-            <button data-action="structure" class="xyle-menu-item" role="menuitem">Structure</button>
-            <button data-action="seo" class="xyle-menu-item" role="menuitem">SEO metadata</button>
             <div class="xyle-menu-separator" role="separator"></div>
             <button data-action="logout" class="xyle-menu-item" role="menuitem">Log out</button>
           </div>
         </div>
         <button id="xyle-editables" class="xyle-icon-button" data-tooltip="Show editables" aria-label="Show editables" aria-pressed="false" title="Show editables">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 12h8"/></svg>
+        </button>
+        <span class="xyle-dock-separator" aria-hidden="true"></span>
+        <button id="xyle-media-shortcut" class="xyle-icon-button" data-tooltip="Media" aria-label="Open media" aria-controls="xyle-media-drawer" aria-expanded="false" title="Media">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m4 17 4-4 3 3 3-2 6 5"/></svg>
+        </button>
+        <button id="xyle-structure-shortcut" class="xyle-icon-button" data-tooltip="Structure" aria-label="Open structure" aria-controls="xyle-structure-drawer" aria-expanded="false" title="Structure">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="4" rx="1"/><rect x="4" y="10" width="16" height="4" rx="1"/><rect x="4" y="16" width="16" height="4" rx="1"/></svg>
+        </button>
+        <button id="xyle-seo-shortcut" class="xyle-icon-button" data-tooltip="SEO" aria-label="Open SEO metadata" aria-controls="xyle-seo-drawer" aria-expanded="false" title="SEO metadata">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 11h9M4 16h6"/><circle cx="16" cy="16" r="3"/><path d="m18.2 18.2 2.3 2.3"/></svg>
         </button>
       </div>
       <div id="xyle-dirty">
@@ -6752,6 +6772,14 @@ function buildChrome(): void {
     showEditables = !showEditables;
     applyShowEditables();
   });
+  $("#xyle-media-shortcut").addEventListener("click", (event) => {
+    void openMediaDrawer(event.currentTarget as HTMLElement);
+  });
+  $("#xyle-structure-shortcut").addEventListener("click", (event) => {
+    structurePanelTrigger = event.currentTarget as HTMLElement;
+    openStructurePanel();
+  });
+  $("#xyle-seo-shortcut").addEventListener("click", openSeoEditor);
   $("#xyle-publish").addEventListener("click", () => void publish());
   $("#xyle-changes").addEventListener("click", openChangesDrawer);
   $("#xyle-conflict-reload").addEventListener("click", () => location.reload());
@@ -6816,9 +6844,6 @@ function buildChrome(): void {
 
 function menuAction(action: string): void {
   if (action === "exit") exitEditor();
-  if (action === "media") void openMediaDrawer();
-  if (action === "structure") openStructurePanel();
-  if (action === "seo") openSeoEditor();
   if (action === "live") {
     try {
       const target = new URL(state.current?.pagePath ?? "/", location.origin);
