@@ -95,6 +95,38 @@ test.describe("conflicts and recovery", () => {
     await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
 
+  test("validation failure keeps the ChangeSet and permits retry", async ({ page }, info) => {
+    await loginAndOpenEditor(page, "/about.html");
+    const beforeSource = await (await page.request.get("/about.html")).text();
+    const nodeId = await findNodeByText(page, "This Xyle demo starts");
+    await editNode(page, nodeId!);
+    await focusCaret(page, nodeId!, "end");
+    const token = ` validation-retry-${info.project.name}`;
+    await page.keyboard.type(token);
+    await clickOutsideCommit(page);
+
+    await page.route(
+      "**/__xyle/api/publish",
+      (route) =>
+        route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "simulated publication validation error" }),
+        }),
+      { times: 1 },
+    );
+    await page.locator("#xyle-publish").click();
+    await expect.poll(() => flashText(page)).toMatch(/simulated publication validation error/i);
+    expect(await opsCount(page)).toBe(1);
+    await expect(page.locator("#xyle-dirty")).toBeVisible();
+    expect(await (await page.request.get("/about.html")).text()).toBe(beforeSource);
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    expect(await (await page.request.get("/about.html")).text()).toContain(token);
+    expect(await opsCount(page)).toBe(0);
+  });
+
   test("edits on multiple pages publish together after navigation", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/about.html");
 
