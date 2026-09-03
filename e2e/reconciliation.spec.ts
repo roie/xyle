@@ -162,6 +162,42 @@ test.describe("canonical net reconciliation", () => {
     await expect(page.locator("#xyle-dirty")).toBeHidden();
   });
 
+  test("media Reset restores authored crop focus and fit state", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    const original = await image.evaluate((element) => ({
+      src: element.getAttribute("src"),
+      alt: element.getAttribute("alt"),
+      style: (element as HTMLElement).style.cssText,
+    }));
+
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+    let dialog = page.getByRole("dialog", { name: "Crop & focal point" });
+    await dialog.locator("select[name=fit]").selectOption("contain");
+    await dialog.locator("#xyle-zoom").fill("1.8");
+    await dialog.locator("#xyle-focal-x").fill("21");
+    await dialog.locator("#xyle-focal-y").fill("79");
+    await dialog.getByRole("button", { name: "Done" }).click();
+    await expect.poll(async () => opsCount(page)).toBe(1);
+
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+    dialog = page.getByRole("dialog", { name: "Crop & focal point" });
+    await dialog.getByRole("button", { name: "Reset" }).click();
+    await dialog.getByRole("button", { name: "Done" }).click();
+
+    await expect(image).toHaveAttribute("src", original.src!);
+    await expect(image).toHaveAttribute("alt", original.alt!);
+    expect(await image.evaluate((element) => (element as HTMLElement).style.cssText)).toBe(
+      original.style,
+    );
+    await expect.poll(async () => opsCount(page)).toBe(0);
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
+  });
+
   test("media alt text restores to the authored baseline", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const image = page

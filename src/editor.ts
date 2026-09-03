@@ -4423,6 +4423,7 @@ function openImageCropEditor(
   mode: "crop" | "focus" = "crop",
 ): void {
   activeMediaEditor?.();
+  const original = rememberOriginalMedia(meta.pagePath, meta.id, img);
   const media = currentMediaState(meta.pagePath, meta.id, img);
   const computed = img.ownerDocument.defaultView?.getComputedStyle(img);
   const currentFit =
@@ -4563,6 +4564,7 @@ function openImageCropEditor(
     yOutput.value = `${Math.round(y * 100)}%`;
   };
   let fitChanged = false;
+  let resetToAuthored = false;
   let editorClosed = false;
   const restoreImageStyles = (): void => {
     img.style.height = originalImageStyles.height;
@@ -4602,34 +4604,57 @@ function openImageCropEditor(
         meta.pagePath,
         meta.id,
         img,
-        mode === "focus"
-          ? { focus }
-          : {
-              crop,
-              focus,
-              ...(fitChanged || media.framing
-                ? { framing: { fit: fit.value as "cover" | "contain" } }
-                : {}),
-            },
-        mode === "focus" ? "Adjust image focus" : "Adjust image framing",
+        resetToAuthored
+          ? {
+              crop: original.crop,
+              focus: original.focus,
+              framing: original.framing ?? null,
+            }
+          : mode === "focus"
+            ? { focus }
+            : {
+                crop,
+                focus,
+                ...(fitChanged || media.framing
+                  ? { framing: { fit: fit.value as "cover" | "contain" } }
+                  : {}),
+              },
+        resetToAuthored
+          ? "Reset image framing"
+          : mode === "focus"
+            ? "Adjust image focus"
+            : "Adjust image framing",
       );
     }
     if (!save) restoreImageStyles();
     removeTrappedDialog(editor);
     focusPreviewElement(img);
   };
+  const updateChangedPreview = (): void => {
+    resetToAuthored = false;
+    updatePreview();
+  };
   fit.addEventListener("input", () => {
     fitChanged = true;
-    updatePreview();
+    updateChangedPreview();
   });
-  zoomInput.addEventListener("input", updatePreview);
-  xInput.addEventListener("input", updatePreview);
-  yInput.addEventListener("input", updatePreview);
+  zoomInput.addEventListener("input", updateChangedPreview);
+  xInput.addEventListener("input", updateChangedPreview);
+  yInput.addEventListener("input", updateChangedPreview);
   editor.querySelector<HTMLButtonElement>("[data-reset]")?.addEventListener("click", () => {
     fitChanged = true;
-    fit.value = "cover";
+    fit.value = original.framing?.fit ?? currentFit;
     zoomInput.value = "1";
-    setFocus(0.5, 0.5);
+    const originalFocus =
+      original.focus ??
+      (original.crop
+        ? {
+            x: original.crop.x + original.crop.width / 2,
+            y: original.crop.y + original.crop.height / 2,
+          }
+        : { x: 0.5, y: 0.5 });
+    setFocus(originalFocus.x, originalFocus.y);
+    resetToAuthored = true;
   });
   editor
     .querySelector<HTMLButtonElement>("[data-cancel]")
@@ -4649,12 +4674,14 @@ function openImageCropEditor(
     );
     if (["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp"].includes(event.key)) {
       event.preventDefault();
+      resetToAuthored = false;
       setFocus(x, y);
     }
   });
   let dragging = false;
   stage.addEventListener("pointerdown", (event) => {
     event.preventDefault();
+    resetToAuthored = false;
     dragging = true;
     stage.setPointerCapture(event.pointerId);
     setFocusFromPointer(event);
@@ -4673,6 +4700,7 @@ function openImageCropEditor(
     (event) => {
       if (mode === "focus") return;
       event.preventDefault();
+      resetToAuthored = false;
       const currentZoom = Number(zoomInput.value);
       const nextZoom = Math.min(3, Math.max(1, currentZoom - event.deltaY * 0.002));
       zoomInput.value = nextZoom.toFixed(2);
