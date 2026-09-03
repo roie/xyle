@@ -1,7 +1,17 @@
 {
   "name": "xyle",
   "version": "0.0.0",
+  "description": "A human-first visual editor for existing static websites",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/roie/xyle#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/roie/xyle.git"
+  },
+  "bugs": {
+    "url": "https://github.com/roie/xyle/issues"
+  },
   "type": "module",
   "bin": {
     "xyle": "dist/cli.js"
