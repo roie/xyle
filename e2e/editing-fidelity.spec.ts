@@ -86,6 +86,8 @@ test.describe("editing fidelity gate", () => {
 
   test("keyboard spaces survive inline formatting boundaries", async () => {
     const id = await findNodeByText(page, "We are a");
+    const originalHtml = await nodeHtml(page, id!);
+    const expectedHtml = originalHtml.replace("human-controlled", "foo bar");
     await editNode(page, id!);
     await page.evaluate((nodeId) => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
@@ -103,7 +105,25 @@ test.describe("editing fidelity gate", () => {
     await page.keyboard.type("foo bar");
     await clickOutsideToCommit(page);
 
-    expect(await nodeHtml(page, id!)).toContain("<strong>foo bar</strong>");
+    expect(await nodeHtml(page, id!)).toBe(expectedHtml);
+    const ops = await currentOps(page);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toEqual({
+      pagePath: ABOUT,
+      op: { type: "html", nodeId: id, value: expectedHtml },
+    });
+
+    await page.click("#xyle-publish");
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get(ABOUT)).text();
+    expect(source).toContain(`<p>${expectedHtml}</p>`);
+    expect(source).not.toContain("data-xyle-node");
+    expect(source).not.toContain("xyle-editing");
+
+    await page.goto(ABOUT);
+    const published = page.locator("p").filter({ hasText: "We are a foo bar" });
+    await expect(published).toHaveCount(1);
+    expect(await published.evaluate((element) => element.innerHTML)).toBe(expectedHtml);
   });
 
   test("keyboard spaces preserve meaningful leading and trailing text", async () => {
