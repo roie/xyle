@@ -23,7 +23,7 @@ const prepareTestSite = async (): Promise<void> => {
     join(secretsDir, "secrets.local.json"),
     JSON.stringify({
       editorKey: TEST_KEY,
-      sessionSecretB64: Buffer.from("xyle-test-session-secret-0123456789").toString("base64"),
+      sessionSecretB64: Buffer.alloc(32, 7).toString("base64"),
     }),
   );
 };

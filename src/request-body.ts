@@ -1,7 +1,10 @@
 export class BodyTooLargeError extends Error {
-  constructor(readonly limit: number) {
+  readonly limit: number;
+
+  constructor(limit: number) {
     super(`body exceeds ${limit} bytes`);
     this.name = "BodyTooLargeError";
+    this.limit = limit;
   }
 }
 
