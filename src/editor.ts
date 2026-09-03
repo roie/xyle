@@ -257,6 +257,21 @@ const editorStyles = `
     border: 0;
     background: transparent;
   }
+  #xyle-demo-label {
+    display: inline-flex;
+    min-height: 28px;
+    align-items: center;
+    padding: 0 10px;
+    border-inline: 1px solid var(--xyle-line);
+    color: #d7e5d2;
+    font: 650 10px / 1 var(--xyle-font-ui);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  #xyle-demo-label strong {
+    color: #fff;
+    font-weight: 750;
+  }
   .xyle-icon-button {
     position: relative;
     display: grid;
@@ -1669,6 +1684,22 @@ const state = {
 };
 let activeChangeSet: ChangeSetRecord | null = null;
 let unregisterWebMcp: (() => void) | null = null;
+interface DemoBootstrapConfig {
+  initialPage: string;
+  pages: Record<string, string>;
+  publicBaseUrl: string;
+}
+const rawDemoConfig = (window as typeof window & { __XYLE_BROWSER_DEMO__?: unknown })
+  .__XYLE_BROWSER_DEMO__;
+const demoConfig: DemoBootstrapConfig | null =
+  rawDemoConfig &&
+  typeof rawDemoConfig === "object" &&
+  typeof (rawDemoConfig as DemoBootstrapConfig).initialPage === "string" &&
+  typeof (rawDemoConfig as DemoBootstrapConfig).publicBaseUrl === "string" &&
+  typeof (rawDemoConfig as DemoBootstrapConfig).pages === "object"
+    ? (rawDemoConfig as DemoBootstrapConfig)
+    : null;
+let demoTransport: { request(path: string, init?: RequestInit): Promise<Response> } | null = null;
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document): T =>
   root.querySelector(sel) as T;
@@ -1690,7 +1721,7 @@ function exposeTestHook(): void {
 }
 
 function api(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(path, init);
+  return demoTransport ? demoTransport.request(path, init) : fetch(path, init);
 }
 
 function flash(message: string): void {
@@ -1770,6 +1801,10 @@ function trapDialogFocus(dialog: HTMLElement, close: () => void): void {
 }
 
 async function boot(): Promise<void> {
+  if (demoConfig) {
+    const { createBrowserDemoTransport } = await import("./browser-demo.ts");
+    demoTransport = createBrowserDemoTransport(demoConfig);
+  }
   const session = await (await api("/__xyle/api/session")).json();
   if (!session.authenticated) {
     location.assign("/edit");
@@ -1780,7 +1815,9 @@ async function boot(): Promise<void> {
   void detectMediaSupport();
   exposeTestHook();
   const params = new URLSearchParams(location.search);
-  await loadPage(params.get("page") ?? "/index.html", { pushHistory: false });
+  await loadPage(params.get("page") ?? demoConfig?.initialPage ?? "/index.html", {
+    pushHistory: false,
+  });
 
   unregisterWebMcp = await registerWebMcpTools({
     listEditableContent,
@@ -7741,6 +7778,7 @@ function buildChrome(): void {
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 12h8"/></svg>
         </button>
       </div>
+      ${demoTransport ? '<div id="xyle-demo-label"><strong>Private demo</strong>&nbsp;· Refresh to reset</div>' : ""}
       <div id="xyle-dirty">
         <button id="xyle-changes" class="xyle-icon-button" data-tooltip="Changes" aria-label="Open changes" title="Open changes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="M8 9h8M8 12h8M8 15h5"/></svg><span id="xyle-count" class="xyle-count-badge">0</span></button>
         <button id="xyle-publish" class="xyle-icon-button xyle-icon-button--publish" data-tooltip="Publish" aria-label="Publish changes" title="Publish changes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M5 14v5h14v-5"/></svg><span id="xyle-publish-label" class="xyle-sr-only">Publish changes</span></button>
@@ -7757,6 +7795,11 @@ function buildChrome(): void {
     "text/html",
   ).body;
   document.body.replaceChildren(...shell.childNodes);
+  if (demoTransport) {
+    $("[data-action=exit]").textContent = "Exit demo";
+    $("[data-action=live]").remove();
+    $("[data-action=logout]").textContent = "Reset demo";
+  }
   const shellStyles = document.createElement("style");
   shellStyles.id = "xyle-shell-styles";
   shellStyles.textContent = editorStyles;
@@ -8004,17 +8047,23 @@ async function exitEditor(): Promise<void> {
       unregisterWebMcp?.();
       unregisterWebMcp = null;
       discardAll();
-      location.assign(state.current?.pagePath ?? "/");
+      location.assign(demoTransport ? "/" : (state.current?.pagePath ?? "/"));
     })
   )
     return;
   unregisterWebMcp?.();
   unregisterWebMcp = null;
   discardAll();
-  location.assign(state.current?.pagePath ?? "/");
+  location.assign(demoTransport ? "/" : (state.current?.pagePath ?? "/"));
 }
 
 async function logout(skipDiscardPrompt = false): Promise<void> {
+  if (demoTransport) {
+    if (!skipDiscardPrompt && !confirmDiscard("reset", () => void logout(true))) return;
+    discardAll();
+    location.reload();
+    return;
+  }
   if (!skipDiscardPrompt && !confirmDiscard("log out", () => void logout(true))) return;
   try {
     const response = await api("/__xyle/api/logout", {
@@ -8031,7 +8080,7 @@ async function logout(skipDiscardPrompt = false): Promise<void> {
       return;
     }
     discardAll();
-    location.assign("/edit");
+    location.assign(demoTransport ? "/" : "/edit");
   } catch {
     flash("Could not log out. Check your connection and try again.");
   }

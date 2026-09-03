@@ -84,6 +84,7 @@ made since your last managed deployment unless you pass `--force`.
 pnpm check          # typecheck + unit tests + biome
 pnpm test:e2e       # Playwright suite (Chromium/Firefox; WebKit needs host deps)
 pnpm test:package   # pack, install, edit, publish, and reload a temporary static site
+pnpm test:website   # build and test the product homepage and isolated browser demo
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the design,

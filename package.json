@@ -16,6 +16,7 @@
   },
   "scripts": {
     "build": "rolldown -c",
+    "build:website": "pnpm build && node scripts/build-website.mjs",
     "prepack": "pnpm build",
     "dev": "tsx src/cli.ts dev",
     "demo:reset": "node scripts/reset-demo.mjs",
@@ -25,6 +26,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:package": "node scripts/test-package.mjs",
+    "test:website": "pnpm build:website && node scripts/test-website.mjs",
     "check": "pnpm typecheck && pnpm test && ./node_modules/.bin/biome check ."
   },
   "dependencies": {

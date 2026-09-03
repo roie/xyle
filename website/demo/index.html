@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Try Xyle in an isolated browser sandbox without an account."
+    />
+    <title>Xyle browser demo</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23173ad6'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='monospace' font-size='10' font-weight='700' fill='white'%3EXY%3C/text%3E%3C/svg%3E" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      noscript {
+        display: block;
+        max-width: 36rem;
+        margin: 4rem auto;
+        padding: 1rem;
+        font: 1rem/1.5 system-ui, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="xyle-root"></div>
+    <noscript>Enable JavaScript to use the isolated Xyle demonstration.</noscript>
+    <script>
+      window.__XYLE_BROWSER_DEMO__ = {
+        initialPage: "/demo-content/index.html",
+        publicBaseUrl: window.location.origin,
+        pages: {
+          "/demo-content/index.html": "/demo-content/index.html",
+          "/demo-content/about.html": "/demo-content/about.html",
+          "/demo-content/contact.html": "/demo-content/contact.html"
+        }
+      };
+    </script>
+    <script type="module" src="/assets/editor.js"></script>
+  </body>
+</html>
