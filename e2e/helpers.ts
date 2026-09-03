@@ -27,6 +27,7 @@ export async function waitForEditorReady(page: Page): Promise<void> {
     return (
       !!doc &&
       doc.querySelectorAll("[data-xyle-node]").length > 0 &&
+      doc.body.dataset.xyleWired === "true" &&
       !!document.getElementById("xyle-overlay-root")
     );
   });
