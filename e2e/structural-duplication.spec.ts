@@ -81,6 +81,18 @@ test("duplicates a safe section through its complete independent lifecycle", asy
   expect(afterDuplicate[1]!.fit).toBe("cover");
   expect(afterDuplicate[1]!.position).toBe("22% 65%");
 
+  const createdSection = page
+    .frameLocator("#xyle-preview")
+    .locator("main > section.work-standard[data-xyle-node]")
+    .nth(1);
+  await createdSection.press("Enter");
+  const duplicateAgain = page.getByRole("button", { name: "Duplicate section" });
+  await expect(duplicateAgain).toBeDisabled();
+  await expect(duplicateAgain).toHaveAttribute(
+    "title",
+    "Publish this section before duplicating it again",
+  );
+
   const duplicateHeading = await page.evaluate(() => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
     return [...doc.querySelectorAll("main > section.work-standard[data-xyle-node]")][1]

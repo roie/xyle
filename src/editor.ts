@@ -1473,8 +1473,15 @@ function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = fal
     const duplicate = document.createElement("button");
     duplicate.type = "button";
     duplicate.textContent = "Duplicate section";
-    duplicate.disabled = !structuralIntegrity;
-    if (!structuralIntegrity) duplicate.title = structuralReason;
+    const createdSection = state.ops.some(
+      ({ pagePath, op }) =>
+        pagePath === state.current?.pagePath &&
+        op.type === "duplicateSection" &&
+        op.createdId === meta.id,
+    );
+    duplicate.disabled = !structuralIntegrity || createdSection;
+    if (createdSection) duplicate.title = "Publish this section before duplicating it again";
+    else if (!structuralIntegrity) duplicate.title = structuralReason;
     else
       duplicate.addEventListener("click", () => {
         duplicateSection(meta.id);
