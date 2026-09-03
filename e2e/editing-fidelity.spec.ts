@@ -371,6 +371,75 @@ test.describe("editing fidelity gate", () => {
     expect(html).toContain("<strong>worker-owned</strong>");
   });
 
+  test("edits across multiple authored inline boundaries survive publication", async () => {
+    await loginAndOpenEditor(page, "/index.html");
+    const pagePath = "/index.html";
+    const nodeId = await findNodeByText(page, "We are a");
+    expect(nodeId).toBeTruthy();
+    const originalHtml = await nodeHtml(page, nodeId!);
+    const replacements = [
+      { selector: "strong", value: "careful editing layer" },
+      { selector: "em", value: "one visible history" },
+    ];
+
+    for (const replacement of replacements) {
+      await editNode(page, nodeId!);
+      await page.evaluate(
+        ({ id, selector }) => {
+          const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
+          const element = frame.contentDocument!.querySelector<HTMLElement>(
+            `[data-xyle-node="${id}"]`,
+          )!;
+          const inline = element.querySelector(selector)!;
+          const range = frame.contentDocument!.createRange();
+          range.selectNodeContents(inline);
+          const selection = frame.contentWindow!.getSelection()!;
+          selection.removeAllRanges();
+          selection.addRange(range);
+          element.focus();
+          frame.contentDocument!.dispatchEvent(new Event("selectionchange"));
+        },
+        { id: nodeId!, selector: replacement.selector },
+      );
+      await page.keyboard.type(replacement.value);
+      await clickOutsideToCommit(page);
+      await expect
+        .poll(async () => nodeHtml(page, nodeId!))
+        .toContain(`<${replacement.selector}>${replacement.value}</${replacement.selector}>`);
+    }
+
+    const expectedHtml = originalHtml
+      .replace("small editing layer", replacements[0]!.value)
+      .replace("one shared history", replacements[1]!.value);
+    expect(await nodeHtml(page, nodeId!)).toBe(expectedHtml);
+    expect(await currentOps(page)).toEqual([
+      {
+        pagePath,
+        op: { type: "html", nodeId, value: expectedHtml },
+      },
+    ]);
+
+    await page.locator("#xyle-changes").click();
+    const change = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
+    await expect(change).toHaveCount(1);
+    await expect(change.locator(".xyle-change-before")).toContainText("small editing layer");
+    await expect(change.locator(".xyle-change-before")).toContainText("one shared history");
+    await expect(change.locator(".xyle-change-after")).toContainText("careful editing layer");
+    await expect(change.locator(".xyle-change-after")).toContainText("one visible history");
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get(pagePath)).text();
+    expect(source).toContain(`<p>${expectedHtml}</p>`);
+    expect(source).not.toContain("data-xyle-node");
+
+    await page.goto(pagePath);
+    const published = page.locator("p").filter({ hasText: "careful editing layer" });
+    await expect(published).toHaveCount(1);
+    expect(await published.evaluate((element) => element.innerHTML)).toBe(expectedHtml);
+  });
+
   test("selection crossing the <strong> boundary is reverted", async () => {
     const pId = await findNodeByText(page, "We are a");
     const before = await nodeSkeleton(page, pId!);
