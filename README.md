@@ -52,6 +52,23 @@ pnpm demo:dev
 
 See [demo/README.md](demo/README.md) for first-time setup.
 
+## Host `/edit` on Cloudflare Pages
+
+Create a Cloudflare API token with **Cloudflare Pages: Edit** access for the owner's account. Put the token in the `CLOUDFLARE_API_TOKEN` environment variable with a credential manager or a hidden terminal prompt. Do not put it in a file inside the website.
+
+Then run:
+
+```bash
+cd /path/to/static-output
+npx xyle cloudflare . --project=my-static-site --account-id=YOUR_ACCOUNT_ID
+```
+
+This command creates or validates a Direct Upload Pages project, creates the owner credentials, stores the required encrypted Pages secrets, and deploys the complete static site with Xyle. It prints the editor key once and gives the owner `https://my-static-site.pages.dev/edit`.
+
+Xyle refuses to adopt an existing project unless its managed snapshot is current. Use `--force` only after you confirm that Xyle can replace the selected Direct Upload project. Git-integrated Pages projects are not supported by this command.
+
+The deployed editor publishes complete, storage-free Pages snapshots. The website files remain the content source of truth. The runtime token is required so an owner-approved publish can create the next deployment; it is never sent to the browser.
+
 ## Edit with an agent
 
 Open Xyle edit mode in a browser with WebMCP support. Ask the agent to inspect
@@ -83,8 +100,9 @@ made since your last managed deployment unless you pass `--force`.
 ```bash
 pnpm check          # typecheck + unit tests + biome
 pnpm test:e2e       # Playwright suite (Chromium/Firefox; WebKit needs host deps)
-pnpm test:package   # pack, install, edit, publish, and reload a temporary static site
-pnpm test:website   # build and test the product homepage and isolated browser demo
+pnpm test:package              # pack, install, edit, publish, and reload a temporary static site
+pnpm test:website              # build and test the product homepage and isolated browser demo
+pnpm test:cloudflare-runtime   # run the packaged Pages Worker locally with workerd
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the design,

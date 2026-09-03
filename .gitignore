@@ -4,4 +4,6 @@ test-results/
 playwright-report/
 .xyle/
 _xyle/
+!functions/_xyle/
+!functions/_xyle/**
 *.local

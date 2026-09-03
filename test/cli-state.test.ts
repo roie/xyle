@@ -1,10 +1,11 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildAuthConfig,
   loadOrCreateSecrets,
+  main,
   readOrCreateState,
   updateState,
 } from "../src/cli.ts";
@@ -16,7 +17,26 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
+});
+
+describe("Cloudflare CLI validation", () => {
+  it("rejects an unsafe project name before creating local state", async () => {
+    await expect(
+      main(["cloudflare", root, "--project=Unsafe_Name", "--account-id=account"]),
+    ).rejects.toThrow(/requires --project/);
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it("requires account credentials before creating local state", async () => {
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "");
+    await expect(main(["cloudflare", root, "--project=owner-site"])).rejects.toThrow(
+      /requires --account-id and CLOUDFLARE_API_TOKEN/,
+    );
+    expect(await readdir(root)).toEqual([]);
+  });
 });
 
 describe("local Xyle secrets", () => {

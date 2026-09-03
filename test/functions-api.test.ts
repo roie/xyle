@@ -247,10 +247,68 @@ describe("hosted media publishing", () => {
 });
 
 describe("hosted publish boundaries", () => {
+  it("atomically rejects runtime files submitted as editable pages", async () => {
+    const externalFetch = vi.fn(async () => new Response(null, { status: 500 }));
+    vi.stubGlobal("fetch", externalFetch);
+    for (const pagePath of ["/_xyle/editor.js", "/_xyle/worker.bundle"]) {
+      const bytes = new Uint8Array([1, 2, 3]);
+      const fileDigest = await digestBytes(bytes);
+      const files = {
+        [pagePath]: {
+          digest: fileDigest,
+          size: bytes.byteLength,
+          contentType: pagePath.endsWith(".js") ? "text/javascript" : "application/octet-stream",
+        },
+      };
+      const manifest = {
+        version: 1 as const,
+        snapshotDigest: await computeSnapshotDigest(files),
+        files,
+      };
+      const env = {
+        ...(await hostedEnv()),
+        ASSETS: {
+          fetch: async (request: Request) =>
+            new URL(request.url).pathname === "/_xyle/manifest.json"
+              ? Response.json(manifest)
+              : new Response(null, { status: 404 }),
+        },
+      };
+      const token = await login(KEY, env);
+      const form = new FormData();
+      form.set(
+        "metadata",
+        JSON.stringify({
+          baseSnapshotDigest: manifest.snapshotDigest,
+          pages: [{ pagePath, baseDigest: fileDigest, operations: [] }],
+        }),
+      );
+      const response = await onRequest({
+        request: new Request(`${ORIGIN}/__xyle/api/publish`, {
+          method: "POST",
+          headers: {
+            origin: ORIGIN,
+            cookie: `xyle_session=${token}`,
+            "x-xyle-request": "1",
+          },
+          body: form,
+        }),
+        env,
+        params: { route: ["publish"] },
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: `invalid page target: ${pagePath}` });
+    }
+    expect(externalFetch).not.toHaveBeenCalled();
+  });
+
   it("holds the overlap guard through snapshot preparation and deployment", async () => {
+    let deployedWorkerBundle: Uint8Array | null = null;
+    let deployedRoutes = "";
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: string | URL | Request) => {
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input instanceof Request ? input.url : input);
         if (url.endsWith("/upload-token")) {
           return Response.json({ result: { jwt: "upload-token" } });
@@ -258,6 +316,11 @@ describe("hosted publish boundaries", () => {
         if (url.endsWith("/check-missing")) return Response.json({ result: [] });
         if (url.endsWith("/upsert-hashes")) return Response.json({ result: null });
         if (url.endsWith("/deployments")) {
+          const form = init?.body as FormData;
+          deployedWorkerBundle = new Uint8Array(
+            await (form.get("_worker.bundle") as File).arrayBuffer(),
+          );
+          deployedRoutes = await (form.get("_routes.json") as File).text();
           return Response.json({ result: { id: "deployment-id" } });
         }
         return new Response(null, { status: 404 });
@@ -265,6 +328,7 @@ describe("hosted publish boundaries", () => {
     );
     const htmlBytes = new TextEncoder().encode('<img src="/photo.jpg" alt="Photo">');
     const imageBytes = new Uint8Array([1, 2, 3]);
+    const workerBytes = new Uint8Array([7, 8, 9]);
     const files = {
       "/index.html": {
         digest: await digestBytes(htmlBytes),
@@ -275,6 +339,11 @@ describe("hosted publish boundaries", () => {
         digest: await digestBytes(imageBytes),
         size: imageBytes.byteLength,
         contentType: "image/jpeg",
+      },
+      "/_xyle/worker.bundle": {
+        digest: await digestBytes(workerBytes),
+        size: workerBytes.byteLength,
+        contentType: "application/octet-stream",
       },
     };
     const manifest = {
@@ -305,7 +374,6 @@ describe("hosted publish boundaries", () => {
       CLOUDFLARE_ACCOUNT_ID: "account",
       CLOUDFLARE_API_TOKEN: "token",
       CLOUDFLARE_PROJECT: "site",
-      XYLE_WORKER_BUNDLE_B64: "AA==",
       IMAGES: { input: () => imageInput },
       ASSETS: {
         fetch: async (assetRequest: Request) => {
@@ -319,6 +387,11 @@ describe("hosted publish boundaries", () => {
           if (path === "/photo.jpg") {
             return new Response(Uint8Array.from(imageBytes).buffer, {
               headers: { "content-type": "image/jpeg" },
+            });
+          }
+          if (path === "/_xyle/worker.bundle") {
+            return new Response(Uint8Array.from(workerBytes).buffer, {
+              headers: { "content-type": "application/octet-stream" },
             });
           }
           return new Response(null, { status: 404 });
@@ -376,6 +449,8 @@ describe("hosted publish boundaries", () => {
     releaseCrop.resolve();
     const completed = await first;
     expect(completed.status, await completed.clone().text()).toBe(200);
+    expect(deployedWorkerBundle).toEqual(workerBytes);
+    expect(deployedRoutes).toContain('"/_xyle/*"');
   });
 
   it("rejects an oversized streamed body without Content-Length", async () => {
@@ -418,6 +493,59 @@ describe("hosted edit entry", () => {
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('aria-describedby="login-description login-error"');
     expect(html).not.toContain("autofocus");
+  });
+
+  it("serves the managed manifest only with the management secret", async () => {
+    const assetFetch = vi.fn(async (_request: Request) => Response.json({ version: 1 }));
+    const env = {
+      ...(await hostedEnv()),
+      XYLE_MANAGEMENT_SECRET: "management-secret",
+      ASSETS: { fetch: assetFetch },
+    };
+    const denied = await onRequest({
+      request: new Request(`${ORIGIN}/__xyle/api/managed-manifest`),
+      env,
+      params: { route: ["managed-manifest"] },
+    });
+    expect(denied.status).toBe(401);
+    expect(assetFetch).not.toHaveBeenCalled();
+
+    const allowed = await onRequest({
+      request: new Request(`${ORIGIN}/__xyle/api/managed-manifest`, {
+        headers: { "x-xyle-management-secret": "management-secret" },
+      }),
+      env,
+      params: { route: ["managed-manifest"] },
+    });
+    expect(allowed.status).toBe(200);
+    expect(new URL(assetFetch.mock.calls[0]?.[0]?.url ?? ORIGIN).pathname).toBe(
+      "/_xyle/manifest.json",
+    );
+  });
+
+  it("loads the editor from the private runtime asset after sign-in", async () => {
+    const env = await hostedEnv();
+    const token = await login(KEY, env);
+    const response = await onRequestGet({
+      request: new Request(`${ORIGIN}/edit`, {
+        headers: { cookie: `xyle_session=${token}` },
+      }),
+      env,
+    });
+
+    expect(await response.text()).toContain('src="/__xyle/api/assets/editor.js"');
+  });
+
+  it("serves the editor bundle from the private runtime asset", async () => {
+    const assetFetch = vi.fn(async (_request: Request) => new Response("editor bundle"));
+    const response = await onRequest({
+      request: new Request(`${ORIGIN}/__xyle/api/assets/editor.js`),
+      env: { ...(await hostedEnv()), ASSETS: { fetch: assetFetch } },
+      params: { route: ["assets", "editor.js"] },
+    });
+
+    expect(await response.text()).toBe("editor bundle");
+    expect(new URL(assetFetch.mock.calls[0]?.[0]?.url ?? ORIGIN).pathname).toBe("/_xyle/editor.js");
   });
 });
 

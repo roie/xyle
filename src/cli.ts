@@ -3,9 +3,10 @@
 import { realpathSync } from "node:fs";
 import { appendFile, link, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateEditorKey } from "./auth.ts";
+import { ensureDirectUploadProject, uploadPagesSecrets } from "./cloudflare-setup.ts";
 import { FilesystemPublisher } from "./publishers/filesystem.ts";
 import { CloudflarePagesPublisher } from "./publishers/cloudflare.ts";
 import { createXyleHandler, type RuntimeContext } from "./server.ts";
@@ -17,7 +18,7 @@ const SECRETS_DIR = ".xyle";
 const SECRETS_FILE = "secrets.local.json";
 const STATE_FILE = ".xyle.json";
 
-interface Secrets {
+export interface Secrets {
   editorKey: string;
   sessionSecretB64: string;
 }
@@ -129,6 +130,11 @@ export async function loadOrCreateSecrets(
     if (!concurrentSecrets) throw error;
     return { secrets: concurrentSecrets, freshKey: null };
   }
+}
+
+export async function managementSecretFor(secrets: Secrets): Promise<string> {
+  const validSecrets = validateSecrets(secrets);
+  return digestBytes(new TextEncoder().encode(`xyle-management:${validSecrets.sessionSecretB64}`));
 }
 
 export async function buildAuthConfig(
@@ -343,7 +349,8 @@ export async function startXyleDevServer(options: DevServerOptions): Promise<{
     ? new CloudflarePagesPublisher({
         root,
         projectName,
-        wranglerCommand: join(process.cwd(), "node_modules/.bin/wrangler"),
+        managementSecret: await managementSecretFor(secrets),
+        runtimeDirectory: dirname(fileURLToPath(import.meta.url)),
       })
     : new FilesystemPublisher({ root });
 
@@ -448,6 +455,8 @@ interface CliArgs {
   directory: string;
   force: boolean;
   port?: number;
+  project?: string;
+  accountId?: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -455,12 +464,93 @@ function parseArgs(argv: string[]): CliArgs {
   const force = argv.includes("--force");
   const portFlag = argv.find((a) => a.startsWith("--port="));
   const parsedPort = portFlag ? Number(portFlag.split("=")[1]) : undefined;
+  const project = argv.find((a) => a.startsWith("--project="))?.split("=")[1];
+  const accountId = argv.find((a) => a.startsWith("--account-id="))?.split("=")[1];
   return {
     command: command || "dev",
     directory: positional ?? ".",
     force,
     ...(parsedPort !== undefined ? { port: parsedPort } : {}),
+    ...(project ? { project } : {}),
+    ...(accountId ? { accountId } : {}),
   };
+}
+
+async function runCloudflareSetup(args: CliArgs): Promise<number> {
+  const root = resolve(args.directory);
+  const projectName = args.project ?? process.env.XYLE_CLOUDFLARE_PROJECT;
+  const accountId = args.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (!projectName || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(projectName)) {
+    throw new Error("Cloudflare setup requires --project=<letters-numbers-and-hyphens>.");
+  }
+  if (!accountId || !apiToken) {
+    throw new Error(
+      "Cloudflare setup requires --account-id and CLOUDFLARE_API_TOKEN with Pages edit access.",
+    );
+  }
+
+  const publisherOptions = {
+    root,
+    projectName,
+    accountId,
+    apiToken,
+    runtimeDirectory: dirname(fileURLToPath(import.meta.url)),
+  };
+  await new CloudflarePagesPublisher(publisherOptions).validateLocalSite();
+  const { manifest } = await buildManifestFromDirectory(root);
+  const { secrets, freshKey } = await loadOrCreateSecrets(root);
+  const publisher = new CloudflarePagesPublisher({
+    ...publisherOptions,
+    managementSecret: await managementSecretFor(secrets),
+  });
+  const state = await readOrCreateState(root);
+  const project = await ensureDirectUploadProject({ accountId, apiToken, projectName });
+  if (project === "existing") {
+    try {
+      const current = await publisher.readSnapshot();
+      const decision = evaluateDeployGuard(
+        state.lastManagedSnapshotDigest,
+        current.snapshotDigest,
+        args.force,
+      );
+      if (!decision.allowed) throw new Error(decision.reason);
+    } catch (error) {
+      if (!args.force) {
+        throw new Error(
+          `${(error as Error).message}\nUse --force only after you confirm that Xyle can replace this Direct Upload project.`,
+        );
+      }
+    }
+  }
+
+  const auth = await buildAuthConfig(secrets);
+  await uploadPagesSecrets(root, {
+    accountId,
+    apiToken,
+    projectName,
+    secrets: {
+      CLOUDFLARE_ACCOUNT_ID: accountId,
+      CLOUDFLARE_API_TOKEN: apiToken,
+      CLOUDFLARE_PROJECT: projectName,
+      XYLE_EDITOR_KEY_DIGEST: auth.editorKeyDigest,
+      XYLE_MANAGEMENT_SECRET: await managementSecretFor(secrets),
+      XYLE_SESSION_SECRET: secrets.sessionSecretB64,
+    },
+  });
+  const result = await publisher.bootstrap(manifest);
+  await updateState(root, {
+    publisher: "cloudflare-pages",
+    lastManagedSnapshotDigest: result.snapshot.snapshotDigest,
+  });
+
+  console.log(`Cloudflare Pages deployment created: ${result.id}`);
+  console.log(`Editor: https://${projectName}.pages.dev/edit`);
+  if (freshKey) {
+    console.log("\nEditor key (stored in .xyle/secrets.local.json — shown once):\n");
+    console.log(`  ${freshKey}\n`);
+  }
+  return 0;
 }
 
 async function runDeploy(directory: string, force: boolean): Promise<number> {
@@ -468,10 +558,12 @@ async function runDeploy(directory: string, force: boolean): Promise<number> {
   const state = await readOrCreateState(root);
   const projectName = process.env.XYLE_CLOUDFLARE_PROJECT;
   if (projectName) {
+    const { secrets } = await loadOrCreateSecrets(root);
     const publisher = new CloudflarePagesPublisher({
       root,
       projectName,
-      wranglerCommand: join(process.cwd(), "node_modules/.bin/wrangler"),
+      managementSecret: await managementSecretFor(secrets),
+      runtimeDirectory: dirname(fileURLToPath(import.meta.url)),
     });
     const { manifest } = await buildManifestFromDirectory(root);
     try {
@@ -547,9 +639,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     }
     case "deploy":
       return runDeploy(args.directory, args.force);
+    case "cloudflare":
+      return runCloudflareSetup(args);
     default:
       console.error(`Unknown command: ${args.command}`);
-      console.error("Usage: xyle <init|dev|deploy> [directory] [--force] [--port=N]");
+      console.error(
+        "Usage: xyle <init|dev|deploy|cloudflare> [directory] [--force] [--port=N] [--project=NAME] [--account-id=ID]",
+      );
       return 2;
   }
 }

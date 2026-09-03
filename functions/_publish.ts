@@ -3,7 +3,12 @@ import { digestBytes } from "../src/digest.ts";
 import { MAX_UPLOAD_BYTES, MEDIA_PREFIX } from "../src/media.ts";
 import { mediaSourcePath } from "../src/media-state.ts";
 import { BodyTooLargeError, readBodyBytes } from "../src/request-body.ts";
-import { pagesAssetHash, pagesRequest, type PagesEnv } from "./_pages";
+import {
+  pagesAssetHash,
+  pagesRequest,
+  type PagesEnv,
+  XYLE_WORKER_BUNDLE_PATH,
+} from "./_pages";
 
 export interface PublishFile { path: string; bytes: Uint8Array; contentType: string; }
 
@@ -192,16 +197,18 @@ export async function deployCompleteSnapshot(
   }
   const upsertResponse = await fetch("https://api.cloudflare.com/client/v4/pages/assets/upsert-hashes", { method: "POST", headers: assetHeaders, body: JSON.stringify({ hashes: assets.map((asset) => asset.hash) }) });
   if (!upsertResponse.ok) throw new Error(`Cloudflare asset hash registration failed (${upsertResponse.status})`);
-  if (!env.XYLE_WORKER_BUNDLE_B64) {
-    throw new Error("Xyle Cloudflare runtime bundle is not configured");
-  }
+  const workerBundle = files.find((file) => file.path === XYLE_WORKER_BUNDLE_PATH);
+  if (!workerBundle) throw new Error("Xyle Cloudflare runtime bundle is unavailable");
   const form = new FormData();
   form.set("manifest", JSON.stringify(Object.fromEntries(assets.map((asset) => [asset.path, asset.hash]))));
-  form.set("_worker.bundle", new File([bytesFromBase64(env.XYLE_WORKER_BUNDLE_B64)], "_worker.bundle"));
+  form.set(
+    "_worker.bundle",
+    new File([new Uint8Array(workerBundle.bytes).buffer], "_worker.bundle"),
+  );
   form.set(
     "_routes.json",
     new File(
-      [JSON.stringify({ version: 1, include: ["/edit", "/__xyle/*"], exclude: [] })],
+      [JSON.stringify({ version: 1, include: ["/edit", "/__xyle/*", "/_xyle/*"], exclude: [] })],
       "_routes.json",
     ),
   );
@@ -215,11 +222,4 @@ function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
-}
-
-function bytesFromBase64(value: string): ArrayBuffer {
-  const binary = atob(value);
-  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes.buffer;
 }

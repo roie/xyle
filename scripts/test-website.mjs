@@ -67,6 +67,7 @@ try {
   await page.getByRole("heading", { name: "Change content without changing how your site works." }).waitFor();
   await page.getByRole("heading", { name: "Know the editing boundary" }).waitFor();
   await page.getByText("Not supported in v1", { exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Put the editor on Cloudflare Pages" }).waitFor();
   const guideOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth,
   );

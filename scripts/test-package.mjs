@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +67,21 @@ try {
     ".bin",
     process.platform === "win32" ? "xyle.cmd" : "xyle",
   );
+  for (const runtimeFile of ["cloudflare-worker.js", "xyle-worker.bundle"]) {
+    const runtimePath = join(consumer, "node_modules", "xyle", "dist", runtimeFile);
+    const runtimeStat = await stat(runtimePath);
+    if (!runtimeStat.isFile()) {
+      fail(`The package is missing its Cloudflare runtime: ${runtimeFile}`);
+    }
+  }
+  const wrangler = join(
+    consumer,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "wrangler.cmd" : "wrangler",
+  );
+  const wranglerStat = await stat(wrangler);
+  if (!wranglerStat.isFile()) fail("The package did not install its Cloudflare deployer.");
   const initialized = await execFileAsync("npx", ["xyle", "init", site], { cwd: consumer });
   if (!initialized.stdout.includes("Xyle initialized for")) {
     fail(`Packaged init did not report success.\n${initialized.stdout}`);

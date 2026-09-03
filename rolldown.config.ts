@@ -16,6 +16,16 @@ export default defineConfig([
   },
   {
     input: {
+      "cloudflare-worker": "src/cloudflare-worker.ts",
+    },
+    platform: "browser",
+    output: {
+      dir: "dist",
+      format: "esm",
+    },
+  },
+  {
+    input: {
       cli: "src/cli.ts",
     },
     external: dependencies,

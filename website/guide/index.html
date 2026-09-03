@@ -108,6 +108,19 @@
         </div>
       </section>
 
+      <section class="guide-section" aria-labelledby="hosting-title">
+        <div class="guide-heading"><span>06</span><h2 id="hosting-title">Put the editor on Cloudflare Pages</h2></div>
+        <div class="guide-body">
+          <p>Create a scoped API token with <strong>Cloudflare Pages: Edit</strong> access. Store it in the <code>CLOUDFLARE_API_TOKEN</code> environment variable. Do not add the token to the website directory.</p>
+          <pre><code><span>$</span> cd /path/to/static-output
+<span>$</span> npx xyle cloudflare . \
+    --project=my-static-site \
+    --account-id=YOUR_ACCOUNT_ID</code></pre>
+          <p>Xyle creates or validates a Direct Upload project, stores encrypted owner credentials, deploys the complete site, and prints its secure <code>/edit</code> URL.</p>
+          <p>Git-integrated Pages projects are not supported. For an existing Direct Upload project, Xyle requires a matching managed snapshot or an explicit <code>--force</code> adoption.</p>
+        </div>
+      </section>
+
       <section class="guide-finish" aria-labelledby="finish-title">
         <div><p class="kicker">Try it safely</p><h2 id="finish-title">Practice in an isolated copy.</h2></div>
         <p>The public demo resets when you refresh it. It does not modify the Xyle website.</p>

@@ -11,6 +11,7 @@ import type {
 } from "../types.ts";
 import { MANIFEST_PATH, StaleSnapshotError } from "./filesystem.ts";
 import {
+  computeSnapshotDigest,
   digestBytes,
   isManagedLayoutAssetPath,
   scanStaticDirectory,
@@ -25,7 +26,9 @@ export interface CloudflarePublisherOptions {
   projectName: string;
   accountId?: string;
   apiToken?: string;
+  managementSecret?: string;
   wranglerCommand?: string;
+  runtimeDirectory?: string;
 }
 
 export class CloudflareConfigurationError extends Error {
@@ -139,12 +142,14 @@ interface PagesProject {
 
 export class CloudflarePagesPublisher implements Publisher {
   private readonly root: string;
+  private readonly runtimeDirectory: string;
   private readonly wrangler: string;
   private readonly options: CloudflarePublisherOptions;
 
   constructor(options: CloudflarePublisherOptions) {
     this.options = options;
     this.root = resolve(options.root);
+    this.runtimeDirectory = resolve(options.runtimeDirectory ?? join(process.cwd(), "dist"));
     this.wrangler = options.wranglerCommand ?? "wrangler";
   }
 
@@ -166,11 +171,22 @@ export class CloudflarePagesPublisher implements Publisher {
     });
   }
 
+  async validateLocalSite(): Promise<void> {
+    await this.assertLocalControlState();
+    const { manifest } = await scanStaticDirectory(this.root);
+    if (!Object.keys(manifest.files).some((path) => path.endsWith(".html"))) {
+      throw new CloudflareConfigurationError(
+        "Cloudflare setup requires at least one static HTML file.",
+      );
+    }
+  }
+
   private async assertLocalControlState(): Promise<void> {
     const unsupported = [
       [join(this.root, "functions"), "a local Functions directory"],
       [join(this.root, "_worker.js"), "a local worker script"],
       [join(this.root, "_worker"), "a local worker directory"],
+      [join(this.root, "_xyle"), "a local _xyle directory"],
       [join(this.root, "_routes.json"), "a local _routes.json file"],
     ] as const;
     for (const [path, description] of unsupported) {
@@ -217,9 +233,18 @@ export class CloudflarePagesPublisher implements Publisher {
   async readSnapshot(): Promise<PublishedSnapshot> {
     await this.assertSupportedProject();
     await this.assertRemoteRuntime();
-    const response = await fetch(`https://${this.options.projectName}.pages.dev${MANIFEST_PATH}`, {
-      cache: "no-store",
-    });
+    if (!this.options.managementSecret) {
+      throw new CloudflareConfigurationError(
+        "Cloudflare managed snapshot access is not configured.",
+      );
+    }
+    const response = await fetch(
+      `https://${this.options.projectName}.pages.dev/__xyle/api/managed-manifest`,
+      {
+        cache: "no-store",
+        headers: { "x-xyle-management-secret": this.options.managementSecret },
+      },
+    );
     if (!response.ok) {
       throw new CloudflareConfigurationError(
         "Refusing to adopt this Pages project: its current deployment has no Xyle manifest.",
@@ -283,15 +308,24 @@ export class CloudflarePagesPublisher implements Publisher {
     const staging = await mkdtemp(join(process.cwd(), ".xyle-stage-"));
     try {
       await this.stageStaticSnapshot(staging, new Set(Object.keys(manifest.files)));
-      await this.stageControlRuntime(staging);
+      const runtimeFiles = await this.stageControlRuntime(staging);
       await this.stageLocalManagedManifest(staging);
-      await assertStagedSnapshot(staging, manifest);
-      await assertStagedManagedManifest(staging, manifest);
+      const hostedFiles = { ...manifest.files, ...runtimeFiles };
+      const hostedManifest: XyleManifest = {
+        version: 1,
+        snapshotDigest: await computeSnapshotDigest(hostedFiles),
+        files: hostedFiles,
+      };
+      await assertStagedSnapshot(staging, hostedManifest);
+      await assertStagedManagedManifest(staging, hostedManifest);
       const manifestPath = join(staging, MANIFEST_PATH.replace(/^\//, ""));
       await mkdir(dirname(manifestPath), { recursive: true });
-      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+      await writeFile(manifestPath, JSON.stringify(hostedManifest, null, 2));
       const id = await this.runWrangler(staging);
-      return { snapshot: { snapshotDigest: manifest.snapshotDigest, manifest }, id };
+      return {
+        snapshot: { snapshotDigest: hostedManifest.snapshotDigest, manifest: hostedManifest },
+        id,
+      };
     } finally {
       await rm(staging, { recursive: true, force: true }).catch(() => {});
     }
@@ -322,33 +356,43 @@ export class CloudflarePagesPublisher implements Publisher {
     await writeFile(target, bytes);
   }
 
-  private async stageControlRuntime(staging: string): Promise<void> {
-    // Functions import shared HTML/manifest code, so stage that source beside them.
-    await cp(join(process.cwd(), "functions"), join(staging, "functions"), { recursive: true });
-    await cp(join(process.cwd(), "src"), join(staging, "src"), { recursive: true });
-    await cp(join(process.cwd(), "dist", "editor.js"), join(staging, "editor.js"));
-    await cp(
-      join(process.cwd(), "functions", "blake3_js_bg.wasm"),
-      join(staging, "blake3_js_bg.wasm"),
-    );
-    await writeFile(
-      join(staging, "wrangler.jsonc"),
-      JSON.stringify(
-        {
-          $schema: "./node_modules/wrangler/config-schema.json",
-          name: this.options.projectName,
-          pages_build_output_dir: ".",
-          compatibility_date: "2026-08-24",
-          images: { binding: "IMAGES" },
-        },
-        null,
-        2,
-      ),
-    );
+  private async stageControlRuntime(staging: string): Promise<XyleManifest["files"]> {
+    const stagedRuntime = [
+      {
+        source: "editor.js",
+        destination: join("_xyle", "editor.js"),
+        sitePath: "/_xyle/editor.js",
+        contentType: "text/javascript",
+      },
+      {
+        source: "xyle-worker.bundle",
+        destination: join("_xyle", "worker.bundle"),
+        sitePath: "/_xyle/worker.bundle",
+        contentType: "application/octet-stream",
+      },
+    ];
+    const entries = Object.create(null) as XyleManifest["files"];
+    for (const runtime of stagedRuntime) {
+      const bytes = new Uint8Array(await readFile(join(this.runtimeDirectory, runtime.source)));
+      const destination = join(staging, runtime.destination);
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, bytes);
+      entries[runtime.sitePath] = {
+        digest: await digestBytes(bytes),
+        size: bytes.byteLength,
+        contentType: runtime.contentType,
+      };
+    }
+    await cp(join(this.runtimeDirectory, "cloudflare-worker.js"), join(staging, "_worker.js"));
     await writeFile(
       join(staging, "_routes.json"),
-      JSON.stringify({ version: 1, include: ["/edit", "/__xyle/*"], exclude: [] }),
+      JSON.stringify({
+        version: 1,
+        include: ["/edit", "/__xyle/*", "/_xyle/*"],
+        exclude: [],
+      }),
     );
+    return entries;
   }
 
   private runWrangler(directory: string): Promise<string> {

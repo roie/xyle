@@ -1,4 +1,11 @@
-import { authenticated, login, logoutCookie, sessionCookie, type Env } from "../../_auth";
+import {
+  authenticated,
+  constantTimeEqual,
+  login,
+  logoutCookie,
+  sessionCookie,
+  type Env,
+} from "../../_auth";
 import {
   deployCompleteSnapshot,
   materializeHostedMediaOperations,
@@ -16,6 +23,7 @@ import type { ManifestFile, PageOperation, XyleDigest } from "../../../src/types
 type RuntimeEnv = Env & {
   ASSETS: { fetch(request: Request): Promise<Response> };
   CLOUDFLARE_PROJECT?: string;
+  XYLE_MANAGEMENT_SECRET?: string;
   IMAGES?: import("../../_publish").CloudflareImagesBinding;
 };
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -75,6 +83,22 @@ function cspPermits(source: string, policies: string[], origin: string): boolean
 export const onRequest = async ({ request, env, params }: { request: Request; env: RuntimeEnv; params: { route?: string[] } }): Promise<Response> => {
   try {
     const route = params.route?.join("/") ?? "";
+  if (route === "managed-manifest") {
+    const supplied = request.headers.get("x-xyle-management-secret") ?? "";
+    if (
+      request.method !== "GET" ||
+      !env.XYLE_MANAGEMENT_SECRET ||
+      !constantTimeEqual(supplied, env.XYLE_MANAGEMENT_SECRET)
+    ) {
+      return Response.json({ error: "authentication required" }, { status: 401 });
+    }
+    const manifestUrl = new URL(request.url);
+    manifestUrl.pathname = "/_xyle/manifest.json";
+    const response = await env.ASSETS.fetch(new Request(manifestUrl, { method: "GET" }));
+    const headers = new Headers(response.headers);
+    headers.set("cache-control", "no-store");
+    return new Response(response.body, { status: response.status, headers });
+  }
   if (route === "login" && request.method === "POST") {
     const body = await request.json().catch(() => null) as { key?: string } | null;
     const token = typeof body?.key === "string" ? await login(body.key, env) : null;
@@ -88,7 +112,8 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
   }
   if (route === "manifest.json" || route.startsWith("assets/")) {
     const assetUrl = new URL(request.url);
-    assetUrl.pathname = `/__xyle/${route}`;
+    assetUrl.pathname =
+      route === "assets/editor.js" ? "/_xyle/editor.js" : `/__xyle/${route}`;
     return env.ASSETS.fetch(new Request(assetUrl, { method: request.method }));
   }
   if ((route === "logout" || route === "publish") && (request.method !== "POST" || request.headers.get("x-xyle-request") !== "1" || request.headers.get("origin") !== new URL(request.url).origin)) return Response.json({ error: "mutation rejected" }, { status: 403 });
@@ -180,6 +205,17 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
     const current = await (await env.ASSETS.fetch(new Request(manifestUrl))).json() as { files: Record<string, ManifestFile>; snapshotDigest: XyleDigest };
     if (metadata.baseSnapshotDigest !== current.snapshotDigest) {
       return Response.json({ error: "stale-site", currentSnapshotDigest: current.snapshotDigest }, { status: 409 });
+    }
+    for (const page of metadata.pages) {
+      const entry = current.files[page.pagePath];
+      if (
+        !entry ||
+        entry.contentType !== "text/html" ||
+        page.pagePath.startsWith("/_xyle/") ||
+        page.pagePath.startsWith("/__xyle/")
+      ) {
+        return Response.json({ error: `invalid page target: ${page.pagePath}` }, { status: 400 });
+      }
     }
     const uploads: Array<{ path: string; bytes: Uint8Array; contentType: string }> = [];
     let uploadBytes = 0;

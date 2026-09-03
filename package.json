@@ -15,7 +15,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "rolldown -c",
+    "build": "rolldown -c && wrangler pages functions build functions --outfile dist/xyle-worker.bundle",
     "build:website": "pnpm build && node scripts/build-website.mjs",
     "prepack": "pnpm build",
     "dev": "tsx src/cli.ts dev",
@@ -26,6 +26,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:package": "node scripts/test-package.mjs",
+    "test:cloudflare-runtime": "pnpm build && node scripts/test-cloudflare-runtime.mjs",
     "test:website": "pnpm build:website && node scripts/test-website.mjs",
     "check": "pnpm typecheck && pnpm test && ./node_modules/.bin/biome check ."
   },
@@ -33,7 +34,8 @@
     "@noble/hashes": "^2.3.0",
     "blake3-wasm": "2.1.5",
     "parse5": "^8.0.1",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.4",
+    "wrangler": "^4.128.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.9",
@@ -42,7 +44,6 @@
     "rolldown": "^1.2.5",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11",
-    "wrangler": "^4.125.0"
+    "vitest": "^4.1.11"
   }
 }

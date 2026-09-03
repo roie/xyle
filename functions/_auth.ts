@@ -4,7 +4,7 @@ const encoder = new TextEncoder();
 const toBase64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 const fromBase64Url = (value: string) => Uint8Array.from(atob(value.replaceAll("-", "+").replaceAll("_", "/")), (char) => char.charCodeAt(0));
 
-function constantTimeEqual(a: string, b: string): boolean {
+export function constantTimeEqual(a: string, b: string): boolean {
   const length = Math.max(a.length, b.length);
   let difference = a.length ^ b.length;
   for (let index = 0; index < length; index += 1) {
