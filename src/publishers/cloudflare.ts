@@ -6,12 +6,15 @@ import type {
   PublishSnapshot,
   PublishedSnapshot,
   Publisher,
+  SiteFile,
   XyleManifest,
 } from "../types.ts";
 import { MANIFEST_PATH, StaleSnapshotError } from "./filesystem.ts";
 import {
   digestBytes,
+  isManagedLayoutAssetPath,
   scanStaticDirectory,
+  validateManagedAssetManifest,
   validateManifest,
   XYLE_MANAGED_ASSET_MANIFEST_PATH,
 } from "../manifest.ts";
@@ -29,6 +32,59 @@ export class CloudflareConfigurationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CloudflareConfigurationError";
+  }
+}
+
+async function assertPublishFile(file: SiteFile, manifest: XyleManifest): Promise<void> {
+  if ((await digestBytes(file.bytes)) !== file.digest) {
+    throw new CloudflareConfigurationError(
+      `Refusing deployment: staged file bytes do not match their digest: ${file.path}`,
+    );
+  }
+  if (file.path === XYLE_MANAGED_ASSET_MANIFEST_PATH) return;
+  const entry = manifest.files[file.path];
+  if (
+    !entry ||
+    entry.digest !== file.digest ||
+    entry.size !== file.bytes.byteLength ||
+    entry.contentType !== file.contentType
+  ) {
+    throw new CloudflareConfigurationError(
+      `Refusing deployment: staged file is not declared by the final manifest: ${file.path}`,
+    );
+  }
+}
+
+async function validateManagedManifestBytes(
+  bytes: Uint8Array,
+  manifest: XyleManifest,
+): Promise<void> {
+  let managed: Awaited<ReturnType<typeof validateManagedAssetManifest>>;
+  try {
+    managed = await validateManagedAssetManifest(JSON.parse(new TextDecoder().decode(bytes)));
+  } catch {
+    throw new CloudflareConfigurationError(
+      "Refusing deployment: malformed managed Layout asset manifest",
+    );
+  }
+  const expectedPaths = Object.keys(manifest.files).filter(isManagedLayoutAssetPath);
+  if (
+    Object.keys(managed.assets).length !== expectedPaths.length ||
+    expectedPaths.some((path) => {
+      const expected = manifest.files[path];
+      const declared = managed.assets[path];
+      return (
+        !expected ||
+        !declared ||
+        expected.digest !== declared.digest ||
+        expected.size !== declared.size ||
+        expected.contentType !== declared.contentType
+      );
+    })
+  ) {
+    throw new CloudflareConfigurationError(
+      "Refusing deployment: managed Layout assets do not match the final manifest",
+    );
   }
 }
 
@@ -52,6 +108,29 @@ async function assertStagedSnapshot(staging: string, manifest: XyleManifest): Pr
       );
     }
   }
+}
+
+async function assertStagedManagedManifest(staging: string, manifest: XyleManifest): Promise<void> {
+  const path = join(staging, XYLE_MANAGED_ASSET_MANIFEST_PATH.replace(/^\/+/, ""));
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await readFile(path));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (
+      (code === "ENOENT" || code === "ENOTDIR") &&
+      !Object.keys(manifest.files).some(isManagedLayoutAssetPath)
+    ) {
+      return;
+    }
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new CloudflareConfigurationError(
+        "Refusing deployment: managed Layout asset manifest is missing",
+      );
+    }
+    throw error;
+  }
+  await validateManagedManifestBytes(bytes, manifest);
 }
 
 interface PagesProject {
@@ -167,19 +246,16 @@ export class CloudflarePagesPublisher implements Publisher {
       await this.stageStaticSnapshot(staging, new Set(Object.keys(next.manifest.files)));
       await this.stageControlRuntime(staging);
       for (const file of [...next.changedFiles, ...next.addedFiles, ...(next.managedFiles ?? [])]) {
-        if (
-          !Object.hasOwn(next.manifest.files, file.path) &&
-          file.path !== XYLE_MANAGED_ASSET_MANIFEST_PATH
-        ) {
-          throw new CloudflareConfigurationError(
-            `Refusing deployment: staged file is not declared by the final manifest: ${file.path}`,
-          );
+        await assertPublishFile(file, next.manifest);
+        if (file.path === XYLE_MANAGED_ASSET_MANIFEST_PATH) {
+          await validateManagedManifestBytes(file.bytes, next.manifest);
         }
         const target = join(staging, file.path.replace(/^\/+/, ""));
         await mkdir(dirname(target), { recursive: true });
         await writeFile(target, file.bytes);
       }
       await assertStagedSnapshot(staging, next.manifest);
+      await assertStagedManagedManifest(staging, next.manifest);
       const manifestPath = join(staging, MANIFEST_PATH.replace(/^\//, ""));
       await mkdir(dirname(manifestPath), { recursive: true });
       await writeFile(manifestPath, JSON.stringify(next.manifest, null, 2));
@@ -208,7 +284,9 @@ export class CloudflarePagesPublisher implements Publisher {
     try {
       await this.stageStaticSnapshot(staging, new Set(Object.keys(manifest.files)));
       await this.stageControlRuntime(staging);
+      await this.stageLocalManagedManifest(staging);
       await assertStagedSnapshot(staging, manifest);
+      await assertStagedManagedManifest(staging, manifest);
       const manifestPath = join(staging, MANIFEST_PATH.replace(/^\//, ""));
       await mkdir(dirname(manifestPath), { recursive: true });
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
@@ -227,6 +305,21 @@ export class CloudflarePagesPublisher implements Publisher {
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, bytes);
     }
+  }
+
+  private async stageLocalManagedManifest(staging: string): Promise<void> {
+    const source = join(this.root, XYLE_MANAGED_ASSET_MANIFEST_PATH.replace(/^\/+/, ""));
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await readFile(source));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return;
+      throw error;
+    }
+    const target = join(staging, XYLE_MANAGED_ASSET_MANIFEST_PATH.replace(/^\/+/, ""));
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, bytes);
   }
 
   private async stageControlRuntime(staging: string): Promise<void> {

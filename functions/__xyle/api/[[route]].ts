@@ -215,6 +215,7 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
         byPath.set(layoutCssPath, { path: layoutCssPath, bytes: layoutCssBytes, contentType: "text/css" });
       }
     }
+    const cropBudget = { remainingBytes: MAX_UPLOAD_BYTES };
     for (const page of metadata.pages ?? []) {
       const file = byPath.get(page.pagePath);
       const entry = current.files[page.pagePath];
@@ -225,6 +226,7 @@ export const onRequest = async ({ request, env, params }: { request: Request; en
         page.operations,
         byPath,
         submitted,
+        cropBudget,
       );
       for (const asset of materialized.assets) byPath.set(asset.path, asset);
       const pageSource = new TextDecoder().decode(file.bytes);

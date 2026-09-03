@@ -68,7 +68,7 @@ describe("hosted media publishing", () => {
       type: "media" as const,
       nodeId: "image-1",
       value: {
-        source: { kind: "existing" as const, src: "/photo.jpg" },
+        source: { kind: "existing" as const, src: "/photo.jpg?v=1" },
         alt: { present: false, value: "" },
         crop: { x: 0.1, y: 0.2, width: 0.5, height: 0.4 },
         focus: null,
@@ -117,7 +117,7 @@ describe("hosted media publishing", () => {
         new Map(),
         new Map(),
       ),
-    ).rejects.toThrow(/current snapshot or staged uploads/);
+    ).rejects.toThrow(/same-origin site asset/);
   });
 
   it("rejects oversized crop output before buffering it", async () => {
@@ -160,6 +160,57 @@ describe("hosted media publishing", () => {
         new Map(),
       ),
     ).rejects.toThrow(/output is too large/);
+  });
+
+  it("caps aggregate crop output across one publication", async () => {
+    let outputCount = 0;
+    const input = {
+      transform() {
+        return input;
+      },
+      output: async () => ({
+        response: async () => {
+          outputCount += 1;
+          return new Response(new Uint8Array([outputCount, outputCount, outputCount]), {
+            headers: { "content-type": "image/webp" },
+          });
+        },
+      }),
+    };
+    const operation = {
+      type: "media" as const,
+      nodeId: "image-1",
+      value: {
+        source: { kind: "existing" as const, src: "/photo.jpg" },
+        alt: { present: false, value: "" },
+        crop: { x: 0, y: 0, width: 0.5, height: 1 },
+        focus: null,
+      },
+    };
+
+    await expect(
+      materializeHostedMediaOperations(
+        { IMAGES: { input: () => input } },
+        `${ORIGIN}/__xyle/api/publish`,
+        [
+          operation,
+          {
+            ...operation,
+            nodeId: "image-2",
+            value: { ...operation.value, crop: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+          },
+        ],
+        new Map([
+          [
+            "/photo.jpg",
+            { path: "/photo.jpg", bytes: new Uint8Array([1]), contentType: "image/jpeg" },
+          ],
+        ]),
+        new Map(),
+        { remainingBytes: 5 },
+      ),
+    ).rejects.toThrow(/aggregate publish limit/);
+    expect(outputCount).toBe(2);
   });
 
   it("rejects staged crops when no Images binding is configured", async () => {

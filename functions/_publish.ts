@@ -22,6 +22,10 @@ export interface HostedPublishEnv extends PagesEnv {
 
 const MAX_HOSTED_CROP_BYTES = MAX_UPLOAD_BYTES;
 
+export interface HostedCropBudget {
+  remainingBytes: number;
+}
+
 /** Materialize normalized crops using the Workers Images binding or cf.image fetch transforms. */
 export async function materializeHostedMediaOperations(
   env: HostedPublishEnv,
@@ -29,6 +33,7 @@ export async function materializeHostedMediaOperations(
   operations: PageOperation[],
   files: Map<string, PublishFile>,
   submitted: Map<string, Uint8Array>,
+  budget: HostedCropBudget = { remainingBytes: MAX_HOSTED_CROP_BYTES },
 ): Promise<{ operations: PageOperation[]; assets: PublishFile[] }> {
   const assets: PublishFile[] = [];
   const derivedByKey = new Map<string, string>();
@@ -39,7 +44,10 @@ export async function materializeHostedMediaOperations(
       output.push(operation);
       continue;
     }
-    const sourcePath = mediaSourcePath(operation.value.source);
+    const sourcePath = hostedSourcePath(mediaSourcePath(operation.value.source), requestUrl);
+    if (!sourcePath) {
+      throw new Error("media crop source is not a same-origin site asset");
+    }
     const staged = submitted.has(sourcePath);
     const sourceFile = files.get(sourcePath);
     if (!staged && !sourceFile) {
@@ -57,6 +65,10 @@ export async function materializeHostedMediaOperations(
         operation.value.crop,
         staged,
       );
+      if (bytes.byteLength > budget.remainingBytes) {
+        throw new Error("hosted crop outputs exceed the aggregate publish limit");
+      }
+      budget.remainingBytes -= bytes.byteLength;
       const digest = await digestBytes(bytes);
       derivedPath = `${MEDIA_PREFIX}${digest.slice("sha256:".length)}.webp`;
       derivedByKey.set(key, derivedPath);
@@ -74,6 +86,19 @@ export async function materializeHostedMediaOperations(
     output.push({ ...operation, value });
   }
   return { operations: output, assets };
+}
+
+function hostedSourcePath(source: string, requestUrl: string): string | null {
+  const rootRelative = source.startsWith("/") && !source.startsWith("//");
+  const absoluteHttp = /^https?:\/\//i.test(source);
+  if (!rootRelative && !absoluteHttp) return null;
+  try {
+    const requestOrigin = new URL(requestUrl).origin;
+    const parsed = new URL(source, requestOrigin);
+    return parsed.origin === requestOrigin ? parsed.pathname : null;
+  } catch {
+    return null;
+  }
 }
 
 function toSourceUrl(sourcePath: string, requestUrl: string): string | null {

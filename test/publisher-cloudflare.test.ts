@@ -65,6 +65,46 @@ describe("Cloudflare publication staging", () => {
     }
   });
 
+  it("validates managed manifest bytes and schema before staging", async () => {
+    const root = await mkdtemp(join(tmpdir(), "xyle-cloudflare-"));
+    try {
+      const manifest = await manifestFor({});
+      const publisher = new CloudflarePagesPublisher({ root, projectName: "test" });
+      const current: PublishedSnapshot = { snapshotDigest: manifest.snapshotDigest, manifest };
+      publisher.readSnapshot = async () => current;
+      internals(publisher).stageControlRuntime = async () => {};
+      const runWrangler = vi.fn(async () => "deployment-id");
+      internals(publisher).runWrangler = runWrangler;
+      const bytes = new TextEncoder().encode("{}");
+      const publishWithDigest = (digest: `sha256:${string}`) =>
+        publisher.publish({
+          baseSnapshotDigest: manifest.snapshotDigest,
+          manifest,
+          changedFiles: [],
+          addedFiles: [],
+          managedFiles: [
+            {
+              path: "/__xyle/manifest.json",
+              bytes,
+              digest,
+              contentType: "application/json",
+            },
+          ],
+          removedFiles: [],
+        });
+
+      await expect(publishWithDigest("sha256:incorrect")).rejects.toThrow(
+        /bytes do not match their digest/,
+      );
+      await expect(publishWithDigest(await digestBytes(bytes))).rejects.toThrow(
+        /malformed managed Layout asset manifest/,
+      );
+      expect(runWrangler).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("omits local files that are absent from an adopted manifest", async () => {
     const root = await mkdtemp(join(tmpdir(), "xyle-cloudflare-"));
     try {
