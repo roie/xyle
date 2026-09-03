@@ -211,20 +211,19 @@ test.describe("conflicts and recovery", () => {
     expect(await currentOps(page)).toHaveLength(0);
   });
 
-  test("published content survives a server restart", async ({ page }, info) => {
+  test("published content is served by a fresh public request", async ({ page }, info) => {
     await loginAndOpenEditor(page, "/contact.html");
     const id = await findNodeByText(page, "Edit every useful detail");
     await editNode(page, id!);
     await focusCaret(page, id!, "end");
-    const token = ` Restart-safe-${info.project.name}.`;
+    const token = ` Fresh-request-${info.project.name}.`;
     await page.keyboard.type(token);
     await clickOutsideCommit(page);
     await page.click("#xyle-publish");
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
 
-    // The webServer persists for the whole run; verify via fresh fetch that the
-    // static file changed on disk (restart equivalence is covered by the
-    // filesystem publisher unit tests which re-open the directory).
+    // The web server persists for the run. This check verifies the public file,
+    // not a process restart.
     const html = await (await page.request.get("/contact.html")).text();
     expect(html).toContain(token.trim());
   });
