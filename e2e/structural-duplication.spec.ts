@@ -45,10 +45,11 @@ async function cropImage(
   y: string,
 ): Promise<void> {
   await image.click();
-  await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+  await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
   const dialog = page.locator(".xyle-inline-media-editor");
   await expect(dialog).toBeVisible();
   await dialog.locator("select[name=fit]").selectOption("cover");
+  await dialog.getByText("Fine-tune position").click();
   await dialog.locator("#xyle-focal-x").fill(x);
   await dialog.locator("#xyle-focal-y").fill(y);
   await dialog.getByRole("button", { name: "Done" }).click();

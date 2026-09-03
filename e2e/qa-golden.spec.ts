@@ -64,19 +64,21 @@ test("golden human walkthrough covers the exposed editor contract", async ({ pag
     .poll(async () => preview.locator(`[data-xyle-node="${imageId}"]`).getAttribute("src"))
     .toMatch(/^blob:/);
 
-  await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+  await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
   const cropEditor = page.locator(".xyle-inline-media-editor");
   await expect(cropEditor).toBeVisible();
   await cropEditor.locator("#xyle-zoom").fill("1.2");
+  await cropEditor.getByText("Fine-tune position").click();
   await cropEditor.locator("#xyle-focal-x").fill("62");
   await cropEditor.locator("#xyle-focal-y").fill("38");
   await cropEditor.getByRole("button", { name: "Done" }).click();
   await expect(cropEditor).toHaveCount(0);
 
   await preview.locator(`[data-xyle-node="${imageId}"]`).click();
-  await page.locator(".xyle-img-tools").getByRole("button", { name: "Focus" }).click();
+  await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
   const focusEditor = page.locator(".xyle-inline-media-editor");
   await expect(focusEditor).toBeVisible();
+  await focusEditor.getByText("Fine-tune position").click();
   await focusEditor.locator("#xyle-focal-x").fill("58");
   await focusEditor.locator("#xyle-focal-y").fill("42");
   await focusEditor.getByRole("button", { name: "Done" }).click();

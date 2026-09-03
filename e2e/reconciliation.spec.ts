@@ -174,18 +174,19 @@ test.describe("canonical net reconciliation", () => {
     }));
 
     await image.click();
-    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
-    let dialog = page.getByRole("dialog", { name: "Crop & focal point" });
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
+    let dialog = page.getByRole("dialog", { name: "Adjust image" });
     await dialog.locator("select[name=fit]").selectOption("contain");
     await dialog.locator("#xyle-zoom").fill("1.8");
+    await dialog.getByText("Fine-tune position").click();
     await dialog.locator("#xyle-focal-x").fill("21");
     await dialog.locator("#xyle-focal-y").fill("79");
     await dialog.getByRole("button", { name: "Done" }).click();
     await expect.poll(async () => opsCount(page)).toBe(1);
 
     await image.click();
-    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
-    dialog = page.getByRole("dialog", { name: "Crop & focal point" });
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
+    dialog = page.getByRole("dialog", { name: "Adjust image" });
     await dialog.getByRole("button", { name: "Reset" }).click();
     await dialog.getByRole("button", { name: "Done" }).click();
 

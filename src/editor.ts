@@ -354,31 +354,6 @@ function removeTrappedDialog(dialog: HTMLElement | null): void {
   syncDrawerLayout();
 }
 
-function trapDialogFocus(dialog: HTMLElement, close: () => void): void {
-  inertDialogBackground(dialog);
-  dialog.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      close();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const focusable = [...dialog.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)].filter(
-      (element) => !element.hidden && element.getAttribute("aria-hidden") !== "true",
-    );
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  });
-}
-
 function configureEditorDrawer(drawer: HTMLElement, close: () => void): void {
   setDrawerShortcutExpanded(drawer, true);
   const mediaQuery = window.matchMedia("(max-width: 700px)");
@@ -3193,12 +3168,9 @@ function applyMediaPatch(
   updateDirtyUi();
 }
 
-function openImageCropEditor(
-  img: HTMLImageElement,
-  meta: NodeMeta,
-  mode: "crop" | "focus" = "crop",
-): void {
+function openImageCropEditor(img: HTMLImageElement, meta: NodeMeta): void {
   activeMediaEditor?.();
+  if (window.innerWidth < 760) img.scrollIntoView({ block: "start", inline: "nearest" });
   const original = rememberOriginalMedia(meta.pagePath, meta.id, img);
   const media = currentMediaState(meta.pagePath, meta.id, img);
   const computed = img.ownerDocument.defaultView?.getComputedStyle(img);
@@ -3225,26 +3197,32 @@ function openImageCropEditor(
   const editor = document.createElement("div");
   editor.className = "xyle-inline-media-editor";
   editor.setAttribute("role", "dialog");
-  editor.setAttribute("aria-modal", "true");
   editor.setAttribute("aria-labelledby", "xyle-crop-dialog-title");
   editor.style.setProperty("--xyle-crop-aspect", String(aspect));
-  const applyStageDimensions = (): void => {
-    const compact = window.innerWidth < 760;
-    const maximumStageWidth = Math.max(240, window.innerWidth - (compact ? 32 : 380));
-    const maximumStageHeight = Math.max(
-      180,
-      window.innerHeight - (compact ? (mode === "focus" ? 330 : 460) : 48),
-    );
-    let stageWidth = Math.min(720, maximumStageWidth);
-    let stageHeight = stageWidth / aspect;
-    if (stageHeight > maximumStageHeight) {
-      stageHeight = maximumStageHeight;
-      stageWidth = stageHeight * aspect;
+  const positionEditor = (): void => {
+    const rect = previewElementRect(img);
+    editor.style.setProperty("--xyle-crop-left", `${rect.left}px`);
+    editor.style.setProperty("--xyle-crop-top", `${rect.top}px`);
+    editor.style.setProperty("--xyle-crop-width", `${rect.width}px`);
+    editor.style.setProperty("--xyle-crop-height", `${rect.height}px`);
+    const panelWidth = Math.min(304, window.innerWidth - 16);
+    const panel = editor.querySelector<HTMLElement>(".xyle-media-editor-panel");
+    const panelHeight = Math.min(panel?.scrollHeight ?? 520, window.innerHeight - 16);
+    const gap = 12;
+    const fitsRight = window.innerWidth - rect.right >= panelWidth + gap;
+    const fitsLeft = rect.left >= panelWidth + gap;
+    if (!fitsRight && !fitsLeft) {
+      editor.dataset.xylePlacement = "bottom-sheet";
+      editor.style.removeProperty("--xyle-media-panel-left");
+      editor.style.removeProperty("--xyle-media-panel-top");
+      return;
     }
-    editor.style.setProperty("--xyle-crop-width", `${stageWidth}px`);
-    editor.style.setProperty("--xyle-crop-height", `${stageHeight}px`);
+    editor.dataset.xylePlacement = fitsRight ? "right" : "left";
+    const panelLeft = fitsRight ? rect.right + gap : rect.left - panelWidth - gap;
+    const panelTop = Math.max(8, Math.min(rect.top, window.innerHeight - panelHeight - 8));
+    editor.style.setProperty("--xyle-media-panel-left", `${panelLeft}px`);
+    editor.style.setProperty("--xyle-media-panel-top", `${panelTop}px`);
   };
-  applyStageDimensions();
   editor.replaceChildren(
     document.createRange().createContextualFragment(`
     <div class="xyle-crop-stage" role="group" aria-label="Image crop preview">
@@ -3254,8 +3232,8 @@ function openImageCropEditor(
       <span class="xyle-crop-stage-hint" aria-hidden="true">Drag to reposition</span>
     </div>
     <div class="xyle-media-editor-panel">
-      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">${mode === "focus" ? "Image focus" : "Image framing"}</span><strong id="xyle-crop-dialog-title">${mode === "focus" ? "Focus point" : "Crop & focal point"}</strong></div>
-      <p class="xyle-crop-hint">${mode === "focus" ? "Choose what must stay visible when the image frame changes." : "Choose what stays inside the frame, then adjust how tightly the image is cropped."}</p>
+      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Image framing</span><strong id="xyle-crop-dialog-title">Adjust image</strong></div>
+      <p class="xyle-crop-hint">Drag on the image to keep its most important area in view.</p>
       <label class="xyle-dialog-label" data-frame-control>Frame
         <select class="xyle-dialog-input" name="fit">
           <option value="cover">Fill the frame</option>
@@ -3279,7 +3257,7 @@ function openImageCropEditor(
           <button type="button" data-focus-x="1" data-focus-y="1" aria-label="Bottom right"></button>
         </div>
       </div>
-      <details class="xyle-focus-fine-tune" open>
+      <details class="xyle-focus-fine-tune">
         <summary>Fine-tune position</summary>
         <label class="xyle-dialog-label">Horizontal <output class="xyle-range-value" for="xyle-focal-x"></output>
           <input id="xyle-focal-x" class="xyle-dialog-range" type="range" min="0" max="100" step="1" value="50">
@@ -3297,21 +3275,18 @@ function openImageCropEditor(
     </div>`),
   );
   const stage = editor.querySelector(".xyle-crop-stage") as HTMLElement;
-  stage.dataset.mode = mode;
   const preview = stage.querySelector("img") as HTMLImageElement;
   const target = stage.querySelector(".xyle-focal-target") as HTMLButtonElement;
   const fit = editor.querySelector("select[name=fit]") as HTMLSelectElement;
   const zoomInput = editor.querySelector("#xyle-zoom") as HTMLInputElement;
   const xInput = editor.querySelector("#xyle-focal-x") as HTMLInputElement;
   const yInput = editor.querySelector("#xyle-focal-y") as HTMLInputElement;
+  const fineTune = editor.querySelector(".xyle-focus-fine-tune") as HTMLDetailsElement;
+  fineTune.addEventListener("toggle", () => window.requestAnimationFrame(positionEditor));
   const focusPresetButtons = [
     ...editor.querySelectorAll<HTMLButtonElement>("[data-focus-x][data-focus-y]"),
   ];
   const zoomOutput = editor.querySelector("output[for=xyle-zoom]") as HTMLOutputElement;
-  if (mode === "focus") {
-    editor.querySelector<HTMLElement>("[data-frame-control]")?.setAttribute("hidden", "");
-    editor.querySelector<HTMLElement>("[data-zoom-control]")?.setAttribute("hidden", "");
-  }
   const xOutput = editor.querySelector("output[for=xyle-focal-x]") as HTMLOutputElement;
   const yOutput = editor.querySelector("output[for=xyle-focal-y]") as HTMLOutputElement;
   preview.src =
@@ -3388,8 +3363,11 @@ function openImageCropEditor(
   const close = (save: boolean): void => {
     if (editorClosed) return;
     editorClosed = true;
-    window.removeEventListener("resize", resizeEditor);
+    window.removeEventListener("resize", positionAndRefresh);
+    window.removeEventListener("keydown", handleEditorKeydown);
+    img.ownerDocument.defaultView?.removeEventListener("scroll", positionAndRefresh);
     if (activeMediaEditor === close) activeMediaEditor = null;
+    document.documentElement.removeAttribute("data-xyle-media-adjusting");
     if (save) {
       // Do not let the temporary preview styles become the current authored state.
       restoreImageStyles();
@@ -3398,18 +3376,16 @@ function openImageCropEditor(
         y: clampUnit(clampPercent(Number(yInput.value)) / 100),
       };
       const crop =
-        mode === "crop"
-          ? fit.value === "cover"
-            ? cropRectForFrame(
-                img.naturalWidth,
-                img.naturalHeight,
-                stage.clientWidth,
-                stage.clientHeight,
-                Number(zoomInput.value),
-                focus,
-              )
-            : null
-          : media.crop;
+        fit.value === "cover"
+          ? cropRectForFrame(
+              img.naturalWidth,
+              img.naturalHeight,
+              stage.clientWidth,
+              stage.clientHeight,
+              Number(zoomInput.value),
+              focus,
+            )
+          : null;
       applyMediaPatch(
         meta.pagePath,
         meta.id,
@@ -3420,20 +3396,14 @@ function openImageCropEditor(
               focus: original.focus,
               framing: original.framing ?? null,
             }
-          : mode === "focus"
-            ? { focus }
-            : {
-                crop,
-                focus,
-                ...(fitChanged || media.framing
-                  ? { framing: { fit: fit.value as "cover" | "contain" } }
-                  : {}),
-              },
-        resetToAuthored
-          ? "Reset image framing"
-          : mode === "focus"
-            ? "Adjust image focus"
-            : "Adjust image framing",
+          : {
+              crop,
+              focus,
+              ...(fitChanged || media.framing
+                ? { framing: { fit: fit.value as "cover" | "contain" } }
+                : {}),
+            },
+        resetToAuthored ? "Reset image framing" : "Adjust image framing",
       );
     }
     if (!save) restoreImageStyles();
@@ -3514,7 +3484,6 @@ function openImageCropEditor(
   stage.addEventListener(
     "wheel",
     (event) => {
-      if (mode === "focus") return;
       event.preventDefault();
       resetToAuthored = false;
       const currentZoom = Number(zoomInput.value);
@@ -3528,15 +3497,23 @@ function openImageCropEditor(
     const rect = stage.getBoundingClientRect();
     setFocus((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
   }
-  function resizeEditor(): void {
-    applyStageDimensions();
+  function positionAndRefresh(): void {
+    positionEditor();
     window.requestAnimationFrame(updatePreview);
   }
-  window.addEventListener("resize", resizeEditor);
+  const handleEditorKeydown = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    close(false);
+  };
+  window.addEventListener("resize", positionAndRefresh);
+  window.addEventListener("keydown", handleEditorKeydown);
+  img.ownerDocument.defaultView?.addEventListener("scroll", positionAndRefresh, { passive: true });
   closeContextTools(false);
   activeMediaEditor = () => close(false);
+  document.documentElement.setAttribute("data-xyle-media-adjusting", "");
   shellOverlay()?.append(editor);
-  trapDialogFocus(editor, () => close(false));
+  positionEditor();
   updatePreview();
   target.focus();
 }
@@ -3582,31 +3559,21 @@ function showImageTools(img: HTMLImageElement, meta: NodeMeta, focusFirst = fals
     selectImage(img, meta);
     void openMediaDrawer(img);
   });
-  const crop = document.createElement("button");
-  crop.type = "button";
-  crop.textContent = "Crop";
-  crop.disabled = !capabilities.crop;
-  crop.title = capabilities.crop
-    ? "Adjust crop and focal point"
-    : (capabilities.cropReason ?? "Cropping is not supported for this image");
-  crop.addEventListener("click", (event) => {
+  const adjust = document.createElement("button");
+  adjust.type = "button";
+  adjust.textContent = "Adjust";
+  adjust.disabled = !capabilities.crop || !capabilities.focus;
+  adjust.title =
+    capabilities.crop && capabilities.focus
+      ? "Adjust image framing"
+      : (capabilities.cropReason ??
+        capabilities.focusReason ??
+        "Image framing is not supported for this image");
+  adjust.addEventListener("click", (event) => {
     event.stopPropagation();
     closeContextTools(false);
     selectImage(img, meta);
     openImageCropEditor(img, meta);
-  });
-  const focus = document.createElement("button");
-  focus.type = "button";
-  focus.textContent = "Focus";
-  focus.disabled = !capabilities.focus;
-  focus.title = capabilities.focus
-    ? "Choose the important area to keep visible"
-    : (capabilities.focusReason ?? "Focal positioning is not supported for this image");
-  focus.addEventListener("click", (event) => {
-    event.stopPropagation();
-    closeContextTools(false);
-    selectImage(img, meta);
-    openImageCropEditor(img, meta, "focus");
   });
   const alt = document.createElement("button");
   alt.type = "button";
@@ -3616,7 +3583,7 @@ function showImageTools(img: HTMLImageElement, meta: NodeMeta, focusFirst = fals
     selectImage(img, meta);
     openAltEditor(img, meta, tools);
   });
-  tools.append(replace, media, crop, focus, alt);
+  tools.append(replace, media, adjust, alt);
   tools.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();

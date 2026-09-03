@@ -161,6 +161,11 @@ export const editorStyles = `
   #xyle-control-dock[data-hidden] {
     transform: translate(-50%, calc(100% - 28px));
   }
+  html[data-xyle-media-adjusting] #xyle-control-dock {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
   #xyle-control-dock[data-hidden] #xyle-control-bar .xyle-icon-button {
     opacity: 0.35;
   }
@@ -336,37 +341,30 @@ export const editorStyles = `
   #xyle-overlay-root .xyle-inline-media-editor {
     all: initial;
     position: fixed !important;
-    top: 50% !important;
-    left: 50% !important;
     z-index: 20 !important;
-    display: grid !important;
-    grid-template-columns: var(--xyle-crop-width, 36rem) minmax(17rem, 19rem) !important;
-    align-items: stretch !important;
-    box-sizing: border-box !important;
-    max-width: calc(100vw - 2rem) !important;
-    max-height: calc(100vh - 2rem) !important;
-    overflow: hidden !important;
-    border: 1px solid #526050 !important;
-    border-radius: 12px !important;
-    background: #151815 !important;
-    box-shadow: 0 0 0 100vmax #050705bf, 0 24px 70px #000d !important;
+    inset: 0 !important;
+    display: block !important;
     color: #eef3ec !important;
     font: 500 13px / 1.4 var(--xyle-font-ui) !important;
-    transform: translate(-50%, -50%) !important;
-    pointer-events: auto !important;
-    isolation: isolate !important;
+    pointer-events: none !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-media-editor-panel {
+    position: fixed !important;
+    top: var(--xyle-media-panel-top, 0.5rem) !important;
+    left: var(--xyle-media-panel-left, 0.5rem) !important;
     display: grid !important;
+    width: min(19rem, calc(100vw - 1rem)) !important;
     grid-template-rows: auto auto auto auto auto 1fr !important;
-    gap: 0.8rem !important;
+    gap: 0.7rem !important;
     box-sizing: border-box !important;
     min-width: 0 !important;
-    max-height: calc(100vh - 2rem) !important;
-    padding: 1rem !important;
+    max-height: calc(100vh - 1rem) !important;
+    padding: 0.85rem !important;
     overflow: auto !important;
-    border-left: 1px solid #435047 !important;
-    background: #151815 !important;
+    border: 1px solid #526050 !important;
+    border-radius: 10px !important;
+    background: #151815f7 !important;
+    box-shadow: 0 16px 44px #000b !important;
     pointer-events: auto !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-heading {
@@ -394,12 +392,16 @@ export const editorStyles = `
     color: #eef3ec !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-actions {
+    position: sticky !important;
+    bottom: -0.85rem !important;
+    z-index: 2 !important;
     align-self: end !important;
     display: flex !important;
     justify-content: flex-end !important;
     gap: 0.4rem !important;
-    padding-top: 0.35rem !important;
+    padding: 0.35rem 0 0.85rem !important;
     border-top: 1px solid #303830 !important;
+    background: #151815 !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-actions-spacer {
     flex: 1 !important;
@@ -412,14 +414,20 @@ export const editorStyles = `
     color: #aab6aa !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-stage {
-    width: var(--xyle-crop-width, 36rem) !important;
+    position: fixed !important;
+    top: var(--xyle-crop-top, 0) !important;
+    left: var(--xyle-crop-left, 0) !important;
+    width: var(--xyle-crop-width, 1px) !important;
     min-width: 0 !important;
     min-height: 0 !important;
-    height: var(--xyle-crop-height, 24rem) !important;
+    height: var(--xyle-crop-height, 1px) !important;
     border: 0 !important;
-    border-radius: 0 !important;
+    border-radius: 4px !important;
+    outline: 2px solid #eef3ec !important;
+    outline-offset: -2px !important;
     aspect-ratio: var(--xyle-crop-aspect, 16 / 9) !important;
     background: #080a08 !important;
+    box-shadow: 0 0 0 3px #1f291fcc, 0 10px 30px #0008 !important;
     pointer-events: auto !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-stage img {
@@ -513,17 +521,24 @@ export const editorStyles = `
       height: 2.75rem !important;
     }
   }
+  #xyle-overlay-root
+    .xyle-inline-media-editor[data-xyle-placement="bottom-sheet"]
+    .xyle-media-editor-panel {
+    top: auto !important;
+    right: 0.5rem !important;
+    bottom: 0.5rem !important;
+    left: 0.5rem !important;
+    width: auto !important;
+    max-height: min(46vh, 28rem) !important;
+  }
   @media (max-width: 759px) {
-    #xyle-overlay-root .xyle-inline-media-editor {
-      grid-template-columns: minmax(0, var(--xyle-crop-width, calc(100vw - 2rem))) !important;
-      max-width: calc(100vw - 1.5rem) !important;
-      max-height: calc(100vh - 1.5rem) !important;
-      overflow: auto !important;
-    }
     #xyle-overlay-root .xyle-inline-media-editor .xyle-media-editor-panel {
-      max-height: none !important;
-      border-top: 1px solid #435047 !important;
-      border-left: 0 !important;
+      top: auto !important;
+      right: 0.5rem !important;
+      bottom: 0.5rem !important;
+      left: 0.5rem !important;
+      width: auto !important;
+      max-height: min(46vh, 28rem) !important;
     }
   }
   .xyle-dialog-form {

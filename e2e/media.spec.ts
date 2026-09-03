@@ -11,7 +11,7 @@ const SVG_BYTES = Buffer.from(
 );
 
 test.describe("media editing", () => {
-  test("hovering an image exposes compact Replace/Media controls", async ({ page }) => {
+  test("hovering an image exposes compact image controls", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const id = await page.evaluate(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
@@ -30,7 +30,7 @@ test.describe("media editing", () => {
     await expect(tools).toBeVisible();
     await expect(tools.getByRole("button", { name: "Replace" })).toBeEnabled();
     await expect(tools.getByRole("button", { name: "Media" })).toBeEnabled();
-    await expect(tools.getByRole("button", { name: "Crop" })).toBeEnabled();
+    await expect(tools.getByRole("button", { name: "Adjust" })).toBeEnabled();
     await expect(tools.getByRole("button", { name: "Alt" })).toBeEnabled();
     const geometry = await tools.boundingBox();
     const viewport = page.viewportSize()!;
@@ -159,7 +159,7 @@ test.describe("media editing", () => {
       .poll(async () =>
         page.evaluate(() => document.querySelectorAll(".xyle-img-tools button").length),
       )
-      .toBe(5);
+      .toBe(4);
 
     const chooserPromise = page.waitForEvent("filechooser");
     await page.locator(".xyle-img-tools button:has-text('Replace')").click();
@@ -190,31 +190,32 @@ test.describe("media editing", () => {
     });
   });
 
-  test("adjusts image crop and focal point as one change", async ({ page }) => {
+  test("adjusts image crop and focal point inline as one change", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const image = page
       .frameLocator("#xyle-preview")
       .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
     await image.click();
-    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
-    const dialog = page.getByRole("dialog", { name: "Crop & focal point" });
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
+    const dialog = page.getByRole("dialog", { name: "Adjust image" });
     await expect(dialog).toBeVisible();
-    await expect(dialog).toHaveAttribute("aria-modal", "true");
-    await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
-    await expect(page.locator("#xyle-control-dock")).toHaveAttribute("inert", "");
-    await expect(page.locator("dialog.xyle-dialog")).toHaveCount(0);
+    await expect(dialog).not.toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
+    await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
+    const imageBox = await image.boundingBox();
     const stageBox = await dialog.locator(".xyle-crop-stage").boundingBox();
     const panelBox = await dialog.locator(".xyle-media-editor-panel").boundingBox();
+    expect(imageBox).not.toBeNull();
     expect(stageBox).not.toBeNull();
     expect(panelBox).not.toBeNull();
-    expect(stageBox!.x + stageBox!.width).toBeLessThanOrEqual(panelBox!.x + 1);
-    expect(stageBox!.width).toBeGreaterThan(600);
+    expect(stageBox!.x).toBeCloseTo(imageBox!.x, 0);
+    expect(stageBox!.y).toBeCloseTo(imageBox!.y, 0);
+    expect(stageBox!.width).toBeCloseTo(imageBox!.width, 0);
+    expect(
+      panelBox!.x + panelBox!.width <= stageBox!.x + 1 ||
+        panelBox!.x >= stageBox!.x + stageBox!.width - 1,
+    ).toBe(true);
     const focalTarget = dialog.locator(".xyle-focal-target");
-    const done = dialog.getByRole("button", { name: "Done" });
-    await expect(focalTarget).toBeFocused();
-    await page.keyboard.press("Shift+Tab");
-    await expect(done).toBeFocused();
-    await page.keyboard.press("Tab");
     await expect(focalTarget).toBeFocused();
     const bottomRight = dialog.getByRole("button", { name: "Bottom right" });
     await bottomRight.click();
@@ -222,6 +223,7 @@ test.describe("media editing", () => {
     await expect(dialog.locator("#xyle-focal-x")).toHaveValue("100");
     await expect(dialog.locator("#xyle-focal-y")).toHaveValue("100");
     await dialog.locator("select[name=fit]").selectOption("cover");
+    await dialog.getByText("Fine-tune position").click();
     await dialog.locator("#xyle-focal-x").fill("24");
     await dialog.locator("#xyle-focal-y").fill("68");
     await dialog.getByRole("button", { name: "Done" }).click();
@@ -239,33 +241,78 @@ test.describe("media editing", () => {
     await expect(image).toHaveJSProperty("style.objectPosition", "24% 68%");
   });
 
-  test("keeps image framing usable when the viewport becomes narrow", async ({ page }) => {
+  test("keeps inline image adjustment usable when the viewport becomes narrow", async ({
+    page,
+  }) => {
     await loginAndOpenEditor(page, "/index.html");
     const image = page
       .frameLocator("#xyle-preview")
       .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
     await image.click();
-    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
 
-    const dialog = page.getByRole("dialog", { name: "Crop & focal point" });
-    await expect(dialog.locator(".xyle-crop-stage")).toHaveCSS("width", "720px");
+    const dialog = page.getByRole("dialog", { name: "Adjust image" });
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(dialog.locator(".xyle-crop-stage")).toHaveCSS("width", "358px");
-    const dialogBox = await dialog.boundingBox();
+    const imageBox = await image.boundingBox();
     const stageBox = await dialog.locator(".xyle-crop-stage").boundingBox();
     const panelBox = await dialog.locator(".xyle-media-editor-panel").boundingBox();
-    expect(dialogBox).not.toBeNull();
+    expect(imageBox).not.toBeNull();
     expect(stageBox).not.toBeNull();
     expect(panelBox).not.toBeNull();
-    expect(dialogBox!.x).toBeGreaterThanOrEqual(0);
-    expect(dialogBox!.y).toBeGreaterThanOrEqual(0);
-    expect(dialogBox!.x + dialogBox!.width).toBeLessThanOrEqual(390);
-    expect(dialogBox!.y + dialogBox!.height).toBeLessThanOrEqual(844);
-    expect(stageBox!.y + stageBox!.height).toBeLessThanOrEqual(panelBox!.y + 1);
+    expect(stageBox!.x).toBeCloseTo(imageBox!.x, 0);
+    expect(stageBox!.width).toBeCloseTo(imageBox!.width, 0);
+    expect(panelBox!.x).toBeGreaterThanOrEqual(0);
+    expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390);
+    expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(844);
     await expect(dialog.getByRole("button", { name: "Done" })).toBeInViewport();
   });
 
-  test("cancelling crop restores the image without a pending change", async ({ page }) => {
+  test("uses a bottom sheet without changing full-width image geometry at mid-width", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 900, height: 900 });
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    await image.evaluate((element) => {
+      Object.assign((element as HTMLImageElement).style, {
+        height: "360px",
+        left: "8px",
+        maxWidth: "none",
+        position: "fixed",
+        top: "40px",
+        width: "884px",
+        zIndex: "20",
+      });
+    });
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
+
+    const editor = page.getByRole("dialog", { name: "Adjust image" });
+    await expect(editor).toHaveAttribute("data-xyle-placement", "bottom-sheet");
+    const [imageBox, stageBox, stageClientSize, panelBox] = await Promise.all([
+      image.boundingBox(),
+      editor.locator(".xyle-crop-stage").boundingBox(),
+      editor.locator(".xyle-crop-stage").evaluate((stage) => ({
+        height: stage.clientHeight,
+        width: stage.clientWidth,
+      })),
+      editor.locator(".xyle-media-editor-panel").boundingBox(),
+    ]);
+    expect(imageBox).not.toBeNull();
+    expect(stageBox).not.toBeNull();
+    expect(panelBox).not.toBeNull();
+    expect(stageBox!.width).toBeCloseTo(imageBox!.width, 0);
+    expect(stageBox!.height).toBeCloseTo(imageBox!.height, 0);
+    expect(stageClientSize.width).toBeCloseTo(imageBox!.width, 0);
+    expect(stageClientSize.height).toBeCloseTo(imageBox!.height, 0);
+    expect(panelBox!.y).toBeGreaterThanOrEqual(stageBox!.y + stageBox!.height);
+  });
+
+  test("cancelling image adjustment restores the image without a pending change", async ({
+    page,
+  }) => {
     await loginAndOpenEditor(page, "/index.html");
     const image = page
       .frameLocator("#xyle-preview")
@@ -273,10 +320,11 @@ test.describe("media editing", () => {
     const originalStyle = await image.evaluate((element) => (element as HTMLElement).style.cssText);
 
     await image.click();
-    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
-    const dialog = page.getByRole("dialog", { name: "Crop & focal point" });
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
+    const dialog = page.getByRole("dialog", { name: "Adjust image" });
     await dialog.locator("select[name=fit]").selectOption("contain");
     await dialog.locator("#xyle-zoom").fill("2");
+    await dialog.getByText("Fine-tune position").click();
     await dialog.locator("#xyle-focal-x").fill("17");
     await dialog.locator("#xyle-focal-y").fill("83");
     await dialog.getByRole("button", { name: "Cancel" }).click();
@@ -288,6 +336,21 @@ test.describe("media editing", () => {
     );
     expect(await opsCount(page)).toBe(0);
     await expect(page.locator("#xyle-dirty")).toBeHidden();
+  });
+
+  test("Escape cancels inline image adjustment", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
+    const editor = page.getByRole("dialog", { name: "Adjust image" });
+    await editor.getByRole("button", { name: "Top left" }).click();
+    await page.keyboard.press("Escape");
+    await expect(editor).toHaveCount(0);
+    await expect(image).toBeFocused();
+    expect(await opsCount(page)).toBe(0);
   });
 
   test("upload path uses detected bytes instead of the supplied MIME type", async ({ page }) => {
@@ -529,13 +592,8 @@ test.describe("media editing", () => {
 
     await preview.locator('img[alt="Xyle test mark"]').click();
     let tools = page.locator(".xyle-img-tools");
-    await expect(tools.getByRole("button", { name: "Crop" })).toBeDisabled();
-    await expect(tools.getByRole("button", { name: "Crop" })).toHaveAttribute(
-      "title",
-      "This image format is not safely raster-cropped.",
-    );
-    await expect(tools.getByRole("button", { name: "Focus" })).toBeDisabled();
-    await expect(tools.getByRole("button", { name: "Focus" })).toHaveAttribute(
+    await expect(tools.getByRole("button", { name: "Adjust" })).toBeDisabled();
+    await expect(tools.getByRole("button", { name: "Adjust" })).toHaveAttribute(
       "title",
       "This image format is not safely raster-cropped.",
     );
@@ -547,8 +605,8 @@ test.describe("media editing", () => {
       "title",
       "Responsive image replacement is not supported yet",
     );
-    await expect(tools.getByRole("button", { name: "Crop" })).toBeDisabled();
-    await expect(tools.getByRole("button", { name: "Crop" })).toHaveAttribute(
+    await expect(tools.getByRole("button", { name: "Adjust" })).toBeDisabled();
+    await expect(tools.getByRole("button", { name: "Adjust" })).toHaveAttribute(
       "title",
       "Responsive image sources need deliberate mapping.",
     );
@@ -738,10 +796,11 @@ test.describe("media editing", () => {
     expect(selected.id).toBeTruthy();
     const image = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${selected.id}"]`);
     await image.click();
-    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Adjust" }).click();
     const dialog = page.locator(".xyle-inline-media-editor");
     await expect(dialog).toBeVisible();
     await dialog.locator("#xyle-zoom").fill("1.5");
+    await dialog.getByText("Fine-tune position").click();
     await dialog.locator("#xyle-focal-x").fill("70");
     await dialog.locator("#xyle-focal-y").fill("30");
     await dialog.getByRole("button", { name: "Done" }).click();
