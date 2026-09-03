@@ -787,9 +787,10 @@ const editorStyles = `
     background: transparent;
     cursor: pointer;
   }
-  .xyle-change-row:hover,
   .xyle-change-row:focus-visible {
-    outline: none;
+    border-radius: var(--xyle-radius-sm);
+    outline: 2px solid var(--xyle-accent);
+    outline-offset: 2px;
   }
   .xyle-change-row.is-located {
     background: #1d2a1f;
@@ -1053,6 +1054,24 @@ const editorStyles = `
     #xyle-control-dock[data-hidden] {
       transform: translateX(-50%);
     }
+    .xyle-icon-button,
+    #xyle-media-drawer .xyle-icon-button,
+    #xyle-changes-drawer .xyle-icon-button,
+    #xyle-seo-drawer .xyle-icon-button,
+    #xyle-sections-drawer .xyle-icon-button {
+      width: 44px;
+      height: 44px;
+    }
+    .xyle-menu-item,
+    .xyle-dialog-button,
+    .xyle-undo-button,
+    .xyle-media-tab,
+    .xyle-media-cell,
+    .xyle-media-upload,
+    #xyle-overlay-root button {
+      min-width: 44px;
+      min-height: 44px;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     #xyle-flash,
@@ -1246,6 +1265,16 @@ const editorStyles = `
     box-shadow: inset 0 -2px 0 #a8bea5 !important;
   }
 
+  @media (hover: none), (pointer: coarse) {
+    #xyle-overlay-root .xyle-img-tools button,
+    #xyle-overlay-root .xyle-link-tools button,
+    #xyle-overlay-root .xyle-format-tools button,
+    #xyle-overlay-root .xyle-section-tools button {
+      min-width: 44px !important;
+      min-height: 44px !important;
+    }
+  }
+
   #xyle-overlay-root .xyle-marker {
     position: absolute !important;
     display: block !important;
@@ -1404,6 +1433,9 @@ const editorStyles = `
   .xyle-media-cell,
   .xyle-empty-state {
     background: #171b18;
+  }
+  .xyle-media-grid .xyle-empty-state {
+    grid-column: 1 / -1;
   }
 
   .xyle-change-row {
@@ -1669,6 +1701,73 @@ function flash(message: string): void {
   flashTimer = window.setTimeout(() => el.classList.remove("visible"), 1800);
 }
 let flashTimer = 0;
+
+const DIALOG_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
+const dialogBackgroundStates = new WeakMap<HTMLElement, Array<[HTMLElement, boolean]>>();
+
+function inertDialogBackground(dialog: HTMLElement): void {
+  const states: Array<[HTMLElement, boolean]> = [];
+  let current: HTMLElement = dialog;
+  while (current.parentElement) {
+    const parent = current.parentElement;
+    for (const sibling of parent.children) {
+      if (!(sibling instanceof HTMLElement) || sibling === current || sibling.id === "xyle-flash")
+        continue;
+      states.push([sibling, sibling.hasAttribute("inert")]);
+      sibling.setAttribute("inert", "");
+    }
+    if (parent === document.body) break;
+    current = parent;
+  }
+  dialogBackgroundStates.set(dialog, states);
+}
+
+function releaseDialogFocus(dialog: HTMLElement | null): void {
+  if (!dialog) return;
+  for (const [element, wasInert] of dialogBackgroundStates.get(dialog) ?? []) {
+    element.toggleAttribute("inert", wasInert);
+  }
+  dialogBackgroundStates.delete(dialog);
+}
+
+function removeTrappedDialog(dialog: HTMLElement | null): void {
+  if (!dialog) return;
+  releaseDialogFocus(dialog);
+  dialog.remove();
+}
+
+function trapDialogFocus(dialog: HTMLElement, close: () => void): void {
+  inertDialogBackground(dialog);
+  dialog.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...dialog.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)].filter(
+      (element) => !element.hidden && element.getAttribute("aria-hidden") !== "true",
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+}
 
 async function boot(): Promise<void> {
   const session = await (await api("/__xyle/api/session")).json();
@@ -2208,11 +2307,71 @@ function showGroupItemTools(item: HTMLElement, itemDescriptor: GroupItemDescript
   positionContextTools(tools, previewElementRect(item), "above");
 }
 
-function wireGroupMarker(el: HTMLElement): void {
+function editablePreviewTargets(doc: Document): HTMLElement[] {
+  return [...doc.querySelectorAll<HTMLElement>("[data-xyle-keyboard-target]")].filter(
+    (target) => !target.closest("[hidden]") && target.getClientRects().length > 0,
+  );
+}
+
+function addGeneratedPreviewAttribute(
+  el: HTMLElement,
+  attribute: string,
+  value: string,
+  marker: string,
+): void {
+  if (el.hasAttribute(attribute)) return;
+  el.setAttribute(attribute, value);
+  el.setAttribute(marker, "");
+}
+
+function previewArrowDirection(key: string): -1 | 0 | 1 {
+  if (key === "ArrowDown" || key === "ArrowRight") return 1;
+  if (key === "ArrowUp" || key === "ArrowLeft") return -1;
+  return 0;
+}
+
+function makePreviewTargetKeyboardAccessible(el: HTMLElement, description: string): void {
+  el.setAttribute("data-xyle-keyboard-target", "");
   if (!el.hasAttribute("tabindex")) {
-    el.tabIndex = 0;
+    const hasCurrentTarget = Boolean(
+      el.ownerDocument.querySelector('[data-xyle-generated-tabindex][tabindex="0"]'),
+    );
+    el.tabIndex = hasCurrentTarget ? -1 : 0;
     el.setAttribute("data-xyle-generated-tabindex", "");
   }
+  addGeneratedPreviewAttribute(
+    el,
+    "aria-description",
+    description,
+    "data-xyle-generated-aria-description",
+  );
+  addGeneratedPreviewAttribute(
+    el,
+    "aria-keyshortcuts",
+    "Enter Space ArrowUp ArrowDown ArrowLeft ArrowRight",
+    "data-xyle-generated-aria-keyshortcuts",
+  );
+  el.addEventListener("focus", () => {
+    if (!el.hasAttribute("data-xyle-generated-tabindex")) return;
+    for (const target of editablePreviewTargets(el.ownerDocument)) {
+      if (target.hasAttribute("data-xyle-generated-tabindex"))
+        target.tabIndex = target === el ? 0 : -1;
+    }
+  });
+  el.addEventListener("keydown", (event) => {
+    if (session || event.altKey || event.ctrlKey || event.metaKey) return;
+    const direction = previewArrowDirection(event.key);
+    if (direction === 0) return;
+    const targets = editablePreviewTargets(el.ownerDocument);
+    const currentIndex = targets.indexOf(el);
+    if (currentIndex < 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    targets[(currentIndex + direction + targets.length) % targets.length]?.focus();
+  });
+}
+
+function wireGroupMarker(el: HTMLElement): void {
   el.addEventListener("mouseenter", () => beginCandidateHover(el));
   el.addEventListener("mouseleave", () => endCandidateHover(el));
   el.addEventListener("focus", () => refreshEditabilityOverlay());
@@ -2221,6 +2380,10 @@ function wireGroupMarker(el: HTMLElement): void {
 
 function wireGroupItemMarker(el: HTMLElement): void {
   wireGroupMarker(el);
+  makePreviewTargetKeyboardAccessible(
+    el,
+    "Editable group item. Press Enter or Space to open item actions. Use arrow keys to move between editable items.",
+  );
   const showTools = (): void => {
     const groupId = el.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
     const itemId = el.dataset.xyleGroupItem;
@@ -2242,10 +2405,18 @@ function wireGroupItemMarker(el: HTMLElement): void {
 
 function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
   if (!meta) return;
-  if (!el.hasAttribute("tabindex")) {
-    el.tabIndex = 0;
-    el.setAttribute("data-xyle-generated-tabindex", "");
-  }
+  const targetName =
+    meta.kind === "text"
+      ? "text"
+      : meta.kind === "link"
+        ? "link"
+        : meta.kind === "image"
+          ? "image"
+          : "section";
+  makePreviewTargetKeyboardAccessible(
+    el,
+    `Editable ${targetName}. Press Enter or Space to edit. Use arrow keys to move between editable items.`,
+  );
   el.addEventListener("mouseenter", () => beginCandidateHover(el));
   el.addEventListener("mouseleave", () => endCandidateHover(el));
   el.addEventListener("focus", () => {
@@ -3928,7 +4099,7 @@ let seoDrawerTrigger: HTMLElement | null = null;
 
 function closeSeoDrawer(restoreFocus = true): void {
   const trigger = seoDrawerTrigger;
-  $("#xyle-seo-drawer")?.remove();
+  removeTrappedDialog(document.getElementById("xyle-seo-drawer"));
   seoDrawerTrigger = null;
   if (restoreFocus && trigger?.isConnected) trigger.focus();
   if (!session && !drawerOpen && !activeTools && !$("#xyle-changes-drawer"))
@@ -4001,13 +4172,8 @@ function openSeoEditor(): void {
       flash(error instanceof Error ? error.message : "SEO metadata could not be updated.");
     }
   });
-  drawer.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      close();
-    }
-  });
   document.body.append(drawer);
+  trapDialogFocus(drawer, close);
   drawer.querySelector<HTMLInputElement>("[name=title]")?.focus();
 }
 
@@ -4286,8 +4452,9 @@ function openImageCropEditor(
   };
   const editor = document.createElement("div");
   editor.className = `xyle-inline-media-editor${inline ? " xyle-on-canvas" : ""}`;
-  editor.setAttribute("role", "group");
-  editor.setAttribute("aria-label", `${mode === "focus" ? "Image focus" : "Image crop"} editor`);
+  editor.setAttribute("role", "dialog");
+  editor.setAttribute("aria-modal", "true");
+  editor.setAttribute("aria-labelledby", "xyle-crop-dialog-title");
   editor.style.left = `${inline ? imageRect.left : Math.max(12, Math.min(window.innerWidth - width - 12, imageRect.left))}px`;
   const maximumTop = Math.max(12, window.innerHeight - height - (mode === "focus" ? 220 : 390));
   editor.style.top = `${inline ? imageRect.top : Math.max(12, Math.min(maximumTop, imageRect.top))}px`;
@@ -4447,8 +4614,8 @@ function openImageCropEditor(
       );
     }
     if (!save) restoreImageStyles();
-    editor.remove();
-    img.focus();
+    removeTrappedDialog(editor);
+    focusPreviewElement(img);
   };
   fit.addEventListener("input", () => {
     fitChanged = true;
@@ -4469,12 +4636,6 @@ function openImageCropEditor(
   editor
     .querySelector<HTMLButtonElement>("[data-done]")
     ?.addEventListener("click", () => close(true));
-  editor.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      close(false);
-    }
-  });
   target.addEventListener("keydown", (event) => {
     const step = event.shiftKey ? 0.05 : 0.01;
     const x = clampUnit(
@@ -4526,6 +4687,7 @@ function openImageCropEditor(
   activeMediaEditor = () => close(false);
   if (!inline) img.style.visibility = "hidden";
   shellOverlay()?.append(editor);
+  trapDialogFocus(editor, () => close(false));
   if (inline) {
     const panel = editor.querySelector<HTMLElement>(".xyle-media-editor-panel");
     if (panel) {
@@ -4866,7 +5028,7 @@ let drawerOpen = false;
 let sectionDrawerTrigger: HTMLElement | null = null;
 
 function closeSectionDrawer(restoreFocus = true): void {
-  $("#xyle-sections-drawer")?.remove();
+  removeTrappedDialog(document.getElementById("xyle-sections-drawer"));
   const trigger = sectionDrawerTrigger;
   sectionDrawerTrigger = null;
   drawerOpen = false;
@@ -4875,12 +5037,13 @@ function closeSectionDrawer(restoreFocus = true): void {
 }
 
 function openSectionDrawer(): void {
+  const trigger = sectionDrawerTrigger ?? (document.activeElement as HTMLElement | null);
   closeSectionDrawer(false);
   closeMediaDrawer(false);
   closeChangesDrawer(false);
   closeSeoDrawer(false);
   closeContextTools(false);
-  sectionDrawerTrigger = document.activeElement as HTMLElement | null;
+  sectionDrawerTrigger = trigger;
   drawerOpen = true;
   setInteractionMode("drawer");
   const drawer = document.createElement("aside");
@@ -4941,6 +5104,7 @@ function openSectionDrawer(): void {
     list.append(row);
   }
   document.body.append(drawer);
+  trapDialogFocus(drawer, () => closeSectionDrawer());
   closeButton.focus();
 }
 
@@ -4965,39 +5129,48 @@ async function detectMediaSupport(): Promise<void> {
   }
 }
 
+type MediaDrawerState = "loading" | "ready" | "error" | "unavailable";
+
 async function openMediaDrawer(trigger?: HTMLElement): Promise<void> {
-  if (mediaManagementUnavailable) {
-    flash("Media management is unavailable for this deployment.");
-    return;
-  }
+  closeSeoDrawer(false);
   closeChangesDrawer(false);
   closeSectionDrawer(false);
   if (drawerOpen) return;
-  drawerOpen = true;
-  setInteractionMode("drawer");
-  mediaDrawerTrigger = trigger ?? (previewDoc()?.activeElement as HTMLElement | null);
+  mediaDrawerTrigger = trigger ?? (document.activeElement as HTMLElement | null);
+  if (mediaManagementUnavailable) {
+    renderMediaDrawer([], "unavailable");
+    return;
+  }
+  renderMediaDrawer([], "loading");
   const requestGeneration = ++mediaRequestGeneration;
-  const res = await api("/__xyle/api/media");
-  if (requestGeneration !== mediaRequestGeneration) return;
-  if (!res.ok) {
-    drawerOpen = false;
-    flash(
-      res.status === 501
-        ? "Media management is unavailable for this deployment."
-        : "Could not load media.",
+  try {
+    const res = await api("/__xyle/api/media");
+    if (requestGeneration !== mediaRequestGeneration) return;
+    if (!res.ok) {
+      if (res.status === 501) mediaManagementUnavailable = true;
+      renderMediaDrawer([], res.status === 501 ? "unavailable" : "error");
+      if (res.status !== 501) flash("Could not load media.");
+      return;
+    }
+    const body = (await res.json()) as MediaItem[] | { available?: boolean };
+    if (requestGeneration !== mediaRequestGeneration) return;
+    if (!Array.isArray(body)) {
+      mediaManagementUnavailable = true;
+      renderMediaDrawer([], "unavailable");
+      return;
+    }
+    renderMediaDrawer(
+      [
+        ...stagedMediaLibrary.values(),
+        ...body.filter((item) => !stagedMediaLibrary.has(item.path)),
+      ],
+      "ready",
     );
-    return;
+  } catch {
+    if (requestGeneration !== mediaRequestGeneration) return;
+    renderMediaDrawer([], "error");
+    flash("Could not load media.");
   }
-  const body = (await res.json()) as MediaItem[] | { available?: boolean };
-  if (!Array.isArray(body)) {
-    drawerOpen = false;
-    flash("Media management is unavailable for this deployment.");
-    return;
-  }
-  renderMediaDrawer([
-    ...stagedMediaLibrary.values(),
-    ...body.filter((item) => !stagedMediaLibrary.has(item.path)),
-  ]);
 }
 
 function focusPreviewElement(element: HTMLElement | null): void {
@@ -5009,7 +5182,7 @@ function focusPreviewElement(element: HTMLElement | null): void {
 function closeMediaDrawer(restoreFocus = true): void {
   const trigger = mediaDrawerTrigger;
   const selectedImageElement = selectedImage?.el;
-  $("#xyle-media-drawer")?.remove();
+  removeTrappedDialog(document.getElementById("xyle-media-drawer"));
   drawerOpen = false;
   mediaRequestGeneration += 1;
   if (!session && !activeTools) setInteractionMode(hoveredCandidate ? "hover" : "idle");
@@ -5022,7 +5195,7 @@ function closeMediaDrawer(restoreFocus = true): void {
   }
 }
 
-function renderMediaDrawer(items: MediaItem[]): void {
+function renderMediaDrawer(items: MediaItem[], drawerState: MediaDrawerState = "ready"): void {
   const trigger = mediaDrawerTrigger;
   closeMediaDrawer(false);
   mediaDrawerTrigger = trigger;
@@ -5032,44 +5205,59 @@ function renderMediaDrawer(items: MediaItem[]): void {
   drawer.id = "xyle-media-drawer";
   drawer.className = "xyle-drawer xyle-media-drawer";
   drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("aria-modal", "true");
   drawer.setAttribute("aria-labelledby", "xyle-media-title");
+  if (drawerState === "loading") drawer.setAttribute("aria-busy", "true");
+  const statusMessage =
+    drawerState === "loading"
+      ? "Loading media…"
+      : drawerState === "unavailable"
+        ? "Media management is unavailable for this deployment."
+        : "Could not load media. Try again.";
+  const drawerContent =
+    drawerState === "ready"
+      ? `<label class="xyle-sr-only" for="xyle-media-search">Search images</label>
+        <input id="xyle-media-search" class="xyle-media-search" name="media-search" autocomplete="off" placeholder="Search images…">
+        <nav id="xyle-media-tabs" class="xyle-media-tabs" aria-label="Filter media">
+          <button data-tab="all" class="xyle-media-tab" aria-pressed="true">All</button>
+          <button data-tab="used" class="xyle-media-tab" aria-pressed="false">Used</button>
+          <button data-tab="uploads" class="xyle-media-tab" aria-pressed="false">Uploads</button>
+        </nav>
+        <p class="xyle-media-help">${selectedImage ? "Choose a thumbnail to use it on the selected image." : "Upload images here. Select an image on the page to use one."}</p>
+        <div id="xyle-media-grid" class="xyle-media-grid"></div>
+        <button id="xyle-media-upload" class="xyle-media-upload">Upload to library</button>`
+      : `<p class="xyle-empty-state" role="status" aria-live="polite">${statusMessage}</p>`;
   drawer.replaceChildren(
     document.createRange().createContextualFragment(`
     <header class="xyle-drawer-header">
       <strong id="xyle-media-title"><svg class="xyle-drawer-title-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="1"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4-4 3 3 2-2 5 4"/></svg><span>Media</span></strong>
       <button id="xyle-media-close" class="xyle-icon-button" aria-label="Close media drawer">×</button>
     </header>
-    <label class="xyle-sr-only" for="xyle-media-search">Search images</label>
-    <input id="xyle-media-search" class="xyle-media-search" name="media-search" autocomplete="off" placeholder="Search images…">
-    <nav id="xyle-media-tabs" class="xyle-media-tabs" aria-label="Filter media">
-      <button data-tab="all" class="xyle-media-tab" aria-pressed="true">All</button>
-      <button data-tab="used" class="xyle-media-tab" aria-pressed="false">Used</button>
-      <button data-tab="uploads" class="xyle-media-tab" aria-pressed="false">Uploads</button>
-    </nav>
-    <p class="xyle-media-help">${selectedImage ? "Choose a thumbnail to use it on the selected image." : "Upload images here. Select an image on the page to use one."}</p>
-    <div id="xyle-media-grid" class="xyle-media-grid"></div>
-    <button id="xyle-media-upload" class="xyle-media-upload">Upload to library</button>
+    ${drawerContent}
   `),
   );
   document.body.append(drawer);
+  const closeButton = $<HTMLButtonElement>("#xyle-media-close", drawer);
+  closeButton.addEventListener("click", () => closeMediaDrawer());
+  trapDialogFocus(drawer, () => closeMediaDrawer());
+  if (drawerState !== "ready") {
+    closeButton.focus();
+    return;
+  }
 
   const grid = $<HTMLElement>("#xyle-media-grid", drawer);
   const search = $<HTMLInputElement>("#xyle-media-search", drawer);
   let tab = "all";
-  drawer.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeMediaDrawer();
-    }
-  });
 
   const drawGrid = (): void => {
     const query = search.value.trim().toLowerCase();
     grid.innerHTML = "";
+    let visibleItems = 0;
     for (const item of items) {
       if (tab === "used" && !item.usedBySimpleImg) continue;
       if (tab === "uploads" && item.source !== "xyle-upload") continue;
       if (query && !item.path.toLowerCase().includes(query)) continue;
+      visibleItems += 1;
       const cell = document.createElement("button");
       cell.className = "xyle-media-cell";
       cell.setAttribute("aria-label", `Choose ${item.path}`);
@@ -5083,6 +5271,19 @@ function renderMediaDrawer(items: MediaItem[]): void {
       cell.addEventListener("click", () => chooseMedia(item));
       grid.append(cell);
     }
+    if (visibleItems === 0) {
+      const empty = document.createElement("p");
+      empty.className = "xyle-empty-state";
+      empty.setAttribute("role", "status");
+      empty.textContent = query
+        ? "No images match this search."
+        : tab === "used"
+          ? "No images are used on this site."
+          : tab === "uploads"
+            ? "No uploaded images yet."
+            : "No images found. Upload one to get started.";
+      grid.append(empty);
+    }
   };
   search.addEventListener("input", drawGrid);
   for (const button of drawer.querySelectorAll<HTMLButtonElement>("#xyle-media-tabs button")) {
@@ -5094,7 +5295,6 @@ function renderMediaDrawer(items: MediaItem[]): void {
       drawGrid();
     });
   }
-  $("#xyle-media-close", drawer).addEventListener("click", () => closeMediaDrawer());
   $("#xyle-media-upload", drawer).addEventListener("click", () => {
     const input = document.createElement("input");
     input.type = "file";
@@ -5369,6 +5569,10 @@ function stripPreviewInstrumentation(
     const generatedHover = element.hasAttribute("data-xyle-generated-hover");
     const generatedEditing = element.hasAttribute("data-xyle-generated-editing");
     if (generatedTabIndex) element.removeAttribute("tabindex");
+    if (element.hasAttribute("data-xyle-generated-aria-description"))
+      element.removeAttribute("aria-description");
+    if (element.hasAttribute("data-xyle-generated-aria-keyshortcuts"))
+      element.removeAttribute("aria-keyshortcuts");
     if (generatedHover) element.classList.remove("xyle-hover");
     if (generatedEditing) {
       element.classList.remove("xyle-editing");
@@ -5381,6 +5585,9 @@ function stripPreviewInstrumentation(
       "data-xyle-generated-tabindex",
       "data-xyle-generated-hover",
       "data-xyle-generated-editing",
+      "data-xyle-generated-aria-description",
+      "data-xyle-generated-aria-keyshortcuts",
+      "data-xyle-keyboard-target",
       "data-xyle-group",
       "data-xyle-group-item",
       "data-xyle-layout-region",
@@ -7849,7 +8056,7 @@ function refreshMarkers(): void {
 let changesDrawerTrigger: HTMLElement | null = null;
 
 function closeChangesDrawer(restoreFocus = true): void {
-  $("#xyle-changes-drawer")?.remove();
+  removeTrappedDialog(document.getElementById("xyle-changes-drawer"));
   if (restoreFocus) changesDrawerTrigger?.focus();
   changesDrawerTrigger = null;
   if (!session && !drawerOpen && !activeTools)
@@ -8079,9 +8286,10 @@ function appendChangeValue(
 }
 
 function openChangesDrawer(): void {
+  const trigger = changesDrawerTrigger ?? (document.activeElement as HTMLElement | null);
   closeChangesDrawer(false);
   setInteractionMode("drawer");
-  changesDrawerTrigger = document.activeElement as HTMLElement | null;
+  changesDrawerTrigger = trigger;
   const drawer = document.createElement("aside");
   drawer.id = "xyle-changes-drawer";
   drawer.className = "xyle-drawer xyle-changes-drawer";
@@ -8104,29 +8312,7 @@ function openChangesDrawer(): void {
   document.body.append(drawer);
   const closeButton = $("#xyle-changes-close", drawer);
   closeButton.addEventListener("click", () => closeChangesDrawer());
-  drawer.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeChangesDrawer();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const focusable = [
-      ...drawer.querySelectorAll<HTMLElement>(
-        'button:not([disabled]),input:not([disabled]),[tabindex]:not([tabindex="-1"])',
-      ),
-    ];
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  });
+  trapDialogFocus(drawer, () => closeChangesDrawer());
   $("#xyle-discard", drawer).addEventListener("click", () => {
     if (
       !confirmDiscard("reload the published page", () => {

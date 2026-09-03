@@ -160,13 +160,26 @@ test.describe("media editing", () => {
       .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
     await image.click();
     await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
-    const dialog = page.locator(".xyle-inline-media-editor");
+    const dialog = page.getByRole("dialog", { name: "Crop & focal point" });
     await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
+    await expect(page.locator("#xyle-control-dock")).toHaveAttribute("inert", "");
     await expect(page.locator("dialog.xyle-dialog")).toHaveCount(0);
+    const focalTarget = dialog.locator(".xyle-focal-target");
+    const done = dialog.getByRole("button", { name: "Done" });
+    await expect(focalTarget).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(done).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(focalTarget).toBeFocused();
     await dialog.locator("select[name=fit]").selectOption("cover");
     await dialog.locator("#xyle-focal-x").fill("24");
     await dialog.locator("#xyle-focal-y").fill("68");
     await dialog.getByRole("button", { name: "Done" }).click();
+    await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
+    await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
+    await expect(image).toBeFocused();
     await expect.poll(async () => opsCount(page)).toBe(1);
     const op = (await currentOps(page)).find((entry) => entry.op.type === "media");
     expect((op?.op as { value: MediaState } | undefined)?.value).toMatchObject({
@@ -250,7 +263,7 @@ test.describe("media editing", () => {
     await expect(image).toHaveAttribute("src", secondPreview!);
   });
 
-  test("Discard closes media UI and clears stale image selection", async ({ page }) => {
+  test("Discard clears stale image selection after Media closes", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const imageId = await page.evaluate(() => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
@@ -273,6 +286,8 @@ test.describe("media editing", () => {
 
     await page.locator(".xyle-img-tools").getByRole("button", { name: "Media" }).click();
     await expect(page.getByRole("dialog", { name: "Media" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Media" })).toHaveCount(0);
     await page.click("#xyle-changes");
     await expect(page.getByRole("dialog", { name: "Changes" })).toBeVisible();
     await page.click("#xyle-discard");
@@ -285,6 +300,77 @@ test.describe("media editing", () => {
       const restored = doc?.querySelector('img[data-xyle-node][src="/assets/hero-wide.webp"]');
       return Boolean(restored && document.getElementById("xyle-overlay-root"));
     });
+  });
+
+  test("media drawer shows loading and empty states and traps focus", async ({ page }) => {
+    let mediaRequests = 0;
+    let releaseEmptyResponse!: () => void;
+    const emptyResponseGate = new Promise<void>((resolve) => {
+      releaseEmptyResponse = resolve;
+    });
+    await page.route("**/__xyle/api/media", async (route) => {
+      mediaRequests += 1;
+      if (mediaRequests === 1) {
+        await route.continue();
+        return;
+      }
+      await emptyResponseGate;
+      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+    });
+
+    await loginAndOpenEditor(page, "/index.html");
+    const menuButton = page.locator("#xyle-menu-btn");
+    await page.locator("#xyle-control-hitbox").hover();
+    await menuButton.click();
+    await page.getByRole("menuitem", { name: "Media library" }).click();
+
+    const drawer = page.getByRole("dialog", { name: "Media" });
+    await expect(drawer).toHaveAttribute("aria-modal", "true");
+    await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
+    await expect(page.locator("#xyle-control-dock")).toHaveAttribute("inert", "");
+    await expect(drawer).toHaveAttribute("aria-busy", "true");
+    await expect(drawer.getByRole("status")).toHaveText("Loading media…");
+
+    releaseEmptyResponse();
+    await expect(drawer).not.toHaveAttribute("aria-busy", "true");
+    await expect(drawer.getByRole("status")).toHaveText(
+      "No images found. Upload one to get started.",
+    );
+
+    const close = drawer.getByRole("button", { name: "Close media drawer" });
+    const upload = drawer.getByRole("button", { name: "Upload to library" });
+    await close.focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(upload).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(drawer).toHaveCount(0);
+    await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
+    await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
+    await expect(menuButton).toBeFocused();
+  });
+
+  test("media drawer keeps failures visible", async ({ page }) => {
+    let mediaRequests = 0;
+    await page.route("**/__xyle/api/media", async (route) => {
+      mediaRequests += 1;
+      if (mediaRequests === 1) {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
+    });
+
+    await loginAndOpenEditor(page, "/index.html");
+    await page.locator("#xyle-control-hitbox").hover();
+    await page.locator("#xyle-menu-btn").click();
+    await page.getByRole("menuitem", { name: "Media library" }).click();
+
+    const drawer = page.getByRole("dialog", { name: "Media" });
+    await expect(drawer.getByRole("status")).toHaveText("Could not load media. Try again.");
+    await expect(page.locator("#xyle-flash")).toHaveText("Could not load media.");
+    await expect(page.locator("#xyle-flash")).toHaveClass(/visible/);
   });
 
   test("media drawer lists site images anywhere in the tree", async ({ page }) => {

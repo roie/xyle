@@ -178,6 +178,52 @@ test.describe("editor shell and preview", () => {
       .click({ position: { x: 2, y: 2 } });
     await expect(page.locator(".xyle-link-tools")).toHaveCount(0);
   });
+
+  test("editable targets expose instructions and use arrow-key navigation", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const targets = page.frameLocator("#xyle-preview").locator("[data-xyle-keyboard-target]");
+    const targetCount = await targets.count();
+    expect(targetCount).toBeGreaterThan(1);
+
+    const accessibility = await targets.evaluateAll((elements) => ({
+      generatedTabbable: elements.filter(
+        (element) =>
+          element.hasAttribute("data-xyle-generated-tabindex") &&
+          element.getAttribute("tabindex") === "0",
+      ).length,
+      described: elements.every((element) => Boolean(element.getAttribute("aria-description"))),
+      shortcuts: elements.every((element) =>
+        element.getAttribute("aria-keyshortcuts")?.includes("ArrowDown"),
+      ),
+    }));
+    expect(accessibility).toEqual({ generatedTabbable: 1, described: true, shortcuts: true });
+
+    const first = targets.nth(0);
+    const second = targets.nth(1);
+    await first.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(second).toBeFocused();
+    await expect(first).toHaveAttribute("tabindex", "-1");
+    await expect(second).toHaveAttribute("tabindex", "0");
+  });
+
+  test("arrow navigation preserves and includes authored tabindex targets", async ({ page }) => {
+    await loginAndOpenEditor(page, "/qa-golden.html");
+    const frame = page.frameLocator("#xyle-preview");
+    const targets = frame.locator("[data-xyle-keyboard-target]");
+    const heading = frame.locator('#qa-intro-title[tabindex="0"]');
+    await expect(heading).toHaveAttribute("aria-keyshortcuts", /ArrowDown/);
+    const headingIndex = await targets.evaluateAll(
+      (elements, id) => elements.findIndex((element) => element.id === id),
+      "qa-intro-title",
+    );
+    expect(headingIndex).toBeGreaterThanOrEqual(0);
+
+    await heading.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(targets.nth((headingIndex + 1) % (await targets.count()))).toBeFocused();
+    await expect(heading).toHaveAttribute("tabindex", "0");
+  });
 });
 
 test.describe("chrome layout rules", () => {
@@ -221,12 +267,33 @@ test.describe("chrome layout rules", () => {
     });
     const touchPage = await context.newPage();
     await loginAndOpenEditor(touchPage, "/index.html");
-    await expect(touchPage.locator("#xyle-menu-btn")).toBeInViewport();
+    const menuButton = touchPage.locator("#xyle-menu-btn");
+    await expect(menuButton).toBeInViewport();
+    const menuButtonBox = await menuButton.boundingBox();
+    expect(menuButtonBox?.width).toBeGreaterThanOrEqual(43.9);
+    expect(menuButtonBox?.height).toBeGreaterThanOrEqual(43.9);
     await touchPage.locator("#xyle-editables").tap();
     const editables = touchPage.locator("#xyle-editables");
     await expect(editables).toHaveAttribute("aria-pressed", "true");
     await expect(editables).toHaveAttribute("aria-label", "Hide editables");
     await expect(editables).toHaveAttribute("data-tooltip", "Hide editables");
+
+    const image = touchPage
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    await image.tap();
+    const replace = touchPage.locator(".xyle-img-tools").getByRole("button", { name: "Replace" });
+    const replaceBox = await replace.boundingBox();
+    expect(replaceBox?.width).toBeGreaterThanOrEqual(43.9);
+    expect(replaceBox?.height).toBeGreaterThanOrEqual(43.9);
+    await touchPage.keyboard.press("Escape");
+
+    await menuButton.tap();
+    await touchPage.getByRole("menuitem", { name: "Sections" }).tap();
+    const drawerClose = touchPage.getByRole("button", { name: "Close sections" });
+    const drawerCloseBox = await drawerClose.boundingBox();
+    expect(drawerCloseBox?.width).toBeGreaterThanOrEqual(43.9);
+    expect(drawerCloseBox?.height).toBeGreaterThanOrEqual(43.9);
     await context.close();
   });
 
@@ -574,6 +641,11 @@ test.describe("changes drawer and undo", () => {
     await expect(indexGroup.locator(".xyle-change-arrow")).toHaveCount(2);
     await expect(aboutGroup.locator(".xyle-change-before")).toContainText(originalAboutText);
     await expect(aboutGroup.locator(".xyle-change-after")).toContainText("GROUPED-ABOUT");
+
+    await textRow.getByRole("button", { name: "Revert" }).click();
+    await expect(drawer.locator(".xyle-change-row")).toHaveCount(2);
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#xyle-changes")).toBeFocused();
   });
 
   test("Changes drawer preserves exact whitespace in reviewed values", async ({ page }) => {
@@ -588,6 +660,15 @@ test.describe("changes drawer and undo", () => {
     const row = page.locator("#xyle-changes-drawer .xyle-change-row").first();
     const after = await row.locator(".xyle-change-after").textContent();
     expect(after).toContain("&nbsp; exact spaces&nbsp; ");
+    await page.getByRole("button", { name: "Close changes drawer" }).focus();
+    await page.keyboard.press("Tab");
+    await expect(row).toBeFocused();
+    const focusStyle = await row.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+    });
+    expect(focusStyle.outlineStyle).toBe("solid");
+    expect(Number.parseFloat(focusStyle.outlineWidth)).toBeGreaterThanOrEqual(2);
   });
 
   test("mobile Changes drawer traps focus and Escape restores its trigger", async ({ page }) => {
@@ -790,6 +871,50 @@ test.describe("changes drawer and undo", () => {
         ),
       )
       .toBe("Updated page title");
+  });
+
+  test("SEO and Sections drawers trap focus and restore the menu trigger", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const menuButton = page.locator("#xyle-menu-btn");
+
+    await page.locator("#xyle-control-hitbox").hover();
+    await menuButton.click();
+    await page.getByRole("menuitem", { name: "SEO" }).click();
+    const seo = page.getByRole("dialog", { name: "SEO metadata" });
+    const seoClose = seo.getByRole("button", { name: "Close SEO metadata" });
+    const seoLast = seo.locator("button").last();
+    const title = seo.locator('[name="title"]');
+    await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
+    await expect(page.locator("#xyle-control-dock")).toHaveAttribute("inert", "");
+    await expect(title).toBeFocused();
+    await page.evaluate(() => document.getElementById("xyle-menu-btn")?.focus());
+    await expect(title).toBeFocused();
+    await seoClose.focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(seoLast).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(seoClose).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(seo).toHaveCount(0);
+    await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
+    await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
+    await expect(menuButton).toBeFocused();
+
+    await menuButton.click();
+    await page.getByRole("menuitem", { name: "Sections" }).click();
+    const sections = page.getByRole("dialog", { name: "Sections" });
+    const sectionsClose = sections.getByRole("button", { name: "Close sections" });
+    const sectionsLast = sections.locator("button").last();
+    await expect(sectionsClose).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(sectionsLast).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(sectionsClose).toBeFocused();
+    await sections.getByRole("button", { name: "Hide" }).first().click();
+    await expect(sections.getByRole("button", { name: "Close sections" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(sections).toHaveCount(0);
+    await expect(menuButton).toBeFocused();
   });
 });
 

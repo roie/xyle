@@ -164,6 +164,10 @@ test("duplicates a safe section through its complete independent lifecycle", asy
       hasEditorMarkup: /data-xyle-|xyle-(editing|hover|show-editables)/.test(
         document.documentElement.outerHTML,
       ),
+      hasGeneratedAccessibility:
+        document.querySelector(
+          '[aria-description^="Editable "],[aria-keyshortcuts*="ArrowDown"]',
+        ) !== null,
     };
   });
   expect(published.sectionCount).toBe(2);
@@ -180,6 +184,7 @@ test("duplicates a safe section through its complete independent lifecycle", asy
   expect(published.references[0]!.reference).not.toBe(published.references[1]!.reference);
   expect(published.uniqueIds).toBe(true);
   expect(published.hasEditorMarkup).toBe(false);
+  expect(published.hasGeneratedAccessibility).toBe(false);
 
   await loginAndOpenEditor(page, "/index.html", { resetFixture: false });
   await expect(page.locator("#xyle-dirty")).toBeHidden();
