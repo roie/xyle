@@ -191,7 +191,14 @@ describe("WebMCP tools", () => {
         { label: " ", changes: [{ type: "text", id: "n1", text: "x" }] },
         { signal },
       ),
-    ).rejects.toThrow("label must be 1 to 100 characters");
+    ).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ error: "apply_change_set label must be 1 to 100 characters" }),
+        },
+      ],
+    });
 
     unregister?.();
   });

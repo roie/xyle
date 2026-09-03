@@ -548,7 +548,7 @@ test.describe("WebMCP editor tools", () => {
       .toBe(original.title);
     await expect(
       invokeTool(page, "update_seo", { field: "canonical", value: "javascript:bad" }),
-    ).rejects.toThrow();
+    ).resolves.toEqual({ error: "Unsafe SEO URL rejected for canonical" });
   });
 
   test("groups several agent edits and undoes the task as one change", async ({
@@ -636,7 +636,9 @@ test.describe("WebMCP editor tools", () => {
           { type: "text", id: "not-a-current-node", text: "Also not applied" },
         ],
       }),
-    ).rejects.toThrow("Unknown or unavailable Xyle node not-a-current-node");
+    ).resolves.toEqual({
+      error: "Unknown or unavailable Xyle node not-a-current-node",
+    });
     expect(await opsCount(page)).toBe(0);
     await expect(invokeTool(page, "get_content", { id: heading!.id })).resolves.toMatchObject({
       content: heading!.preview,
@@ -772,19 +774,12 @@ test.describe("WebMCP editor tools", () => {
     await expect(linkLocator).toHaveText("Company");
     await expect(linkLocator).toHaveAttribute("href", "/contact.html");
 
-    const unsafeRejected = await page.evaluate(async (id) => {
-      const context = (document as Document & { modelContext?: ModelContext }).modelContext!;
-      const tools = await context.getTools();
-      const tool = tools.find((candidate) => candidate.name === "update_link");
-      if (!tool) throw new Error("update_link was not registered");
-      try {
-        await context.executeTool(tool, JSON.stringify({ id, href: "javascript:alert(1)" }));
-        return false;
-      } catch {
-        return true;
-      }
-    }, link!.id);
-    expect(unsafeRejected).toBe(true);
+    await expect(
+      invokeTool(page, "update_link", {
+        id: link!.id,
+        href: "javascript:alert(1)",
+      }),
+    ).resolves.toEqual({ error: "Unsafe link destination rejected" });
     await expect(linkLocator).toHaveAttribute("href", "/contact.html");
     expect(originalHref).toBe("/about.html");
   });

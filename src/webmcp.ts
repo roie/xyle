@@ -209,6 +209,33 @@ function textResult(value: string): { content: [{ type: "text"; text: string }] 
   return { content: [{ type: "text", text: value }] };
 }
 
+function toolErrorResult(error: unknown): ReturnType<typeof textResult> {
+  const message = error instanceof Error ? error.message : "Tool execution failed";
+  return textResult(JSON.stringify({ error: message }));
+}
+
+async function registerReportingTool(
+  context: ModelContextLike,
+  tool: ModelContextTool,
+  options?: { signal?: AbortSignal },
+): Promise<void> {
+  const execute = tool.execute;
+  await context.registerTool(
+    {
+      ...tool,
+      execute: async (input, executionContext) => {
+        try {
+          return await execute(input, executionContext);
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") throw error;
+          return toolErrorResult(error);
+        }
+      },
+    },
+    options,
+  );
+}
+
 function modelContext(): ModelContextLike | null {
   if (typeof document === "undefined") return null;
   return (document as Document & { modelContext?: ModelContextLike }).modelContext ?? null;
@@ -596,7 +623,8 @@ export async function registerWebMcpTools(
 
   const controller = new AbortController();
   try {
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "list_editable_content",
         description: "List the current page regions that Xyle can edit.",
@@ -612,7 +640,8 @@ export async function registerWebMcpTools(
       { signal: controller.signal },
     );
     if (bridge.listGroups) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "list_groups",
           description: "List source-backed repeating Groups and their safe items.",
@@ -628,7 +657,8 @@ export async function registerWebMcpTools(
         { signal: controller.signal },
       );
     }
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "get_content",
         description: "Read the current content of one Xyle editable region.",
@@ -647,7 +677,8 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "list_changes",
         description: "List the current unsaved Xyle changes.",
@@ -662,7 +693,8 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "apply_change_set",
         description: "Apply several safe Xyle edits as one reviewable and undoable task.",
@@ -731,7 +763,8 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "undo_change_set",
         description: "Undo every current Xyle change created by one editing task.",
@@ -750,7 +783,8 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "revert_change",
         description: "Revert one current unsaved Xyle Change to its original state.",
@@ -769,7 +803,8 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "update_link",
         description: "Update the text or safe destination of one Xyle link.",
@@ -793,7 +828,8 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "replace_asset",
         description: "Replace one Xyle image source and optionally update its alt text.",
@@ -817,7 +853,8 @@ export async function registerWebMcpTools(
       },
       { signal: controller.signal },
     );
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "update_media",
         description: "Safely update one image source, crop, focus point, or alt text.",
@@ -860,7 +897,8 @@ export async function registerWebMcpTools(
       { signal: controller.signal },
     );
     if (bridge.getSeo) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "get_seo",
           description: "Read the current page SEO metadata.",
@@ -877,7 +915,8 @@ export async function registerWebMcpTools(
       );
     }
     if (bridge.updateSeo) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "update_seo",
           description: "Update one safe page SEO metadata field for human review.",
@@ -904,7 +943,8 @@ export async function registerWebMcpTools(
         { signal: controller.signal },
       );
     }
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "update_formatting",
         description:
@@ -945,7 +985,8 @@ export async function registerWebMcpTools(
       { signal: controller.signal },
     );
     if (bridge.updateList) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "update_list",
           description:
@@ -977,7 +1018,8 @@ export async function registerWebMcpTools(
       );
     }
     if (bridge.updateSectionVisibility) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "set_section_visibility",
           description: "Show or hide one safe Xyle section for human review.",
@@ -1003,7 +1045,8 @@ export async function registerWebMcpTools(
       );
     }
     if (bridge.moveSection) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "move_section",
           description: "Move one safe Xyle section before or after a sibling section.",
@@ -1033,7 +1076,8 @@ export async function registerWebMcpTools(
       );
     }
     if (bridge.duplicateSection) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "duplicate_section",
           description: "Duplicate one safe Xyle section immediately after itself.",
@@ -1054,7 +1098,8 @@ export async function registerWebMcpTools(
       );
     }
     if (bridge.duplicateGroupItem) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "duplicate_group_item",
           description: "Duplicate one source-backed item in a safe Xyle Group.",
@@ -1080,7 +1125,8 @@ export async function registerWebMcpTools(
       );
     }
     if (bridge.listLayoutOptions) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "list_layout_options",
           description: "List the safe Stack and Split options for one Structural Block.",
@@ -1102,7 +1148,8 @@ export async function registerWebMcpTools(
       );
     }
     if (bridge.setLayoutPreset) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "set_layout",
           description: "Set one safe Structural Block to Stack or Split.",
@@ -1128,7 +1175,8 @@ export async function registerWebMcpTools(
       );
     }
     if (bridge.setRegionOrder) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "set_region_order",
           description: "Set one safe Layout target to its original or swapped region order.",
@@ -1154,7 +1202,8 @@ export async function registerWebMcpTools(
       );
     }
     if (bridge.moveGroupItem) {
-      await context.registerTool(
+      await registerReportingTool(
+        context,
         {
           name: "move_group_item",
           description:
@@ -1189,7 +1238,8 @@ export async function registerWebMcpTools(
         { signal: controller.signal },
       );
     }
-    await context.registerTool(
+    await registerReportingTool(
+      context,
       {
         name: "update_text",
         description: "Replace the text in one current Xyle editable region.",
