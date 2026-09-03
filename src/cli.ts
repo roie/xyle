@@ -1,4 +1,14 @@
-import { mkdir, readFile, writeFile, chmod, appendFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  link,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { join, resolve } from "node:path";
 import { generateEditorKey } from "./auth.ts";
@@ -60,21 +70,127 @@ export async function buildAuthConfig(
   };
 }
 
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+async function writeFileAtomically(
+  path: string,
+  contents: string,
+  options: { mode?: number; createOnly?: boolean } = {},
+): Promise<void> {
+  const tempPath = `${path}.xyle-tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    const handle = await open(tempPath, "wx", options.mode ?? 0o644);
+    try {
+      await handle.writeFile(contents, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    if (options.createOnly) await link(tempPath, path);
+    else await rename(tempPath, path);
+  } finally {
+    await rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isXyleDigest(value: unknown): value is XyleDigest {
+  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
+}
+
+function validateState(value: unknown): LocalXyleState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("state must be an object");
+  }
+  const state = value as Record<string, unknown>;
+  const expectedKeys = [
+    "directory",
+    "publisher",
+    "lastManagedSnapshotDigest",
+    "editorPath",
+    "ignorePaths",
+    "ignoreSelectors",
+  ];
+  if (
+    Object.keys(state).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !Object.hasOwn(state, key))
+  ) {
+    throw new Error("state has missing or unknown fields");
+  }
+  if (typeof state.directory !== "string" || state.directory.length === 0) {
+    throw new Error("directory must be a non-empty string");
+  }
+  if (typeof state.publisher !== "string" || state.publisher.length === 0) {
+    throw new Error("publisher must be a non-empty string");
+  }
+  if (state.lastManagedSnapshotDigest !== null && !isXyleDigest(state.lastManagedSnapshotDigest)) {
+    throw new Error("lastManagedSnapshotDigest must be null or a SHA-256 digest");
+  }
+  if (typeof state.editorPath !== "string" || !state.editorPath.startsWith("/")) {
+    throw new Error("editorPath must be an absolute site path");
+  }
+  if (!isStringArray(state.ignorePaths)) {
+    throw new Error("ignorePaths must be an array of strings");
+  }
+  if (!isStringArray(state.ignoreSelectors)) {
+    throw new Error("ignoreSelectors must be an array of strings");
+  }
+  return {
+    directory: state.directory,
+    publisher: state.publisher,
+    lastManagedSnapshotDigest: state.lastManagedSnapshotDigest,
+    editorPath: state.editorPath,
+    ignorePaths: state.ignorePaths,
+    ignoreSelectors: state.ignoreSelectors,
+  };
+}
+
+function parseState(contents: string, statePath: string): LocalXyleState {
+  try {
+    return validateState(JSON.parse(contents));
+  } catch (error) {
+    throw new Error(`Invalid Xyle state file ${statePath}: ${(error as Error).message}`, {
+      cause: error,
+    });
+  }
+}
+
+async function readStateIfPresent(statePath: string): Promise<LocalXyleState | null> {
+  try {
+    return parseState(await readFile(statePath, "utf8"), statePath);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return null;
+    throw error;
+  }
+}
+
 export async function readOrCreateState(directory: string): Promise<LocalXyleState> {
   const statePath = join(directory, STATE_FILE);
+  const existing = await readStateIfPresent(statePath);
+  if (existing) return existing;
+  const state: LocalXyleState = {
+    directory: ".",
+    publisher: "filesystem",
+    lastManagedSnapshotDigest: null,
+    editorPath: "/edit",
+    ignorePaths: [],
+    ignoreSelectors: [],
+  };
   try {
-    return JSON.parse(await readFile(statePath, "utf8")) as LocalXyleState;
-  } catch {
-    const state: LocalXyleState = {
-      directory: ".",
-      publisher: "filesystem",
-      lastManagedSnapshotDigest: null,
-      editorPath: "/edit",
-      ignorePaths: [],
-      ignoreSelectors: [],
-    };
-    await writeFile(statePath, JSON.stringify(state, null, 2));
+    await writeFileAtomically(statePath, `${JSON.stringify(state, null, 2)}\n`, {
+      createOnly: true,
+    });
     return state;
+  } catch (error) {
+    if (!hasErrorCode(error, "EEXIST")) throw error;
+    const concurrentState = await readStateIfPresent(statePath);
+    if (!concurrentState) throw error;
+    return concurrentState;
   }
 }
 
@@ -82,8 +198,9 @@ export async function updateState(
   directory: string,
   patch: Partial<LocalXyleState>,
 ): Promise<void> {
-  const state = await readOrCreateState(directory);
-  await writeFile(join(directory, STATE_FILE), JSON.stringify({ ...state, ...patch }, null, 2));
+  const statePath = join(directory, STATE_FILE);
+  const state = validateState({ ...(await readOrCreateState(directory)), ...patch });
+  await writeFileAtomically(statePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 export interface DeployGuardDecision {
