@@ -49,7 +49,7 @@ describe("detectImageType", () => {
       await readFile(new URL("./fixtures/mz-png-polyglot.bin", import.meta.url)),
     );
     expect([...polyglot.slice(0, 2)]).toEqual([0x4d, 0x5a]);
-    expect(Buffer.from(polyglot).indexOf(png.slice(0, 8))).toBeGreaterThan(0);
+    expect(Buffer.from(polyglot).indexOf(png.subarray(0, 8))).toBeGreaterThan(0);
     expect(detectImageType(polyglot)).toBeNull();
     expect(validateUpload("malicious.png", polyglot)).toEqual({
       ok: false,
