@@ -35,9 +35,11 @@ test("Structure panel unifies safe layout controls and unsupported explanations"
   const structure = page.getByRole("dialog", { name: "Structure" });
 
   const safeLayout = structure.locator(".xyle-structure-row").filter({ hasText: "Safe layout" });
-  await safeLayout.getByRole("button", { name: "Split" }).click();
+  await safeLayout.getByRole("button", { name: "Select Safe layout" }).click();
+  const inspector = structure.locator(".xyle-structure-inspector");
+  await inspector.getByRole("button", { name: "Split" }).click();
   await expect(structure).toBeVisible();
-  await expect(safeLayout.getByRole("button", { name: "Split" })).toHaveAttribute(
+  await expect(inspector.getByRole("button", { name: "Split" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
@@ -49,10 +51,11 @@ test("Structure panel unifies safe layout controls and unsupported explanations"
   const authoredLayout = structure
     .locator(".xyle-structure-row")
     .filter({ hasText: "Authored flex" });
-  await expect(authoredLayout).toContainText("Layout uses unsupported positioning or writing mode");
-  await expect(authoredLayout.getByRole("button", { name: "Stack" })).toBeDisabled();
-  await expect(authoredLayout.getByRole("button", { name: "Split" })).toBeDisabled();
-  await expect(authoredLayout.getByRole("button", { name: "Swap sides" })).toBeDisabled();
+  await authoredLayout.getByRole("button", { name: "Select Authored flex" }).click();
+  await expect(inspector).toContainText("Layout uses unsupported positioning or writing mode");
+  await expect(inspector.getByRole("button", { name: "Stack" })).toBeDisabled();
+  await expect(inspector.getByRole("button", { name: "Split" })).toBeDisabled();
+  await expect(inspector.getByRole("button", { name: "Swap sides" })).toBeDisabled();
 });
 
 test("applies and publishes the safe Split preset", async ({ page }) => {

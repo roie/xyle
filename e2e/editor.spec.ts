@@ -1485,6 +1485,11 @@ test.describe("changes drawer and undo", () => {
     const initialOrder = await rows.evaluateAll((items) =>
       items.map((item) => item.getAttribute("data-section-id")),
     );
+    await rows.first().locator(".xyle-structure-select").click();
+    const firstUp = rows.first().getByRole("button", { name: "Up", exact: true });
+    await expect(firstUp).toBeDisabled();
+    await expect(firstUp).toHaveAttribute("aria-describedby", /xyle-structure-unavailable/);
+    await expect(structure.locator(".xyle-structure-unavailable")).toContainText("Already first");
     await rows.first().getByRole("button", { name: "Down", exact: true }).click();
     const movedOrder = await rows.evaluateAll((items) =>
       items.map((item) => item.getAttribute("data-section-id")),
