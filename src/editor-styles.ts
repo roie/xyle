@@ -806,14 +806,6 @@ export const editorStyles = `
     gap: 1rem;
     margin-bottom: 1rem;
   }
-  @media (min-width: 701px) {
-    html[data-xyle-companion-open] #xyle-shell {
-      right: min(25rem, 100vw);
-    }
-    html[data-xyle-companion-open] #xyle-control-dock {
-      left: calc((100vw - min(25rem, 100vw)) / 2);
-    }
-  }
   .xyle-structure-list {
     display: grid;
     flex: 1;

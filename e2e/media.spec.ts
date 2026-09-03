@@ -401,7 +401,7 @@ test.describe("media editing", () => {
     });
   });
 
-  test("desktop media drawer shows loading and empty states without locking the preview", async ({
+  test("desktop media drawer overlays the preview without changing its viewport", async ({
     page,
   }) => {
     let mediaRequests = 0;
@@ -425,7 +425,7 @@ test.describe("media editing", () => {
     await mediaShortcut.click();
 
     const drawer = page.getByRole("dialog", { name: "Media" });
-    await expect(drawer).toHaveAttribute("data-xyle-drawer-mode", "companion");
+    await expect(drawer).toHaveAttribute("data-xyle-drawer-mode", "overlay");
     await expect(drawer).not.toHaveAttribute("aria-modal", "true");
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
@@ -433,7 +433,8 @@ test.describe("media editing", () => {
     const drawerBox = await drawer.boundingBox();
     expect(shellBox).not.toBeNull();
     expect(drawerBox).not.toBeNull();
-    expect(shellBox!.width + drawerBox!.width).toBeCloseTo(
+    expect(shellBox!.width).toBeCloseTo(await page.evaluate(() => window.innerWidth), 0);
+    expect(drawerBox!.x + drawerBox!.width).toBeCloseTo(
       await page.evaluate(() => window.innerWidth),
       0,
     );

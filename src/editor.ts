@@ -314,11 +314,8 @@ function setDrawerShortcutExpanded(drawer: HTMLElement, expanded: boolean): void
     document.getElementById(shortcutId)?.setAttribute("aria-expanded", String(expanded));
 }
 
-function syncCompanionLayout(): void {
-  const companionOpen = Boolean(
-    document.querySelector('.xyle-drawer[data-xyle-drawer-mode="companion"]'),
-  );
-  document.documentElement.toggleAttribute("data-xyle-companion-open", companionOpen);
+function syncDrawerLayout(): void {
+  document.documentElement.removeAttribute("data-xyle-companion-open");
   scheduleOverlayRefresh();
 }
 
@@ -354,7 +351,7 @@ function removeTrappedDialog(dialog: HTMLElement | null): void {
   releaseDialogFocus(dialog);
   setDrawerShortcutExpanded(dialog, false);
   dialog.remove();
-  syncCompanionLayout();
+  syncDrawerLayout();
 }
 
 function trapDialogFocus(dialog: HTMLElement, close: () => void): void {
@@ -388,7 +385,7 @@ function configureEditorDrawer(drawer: HTMLElement, close: () => void): void {
   const applyMode = (): void => {
     const modal = mediaQuery.matches;
     const enteringModal = modal && drawer.dataset.xyleDrawerMode !== "modal";
-    drawer.dataset.xyleDrawerMode = modal ? "modal" : "companion";
+    drawer.dataset.xyleDrawerMode = modal ? "modal" : "overlay";
     if (modal) drawer.setAttribute("aria-modal", "true");
     else drawer.removeAttribute("aria-modal");
     if (modal) inertDialogBackground(drawer);
@@ -396,7 +393,7 @@ function configureEditorDrawer(drawer: HTMLElement, close: () => void): void {
     if (enteringModal && !drawer.contains(document.activeElement)) {
       drawer.querySelector<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)?.focus();
     }
-    syncCompanionLayout();
+    syncDrawerLayout();
   };
   const onKeydown = (event: KeyboardEvent): void => {
     if (event.key === "Escape") {
@@ -429,12 +426,13 @@ function configureEditorDrawer(drawer: HTMLElement, close: () => void): void {
   applyMode();
 }
 
-function closeCompanionDrawerForPreviewInteraction(): void {
+function closeOverlayDrawerForPreviewInteraction(): void {
   const drawer = document.querySelector<HTMLElement>(
-    '.xyle-drawer[data-xyle-drawer-mode="companion"]',
+    '.xyle-drawer[data-xyle-drawer-mode="overlay"]',
   );
   if (!drawer) return;
   if (drawer.id === "xyle-media-drawer") closeMediaDrawer(false);
+  else if (drawer.id === "xyle-structure-drawer") closeStructurePanel(false);
   else if (drawer.id === "xyle-seo-drawer") closeSeoDrawer(false);
   else if (drawer.id === "xyle-changes-drawer") closeChangesDrawer(false);
 }
@@ -592,8 +590,8 @@ function wirePreview(): void {
   if (doc.body.dataset.xyleWired === "true") return;
   doc.body.dataset.xyleWired = "true";
   doc.defaultView?.addEventListener("scroll", scheduleOverlayRefresh, { passive: true });
-  doc.addEventListener("pointerdown", closeCompanionDrawerForPreviewInteraction, true);
-  doc.addEventListener("focusin", closeCompanionDrawerForPreviewInteraction, true);
+  doc.addEventListener("pointerdown", closeOverlayDrawerForPreviewInteraction, true);
+  doc.addEventListener("focusin", closeOverlayDrawerForPreviewInteraction, true);
   doc.addEventListener("selectionchange", () => {
     rememberNonCollapsedSelection();
     scheduleFormatTools();

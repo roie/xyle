@@ -312,7 +312,7 @@ test.describe("chrome layout rules", () => {
     await context.close();
   });
 
-  test("panel shortcuts toggle one companion drawer at a time", async ({ page }) => {
+  test("panel shortcuts toggle one drawer at a time", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     await page.locator("#xyle-control-hitbox").hover();
     const panels = [
@@ -1459,9 +1459,7 @@ test.describe("changes drawer and undo", () => {
     await expect(page).toHaveTitle("Updated page title");
   });
 
-  test("desktop Structure stays synchronized beside an explicitly sized preview", async ({
-    page,
-  }) => {
+  test("desktop drawers overlay the preview without changing its viewport", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const seoShortcut = page.locator("#xyle-seo-shortcut");
     const structureShortcut = page.locator("#xyle-structure-shortcut");
@@ -1470,7 +1468,7 @@ test.describe("changes drawer and undo", () => {
     await seoShortcut.click();
     const seo = page.getByRole("dialog", { name: "SEO metadata" });
     const title = seo.locator('[name="title"]');
-    await expect(seo).toHaveAttribute("data-xyle-drawer-mode", "companion");
+    await expect(seo).toHaveAttribute("data-xyle-drawer-mode", "overlay");
     await expect(seo).not.toHaveAttribute("aria-modal", "true");
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await expect(page.locator("#xyle-control-dock")).not.toHaveAttribute("inert", "");
@@ -1478,10 +1476,8 @@ test.describe("changes drawer and undo", () => {
     const seoBox = await seo.boundingBox();
     expect(seoShellBox).not.toBeNull();
     expect(seoBox).not.toBeNull();
-    expect(seoShellBox!.width + seoBox!.width).toBeCloseTo(
-      await page.evaluate(() => window.innerWidth),
-      0,
-    );
+    expect(seoShellBox!.width).toBeCloseTo(await page.evaluate(() => window.innerWidth), 0);
+    expect(seoBox!.x + seoBox!.width).toBeCloseTo(await page.evaluate(() => window.innerWidth), 0);
     await expect(title).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(seo).toHaveCount(0);
@@ -1489,19 +1485,18 @@ test.describe("changes drawer and undo", () => {
 
     await structureShortcut.click();
     const structure = page.getByRole("dialog", { name: "Structure" });
-    await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "companion");
+    await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "overlay");
     await expect(structure).not.toHaveAttribute("aria-modal", "true");
     const shellBox = await page.locator("#xyle-shell").boundingBox();
     const structureBox = await structure.boundingBox();
     expect(shellBox).not.toBeNull();
     expect(structureBox).not.toBeNull();
-    expect(shellBox!.width + structureBox!.width).toBeCloseTo(
+    expect(shellBox!.width).toBeCloseTo(await page.evaluate(() => window.innerWidth), 0);
+    expect(structureBox!.x + structureBox!.width).toBeCloseTo(
       await page.evaluate(() => window.innerWidth),
       0,
     );
 
-    await page.locator("#xyle-preview").focus();
-    await expect(page.locator("#xyle-preview")).toBeFocused();
     await page.setViewportSize({ width: 650, height: 800 });
     await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "modal");
     await expect(structure).toHaveAttribute("aria-modal", "true");
@@ -1509,10 +1504,10 @@ test.describe("changes drawer and undo", () => {
     await expect(page.locator("html")).not.toHaveAttribute("data-xyle-companion-open", "");
     await expect(structure.getByRole("button", { name: "Close structure" })).toBeFocused();
     await page.setViewportSize({ width: 1_000, height: 800 });
-    await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "companion");
+    await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "overlay");
     await expect(structure).not.toHaveAttribute("aria-modal", "true");
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
-    await expect(page.locator("html")).toHaveAttribute("data-xyle-companion-open", "");
+    await expect(page.locator("html")).not.toHaveAttribute("data-xyle-companion-open", "");
 
     const rows = structure.locator(".xyle-structure-row");
     const initialOrder = await rows.evaluateAll((items) =>
@@ -1588,12 +1583,12 @@ test.describe("changes drawer and undo", () => {
         }),
       )
       .toBe(true);
-    await expect(structure).toBeVisible();
+    await expect(structure).toHaveCount(0);
+    await expect(structureShortcut).toHaveAttribute("aria-expanded", "false");
 
     const id = await findNodeByText(page, "Edit your static site visually");
     expect(id).toBeTruthy();
     await editNode(page, id!);
-    await expect(structure).toBeVisible();
     await expect(
       page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${id}"]`),
     ).toHaveAttribute("contenteditable", "true");
