@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Ignore Xyle credential stores that are excluded from Git"
+paths = [
+  '''(^|/)\.xyle/secrets\.local\.json$''',
+  '''(^|/)\.pages-deploy-credentials\.json$''',
+]
