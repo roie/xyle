@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type {
   PublishResult,
@@ -9,7 +9,12 @@ import type {
   XyleManifest,
 } from "../types.ts";
 import { MANIFEST_PATH, StaleSnapshotError } from "./filesystem.ts";
-import { scanStaticDirectory, validateManifest } from "../manifest.ts";
+import {
+  digestBytes,
+  scanStaticDirectory,
+  validateManifest,
+  XYLE_MANAGED_ASSET_MANIFEST_PATH,
+} from "../manifest.ts";
 
 /** Direct Upload only. Every deployment is a complete materialized snapshot. */
 export interface CloudflarePublisherOptions {
@@ -24,6 +29,28 @@ export class CloudflareConfigurationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CloudflareConfigurationError";
+  }
+}
+
+async function assertStagedSnapshot(staging: string, manifest: XyleManifest): Promise<void> {
+  for (const [path, entry] of Object.entries(manifest.files)) {
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await readFile(join(staging, path.replace(/^\/+/, ""))));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        throw new CloudflareConfigurationError(
+          `Refusing deployment: staged file is missing from the final snapshot: ${path}`,
+        );
+      }
+      throw error;
+    }
+    if (bytes.byteLength !== entry.size || (await digestBytes(bytes)) !== entry.digest) {
+      throw new CloudflareConfigurationError(
+        `Refusing deployment: staged file does not match the final manifest: ${path}`,
+      );
+    }
   }
 }
 
@@ -137,13 +164,22 @@ export class CloudflarePagesPublisher implements Publisher {
     // Stage beside installed dependencies while deploying only this isolated directory.
     const staging = await mkdtemp(join(process.cwd(), ".xyle-stage-"));
     try {
-      await this.stageStaticSnapshot(staging, new Set(next.removedFiles ?? []));
+      await this.stageStaticSnapshot(staging, new Set(Object.keys(next.manifest.files)));
       await this.stageControlRuntime(staging);
       for (const file of [...next.changedFiles, ...next.addedFiles, ...(next.managedFiles ?? [])]) {
+        if (
+          !Object.hasOwn(next.manifest.files, file.path) &&
+          file.path !== XYLE_MANAGED_ASSET_MANIFEST_PATH
+        ) {
+          throw new CloudflareConfigurationError(
+            `Refusing deployment: staged file is not declared by the final manifest: ${file.path}`,
+          );
+        }
         const target = join(staging, file.path.replace(/^\/+/, ""));
         await mkdir(dirname(target), { recursive: true });
         await writeFile(target, file.bytes);
       }
+      await assertStagedSnapshot(staging, next.manifest);
       const manifestPath = join(staging, MANIFEST_PATH.replace(/^\//, ""));
       await mkdir(dirname(manifestPath), { recursive: true });
       await writeFile(manifestPath, JSON.stringify(next.manifest, null, 2));
@@ -170,8 +206,9 @@ export class CloudflarePagesPublisher implements Publisher {
     // See publish(): this keeps Wrangler's dependency resolution available.
     const staging = await mkdtemp(join(process.cwd(), ".xyle-stage-"));
     try {
-      await this.stageStaticSnapshot(staging);
+      await this.stageStaticSnapshot(staging, new Set(Object.keys(manifest.files)));
       await this.stageControlRuntime(staging);
+      await assertStagedSnapshot(staging, manifest);
       const manifestPath = join(staging, MANIFEST_PATH.replace(/^\//, ""));
       await mkdir(dirname(manifestPath), { recursive: true });
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
@@ -182,10 +219,10 @@ export class CloudflarePagesPublisher implements Publisher {
     }
   }
 
-  private async stageStaticSnapshot(staging: string, excluded = new Set<string>()): Promise<void> {
+  private async stageStaticSnapshot(staging: string, included: ReadonlySet<string>): Promise<void> {
     const { files } = await scanStaticDirectory(this.root);
     for (const [path, bytes] of files) {
-      if (excluded.has(path)) continue;
+      if (!included.has(path)) continue;
       const target = join(staging, path.replace(/^\/+/, ""));
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, bytes);
