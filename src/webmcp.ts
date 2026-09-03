@@ -589,6 +589,8 @@ function parseChangeSetInput(value: unknown): { label: string; changes: ChangeSe
         "heading-4",
         "heading-5",
         "heading-6",
+        "unordered-list",
+        "ordered-list",
       ];
       if (!formats.includes(rawChange.format as Formatting)) {
         throw new Error("Formatting changes require a supported format");

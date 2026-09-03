@@ -94,6 +94,8 @@ describe("WebMCP tools", () => {
       { type: "link", id: "n2", href: "/about.html" },
       { type: "asset", id: "n3", src: "/images/new.jpg", alt: "New image" },
       { type: "formatting", id: "n4", format: "heading-2" },
+      { type: "formatting", id: "n5", format: "unordered-list" },
+      { type: "formatting", id: "n6", format: "ordered-list" },
       { type: "sectionVisibility", id: "s1", visible: false },
       { type: "moveSection", id: "s2", targetId: "s3", before: true },
     ] satisfies ChangeSetOperation[];
@@ -106,6 +108,8 @@ describe("WebMCP tools", () => {
             { type: "link", id: "n2", href: "/about.html" },
             { type: "asset", id: "n3", src: "/images/new.jpg", alt: "New image" },
             { type: "formatting", id: "n4", format: "heading-2" },
+            { type: "formatting", id: "n5", format: "unordered-list" },
+            { type: "formatting", id: "n6", format: "ordered-list" },
             { type: "sectionVisibility", id: "s1", visible: false },
             { type: "moveSection", id: "s2", targetId: "s3", before: true },
           ],
