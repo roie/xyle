@@ -271,6 +271,72 @@ test.describe("editing fidelity gate", () => {
     await commitAndAssertOp("こんにちは");
   });
 
+  test("bold italic and underline publish through human controls", async () => {
+    const formats = [
+      {
+        text: "See how Xyle works",
+        button: "Bold",
+        selector: 'strong[data-xyle-format="bold"]',
+        publicSelector: "#about-title strong",
+      },
+      {
+        text: "Built around reviewable changes.",
+        button: "Italic",
+        selector: 'em[data-xyle-format="italic"]',
+        publicSelector: "#story-title em",
+      },
+      {
+        text: "One safe path for people and agents.",
+        button: "Underline",
+        selector: 'u[data-xyle-format="underline"]',
+        publicSelector: "#crew-title u",
+      },
+    ];
+
+    for (const format of formats) {
+      const nodeId = await findNodeByText(page, format.text);
+      expect(nodeId).toBeTruthy();
+      await editNode(page, nodeId!);
+      await setSelection(page, { nodeId: nodeId!, selectAll: true });
+      await page.locator(".xyle-format-tools").getByRole("button", { name: format.button }).click();
+      await expect
+        .poll(() =>
+          page
+            .frameLocator("#xyle-preview")
+            .locator(`[data-xyle-node="${nodeId}"]`)
+            .locator(format.selector)
+            .count(),
+        )
+        .toBe(1);
+    }
+
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual([
+      "html",
+      "html",
+      "html",
+    ]);
+    await page.locator("#xyle-changes").click();
+    const changes = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
+    await expect(changes).toHaveCount(3);
+    for (const format of formats) {
+      await expect(changes.filter({ hasText: format.text })).toHaveCount(1);
+    }
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get(ABOUT)).text();
+    expect(source).toContain("<strong>See how Xyle works</strong>");
+    expect(source).toContain("<em>Built around reviewable changes.</em>");
+    expect(source).toContain("<u>One safe path for people and agents.</u>");
+    expect(source).not.toContain("data-xyle-format");
+
+    await page.goto(ABOUT);
+    for (const format of formats) {
+      await expect(page.locator(format.publicSelector)).toHaveText(format.text);
+    }
+  });
+
   test("block styles publish in both directions and survive reload", async () => {
     const headingId = await findNodeByText(page, "See how Xyle works");
     const paragraphId = await findNodeByText(page, "Editors change content");
