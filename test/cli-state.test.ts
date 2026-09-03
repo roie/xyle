@@ -23,13 +23,29 @@ describe("local Xyle secrets", () => {
   it("creates one valid secret file without rotating it", async () => {
     const first = await loadOrCreateSecrets(root);
     const second = await loadOrCreateSecrets(root);
+    await rm(join(root, ".gitignore"));
+    const third = await loadOrCreateSecrets(root);
 
     expect(first.freshKey).toBe(first.secrets.editorKey);
     expect(second).toEqual({ secrets: first.secrets, freshKey: null });
+    expect(third).toEqual({ secrets: first.secrets, freshKey: null });
     expect(Buffer.from(first.secrets.editorKey, "base64url")).toHaveLength(32);
     expect(Buffer.from(first.secrets.sessionSecretB64, "base64")).toHaveLength(32);
     expect((await stat(join(root, ".xyle", "secrets.local.json"))).mode & 0o777).toBe(0o600);
     expect((await readFile(join(root, ".gitignore"), "utf8")).split(/\r?\n/)).toContain(".xyle/");
+  });
+
+  it("does not create secrets when the ignore file cannot be updated", async () => {
+    const gitignorePath = join(root, ".gitignore");
+    const secretsPath = join(root, ".xyle", "secrets.local.json");
+    await mkdir(gitignorePath);
+
+    await expect(loadOrCreateSecrets(root)).rejects.toThrow();
+    await expect(readFile(secretsPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    await rm(gitignorePath, { recursive: true });
+    const retry = await loadOrCreateSecrets(root);
+    expect(retry.freshKey).toBe(retry.secrets.editorKey);
   });
 
   it("fails closed and preserves malformed secrets", async () => {

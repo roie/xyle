@@ -102,25 +102,27 @@ export async function loadOrCreateSecrets(
   const secretsDir = join(directory, SECRETS_DIR);
   const secretsPath = join(secretsDir, SECRETS_FILE);
   const existing = await readSecretsIfPresent(secretsPath);
-  if (existing) return { secrets: existing, freshKey: null };
+  if (existing) {
+    await ensureSecretsIgnored(directory);
+    return { secrets: existing, freshKey: null };
+  }
 
   const generated: Secrets = {
     editorKey: generateEditorKey(),
     sessionSecretB64: Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"),
   };
   await mkdir(secretsDir, { recursive: true });
+  await ensureSecretsIgnored(directory);
   try {
     await writeFileAtomically(secretsPath, `${JSON.stringify(generated, null, 2)}\n`, {
       mode: 0o600,
       createOnly: true,
     });
-    await ensureSecretsIgnored(directory);
     return { secrets: generated, freshKey: generated.editorKey };
   } catch (error) {
     if (!hasErrorCode(error, "EEXIST")) throw error;
     const concurrentSecrets = await readSecretsIfPresent(secretsPath);
     if (!concurrentSecrets) throw error;
-    await ensureSecretsIgnored(directory);
     return { secrets: concurrentSecrets, freshKey: null };
   }
 }
@@ -159,16 +161,34 @@ async function writeFileAtomically(
     if (options.createOnly) await link(tempPath, path);
     else await rename(tempPath, path);
   } finally {
-    await rm(tempPath, { force: true }).catch(() => {});
+    try {
+      await rm(tempPath, { force: true });
+    } catch {
+      // Best-effort cleanup must not hide the write or link error.
+    }
   }
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+function requireNonEmptyString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${field} must be a non-empty string`);
+  }
+  return value;
 }
 
-function isXyleDigest(value: unknown): value is XyleDigest {
-  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
+function requireXyleDigestOrNull(value: unknown): XyleDigest | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value)) {
+    throw new Error("lastManagedSnapshotDigest must be null or a SHA-256 digest");
+  }
+  return value as XyleDigest;
+}
+
+function requireStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new Error(`${field} must be an array of strings`);
+  }
+  return value;
 }
 
 function validateState(value: unknown): LocalXyleState {
@@ -190,31 +210,20 @@ function validateState(value: unknown): LocalXyleState {
   ) {
     throw new Error("state has missing or unknown fields");
   }
-  if (typeof state.directory !== "string" || state.directory.length === 0) {
-    throw new Error("directory must be a non-empty string");
-  }
-  if (typeof state.publisher !== "string" || state.publisher.length === 0) {
-    throw new Error("publisher must be a non-empty string");
-  }
-  if (state.lastManagedSnapshotDigest !== null && !isXyleDigest(state.lastManagedSnapshotDigest)) {
-    throw new Error("lastManagedSnapshotDigest must be null or a SHA-256 digest");
-  }
-  if (typeof state.editorPath !== "string" || !state.editorPath.startsWith("/")) {
-    throw new Error("editorPath must be an absolute site path");
-  }
-  if (!isStringArray(state.ignorePaths)) {
-    throw new Error("ignorePaths must be an array of strings");
-  }
-  if (!isStringArray(state.ignoreSelectors)) {
-    throw new Error("ignoreSelectors must be an array of strings");
-  }
+  const directory = requireNonEmptyString(state.directory, "directory");
+  const publisher = requireNonEmptyString(state.publisher, "publisher");
+  const lastManagedSnapshotDigest = requireXyleDigestOrNull(state.lastManagedSnapshotDigest);
+  const editorPath = requireNonEmptyString(state.editorPath, "editorPath");
+  if (!editorPath.startsWith("/")) throw new Error("editorPath must be an absolute site path");
+  const ignorePaths = requireStringArray(state.ignorePaths, "ignorePaths");
+  const ignoreSelectors = requireStringArray(state.ignoreSelectors, "ignoreSelectors");
   return {
-    directory: state.directory,
-    publisher: state.publisher,
-    lastManagedSnapshotDigest: state.lastManagedSnapshotDigest,
-    editorPath: state.editorPath,
-    ignorePaths: state.ignorePaths,
-    ignoreSelectors: state.ignoreSelectors,
+    directory,
+    publisher,
+    lastManagedSnapshotDigest,
+    editorPath,
+    ignorePaths,
+    ignoreSelectors,
   };
 }
 
