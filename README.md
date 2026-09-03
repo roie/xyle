@@ -83,7 +83,7 @@ made since your last managed deployment unless you pass `--force`.
 ```bash
 pnpm check          # typecheck + unit tests + biome
 pnpm test:e2e       # Playwright suite (Chromium/Firefox; WebKit needs host deps)
-pnpm test:package   # pack, install with npm, initialize, and serve a temporary static site
+pnpm test:package   # pack, install, edit, publish, and reload a temporary static site
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the design,

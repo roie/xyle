@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { spawn } from "node:child_process";
+import { chromium } from "@playwright/test";
 
 const execFileAsync = promisify(execFile);
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,6 +14,7 @@ const archive = join(workspace, "xyle.tgz");
 const consumer = join(workspace, "consumer");
 const site = join(consumer, "site");
 let server;
+let browser;
 
 function fail(message) {
   throw new Error(message);
@@ -98,26 +100,53 @@ try {
     fail("The packaged server did not serve the static index.html file.");
   }
 
-  const loginResponse = await fetch(`${url}/__xyle/api/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ key: secrets.editorKey }),
+  browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.goto(`${url}/edit?page=%2Findex.html`);
+  await page.getByLabel("Editor key").fill(secrets.editorKey);
+  await page.getByRole("button", { name: "Sign in to Xyle" }).click();
+  await page.locator("#xyle-preview").waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const preview = document.querySelector("#xyle-preview");
+    if (!(preview instanceof HTMLIFrameElement)) return false;
+    return preview.contentDocument?.body.dataset.xyleWired === "true";
   });
-  if (!loginResponse.ok) fail("The packaged server rejected its generated editor key.");
-  const cookie = loginResponse.headers.get("set-cookie")?.split(";", 1)[0];
-  if (!cookie) fail("The packaged server did not create an editor session.");
 
-  const editorResponse = await fetch(`${url}/edit`, { headers: { cookie } });
-  if (!editorResponse.ok || !(await editorResponse.text()).includes('id="xyle-root"')) {
-    fail("The packaged server did not serve the authenticated editor shell.");
+  const heading = page.frameLocator("#xyle-preview").locator("h1");
+  const nodeId = await heading.getAttribute("data-xyle-node");
+  if (!nodeId) fail("The packaged editor did not expose the static heading.");
+  await heading.click();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("Edited with packaged Xyle");
+  await page.frameLocator("#xyle-preview").locator("html").click({ position: { x: 1, y: 1 } });
+  await page.locator("#xyle-dirty").waitFor({ state: "visible" });
+
+  await page.locator("#xyle-changes").click();
+  const changeRow = page.locator("#xyle-changes-list .xyle-change-row").first();
+  await changeRow.locator(".xyle-change-before").waitFor();
+  if (!(await changeRow.locator(".xyle-change-before").textContent())?.includes("Packaged Xyle")) {
+    fail("The Changes drawer did not show the original heading.");
   }
-  const bundleResponse = await fetch(`${url}/__xyle/editor.js`);
-  if (!bundleResponse.ok || (await bundleResponse.text()).length < 100_000) {
-    fail("The package does not contain the browser editor bundle.");
+  if (
+    !(await changeRow.locator(".xyle-change-after").textContent())?.includes(
+      "Edited with packaged Xyle",
+    )
+  ) {
+    fail("The Changes drawer did not show the edited heading.");
+  }
+  await page.locator("#xyle-drawer-publish").click();
+  await page.locator("#xyle-dirty").waitFor({ state: "hidden" });
+
+  await page.goto(url);
+  await page.getByRole("heading", { name: "Edited with packaged Xyle" }).waitFor();
+  const publishedSource = await readFile(join(site, "index.html"), "utf8");
+  if (!publishedSource.includes("Edited with packaged Xyle")) {
+    fail("The packaged editor did not publish the heading to index.html.");
   }
 
-  process.stdout.write("Packaged Xyle initialized and served a standalone static site.\n");
+  process.stdout.write("Packaged Xyle completed the static-site editing journey.\n");
 } finally {
+  await browser?.close();
   server?.kill("SIGTERM");
   await rm(workspace, { recursive: true, force: true });
 }
