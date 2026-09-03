@@ -21,6 +21,10 @@
   box-sizing: border-box;
 }
 
+html [hidden] {
+  display: none;
+}
+
 html {
   scroll-behavior: smooth;
 }

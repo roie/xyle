@@ -1067,6 +1067,68 @@ async function visibleMarkerCount(page: import("@playwright/test").Page): Promis
   });
 }
 
+test("publishes ordinary section movement through public reload", async ({ page }) => {
+  await loginAndOpenEditor(page, "/index.html");
+  const sectionIds = await page.evaluate(() => {
+    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+    return [...doc.querySelectorAll("main > section[data-xyle-node]")].map(
+      (section) => section.getAttribute("data-xyle-node")!,
+    );
+  });
+  const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${sectionIds[0]}"]`);
+  await first.click({ position: { x: 2, y: 2 } });
+  await page.getByRole("button", { name: "Move down" }).click();
+  expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["moveSection"]);
+
+  await page.locator("#xyle-changes").click();
+  const change = page
+    .getByRole("dialog", { name: "Changes" })
+    .locator(".xyle-change-row")
+    .filter({ hasText: "Moved" });
+  await expect(change.locator(".xyle-change-before")).toContainText("original position");
+  await expect(change.locator(".xyle-change-after")).toContainText("later");
+  await page.locator("#xyle-changes-close").click();
+
+  await page.locator("#xyle-publish").click();
+  await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+  const source = await (await page.request.get("/index.html")).text();
+  expect(source.indexOf('class="proof-strip"')).toBeLessThan(source.indexOf('class="hero"'));
+  expect(source).not.toContain("data-xyle-node");
+
+  await page.goto("/index.html");
+  await expect
+    .poll(() =>
+      page.locator("main > section").evaluateAll((sections) => sections.map((s) => s.className)),
+    )
+    .toEqual(["proof-strip", "hero", "services", "work-standard", "callout"]);
+});
+
+test("publishes section visibility through public reload", async ({ page }) => {
+  await loginAndOpenEditor(page, "/index.html");
+  const hero = page.frameLocator("#xyle-preview").locator("main > section.hero");
+  await hero.click({ position: { x: 2, y: 2 } });
+  await page.getByRole("button", { name: "Hide section" }).click();
+  expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["sectionVisibility"]);
+
+  await page.locator("#xyle-changes").click();
+  const change = page
+    .getByRole("dialog", { name: "Changes" })
+    .locator(".xyle-change-row")
+    .filter({ hasText: "hidden" });
+  await expect(change.locator(".xyle-change-before")).toContainText("visible");
+  await expect(change.locator(".xyle-change-after")).toContainText("hidden");
+  await page.locator("#xyle-changes-close").click();
+
+  await page.locator("#xyle-publish").click();
+  await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+  const source = await (await page.request.get("/index.html")).text();
+  expect(source).toMatch(/<section[^>]*class="hero"[^>]*hidden/);
+  expect(source).not.toContain("data-xyle-node");
+
+  await page.goto("/index.html");
+  await expect(page.locator("main > section.hero")).toBeHidden();
+});
+
 test("hides and reorders safe sibling sections", async ({ page }) => {
   await loginAndOpenEditor(page, "/index.html");
   const sectionIds = await page.evaluate(() => {
