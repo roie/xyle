@@ -11,6 +11,7 @@ import {
   nodeHtml,
   nodeSkeleton,
   opsCount,
+  setSelection,
 } from "./helpers.ts";
 
 /**
@@ -268,6 +269,57 @@ test.describe("editing fidelity gate", () => {
       );
     });
     await commitAndAssertOp("こんにちは");
+  });
+
+  test("block styles publish in both directions and survive reload", async () => {
+    const headingId = await findNodeByText(page, "See how Xyle works");
+    const paragraphId = await findNodeByText(page, "Editors change content");
+    expect(headingId).toBeTruthy();
+    expect(paragraphId).toBeTruthy();
+
+    await editNode(page, headingId!);
+    await setSelection(page, { nodeId: headingId!, selectAll: true });
+    await page
+      .locator('.xyle-format-tools select[aria-label="Block style"]')
+      .selectOption("paragraph");
+    const changedHeading = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${headingId}"]`);
+    await expect(changedHeading).toHaveJSProperty("tagName", "P");
+
+    await editNode(page, paragraphId!);
+    await setSelection(page, { nodeId: paragraphId!, selectAll: true });
+    await page
+      .locator('.xyle-format-tools select[aria-label="Block style"]')
+      .selectOption("heading-2");
+    const changedParagraph = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${paragraphId}"]`);
+    await expect(changedParagraph).toHaveJSProperty("tagName", "H2");
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual([
+      "formatBlock",
+      "formatBlock",
+    ]);
+
+    await page.locator("#xyle-changes").click();
+    const changes = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
+    await expect(changes).toHaveCount(2);
+    await expect(changes.nth(0).locator(".xyle-change-before")).toContainText("<h1");
+    await expect(changes.nth(0).locator(".xyle-change-after")).toContainText("<p");
+    await expect(changes.nth(1).locator(".xyle-change-before")).toContainText("<p>");
+    await expect(changes.nth(1).locator(".xyle-change-after")).toContainText("<h2");
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get(ABOUT)).text();
+    expect(source).toMatch(/<p[^>]*>See how Xyle works<\/p>/);
+    expect(source).toMatch(/<h2[^>]*>\s*Editors change content/);
+    expect(source).not.toContain("data-xyle-node");
+
+    await page.goto(ABOUT);
+    await expect(page.locator("p", { hasText: "See how Xyle works" })).toHaveCount(1);
+    await expect(page.locator("h2", { hasText: "Editors change content" })).toHaveCount(1);
   });
 
   test("undo removes the pending change; redo restores it", async () => {
