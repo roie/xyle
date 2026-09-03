@@ -496,6 +496,8 @@ test.describe("editing affordances", () => {
     await loginAndOpenEditor(page, "/index.html");
     const link = page.frameLocator("#xyle-preview").locator("a.cta");
     const originalHref = await link.getAttribute("href");
+    const originalLabel = (await link.textContent()) ?? "";
+    const linkId = await link.getAttribute("data-xyle-node");
     await link.click();
     await page.getByRole("button", { name: "Edit text" }).click();
     await expect(page.locator("dialog")).toHaveCount(0);
@@ -507,12 +509,31 @@ test.describe("editing affordances", () => {
     await expect(link).toHaveAttribute("href", originalHref!);
     await expect(link).toHaveText(label);
     await expect(page.locator(".xyle-img-tools")).toHaveCount(0);
-    const ops = await page.evaluate(
-      () =>
-        (window as unknown as { __xyle?: { ops: Array<{ op: { type: string } }> } }).__xyle?.ops ??
-        [],
-    );
-    expect(ops.map((entry) => entry.op.type)).toEqual(["text"]);
+    expect(await currentOps(page)).toEqual([
+      {
+        pagePath: "/index.html",
+        op: { type: "text", nodeId: `${linkId}#0`, value: label },
+      },
+    ]);
+    await page.locator("#xyle-changes").click();
+    const change = page
+      .getByRole("dialog", { name: "Changes" })
+      .locator(".xyle-change-row")
+      .filter({ hasText: label });
+    await expect(change.locator(".xyle-change-before")).toContainText(originalLabel);
+    await expect(change.locator(".xyle-change-after")).toContainText(label);
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get("/index.html")).text();
+    expect(source).toContain(`>${label}</a>`);
+    expect(source).not.toContain("data-xyle-node");
+
+    await page.goto("/index.html");
+    const publishedLink = page.locator("a.cta");
+    await expect(publishedLink).toHaveText(label);
+    await expect(publishedLink).toHaveAttribute("href", originalHref!);
   });
 
   test("link Edit URL changes only the destination", async ({ page }, info) => {

@@ -133,8 +133,21 @@ test.describe("editing fidelity gate", () => {
     await page.keyboard.type(" hello world ");
     await clickOutsideToCommit(page);
 
-    expect((await editorText(page, id!)).endsWith(" hello world ")).toBe(true);
-    expect((await textOpFor(page))?.value.endsWith(" hello world ")).toBe(true);
+    const expectedText = await editorText(page, id!);
+    expect(expectedText.endsWith(" hello world ")).toBe(true);
+    expect((await textOpFor(page))?.value).toBe(expectedText);
+
+    await page.click("#xyle-publish");
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get(ABOUT)).text();
+    expect(source).toContain(" hello world ");
+    expect(source).not.toContain("data-xyle-node");
+
+    await page.goto(ABOUT);
+    const published = page
+      .locator("h2")
+      .filter({ hasText: "Your website stays where it belongs." });
+    expect(((await published.textContent()) ?? "").endsWith(" hello world ")).toBe(true);
   });
 
   test("Backspace removes last character", async () => {
