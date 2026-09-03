@@ -55,23 +55,30 @@ test.describe("canonical net reconciliation", () => {
     expect(sectionIds.length).toBeGreaterThanOrEqual(2);
     const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${sectionIds[0]}"]`);
 
-    await first.press("Enter");
-    await page.getByRole("button", { name: "Move down" }).click();
-    await expect.poll(async () => opsCount(page)).toBe(1);
-    await first.press("Enter");
-    await page.getByRole("button", { name: "Move up" }).click();
-    await expect.poll(async () => opsCount(page)).toBe(0);
-    await expect
-      .poll(() =>
-        page.evaluate(() => {
-          const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
-            .contentDocument!;
-          return [...doc.querySelectorAll("main > section[data-xyle-node]")].map((section) =>
-            section.getAttribute("data-xyle-node"),
-          );
-        }),
-      )
-      .toEqual(sectionIds);
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      await expect(page.locator(".xyle-section-tools")).toHaveCount(0);
+      await first.press("Enter");
+      const tools = page.locator(".xyle-section-tools");
+      await expect(tools).toBeVisible();
+      await tools.getByRole("button", { name: "Move down" }).click({ force: true });
+      await expect.poll(async () => opsCount(page)).toBe(1);
+      await expect(tools).toHaveCount(0);
+      await first.press("Enter");
+      await expect(tools).toBeVisible();
+      await tools.getByRole("button", { name: "Move up" }).click({ force: true });
+      await expect.poll(async () => opsCount(page)).toBe(0);
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement)
+              .contentDocument!;
+            return [...doc.querySelectorAll("main > section[data-xyle-node]")].map((section) =>
+              section.getAttribute("data-xyle-node"),
+            );
+          }),
+        )
+        .toEqual(sectionIds);
+    }
 
     await first.press("Enter");
     await page.getByRole("button", { name: "Hide section" }).click();
