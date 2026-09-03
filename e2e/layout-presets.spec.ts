@@ -1,6 +1,31 @@
 import { expect, test } from "@playwright/test";
 import { loginAndOpenEditor } from "./helpers.ts";
 
+test("unsupported Layout controls explain why they are disabled", async ({ page }) => {
+  await loginAndOpenEditor(page, "/layouts.html");
+  await page.waitForFunction(
+    () =>
+      (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument?.body.dataset
+        .xyleWired === "true",
+  );
+  const layout = page.frameLocator("#xyle-preview").locator("#layout-flex");
+  await expect
+    .poll(() => layout.evaluate((element) => getComputedStyle(element).direction))
+    .toBe("rtl");
+  await layout.press("Enter");
+  const tools = page.locator(".xyle-section-tools");
+  await expect(tools).toBeVisible();
+  for (const name of ["Stack", "Split", "Swap order"]) {
+    const button = tools.getByRole("button", { name });
+    await expect(button).toBeDisabled();
+    await expect(button).toHaveAttribute(
+      "title",
+      "Layout uses unsupported positioning or writing mode",
+    );
+  }
+  await expect(page.locator("#xyle-dirty")).toBeHidden();
+});
+
 test("applies and publishes the safe Split preset", async ({ page }) => {
   await loginAndOpenEditor(page, "/layouts.html");
   await page.waitForFunction(
