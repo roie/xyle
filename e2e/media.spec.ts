@@ -191,6 +191,31 @@ test.describe("media editing", () => {
     await expect(image).toHaveJSProperty("style.objectPosition", "24% 68%");
   });
 
+  test("cancelling crop restores the image without a pending change", async ({ page }) => {
+    await loginAndOpenEditor(page, "/index.html");
+    const image = page
+      .frameLocator("#xyle-preview")
+      .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
+    const originalStyle = await image.evaluate((element) => (element as HTMLElement).style.cssText);
+
+    await image.click();
+    await page.locator(".xyle-img-tools").getByRole("button", { name: "Crop" }).click();
+    const dialog = page.getByRole("dialog", { name: "Crop & focal point" });
+    await dialog.locator("select[name=fit]").selectOption("contain");
+    await dialog.locator("#xyle-zoom").fill("2");
+    await dialog.locator("#xyle-focal-x").fill("17");
+    await dialog.locator("#xyle-focal-y").fill("83");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+
+    await expect(dialog).toHaveCount(0);
+    await expect(image).toBeFocused();
+    expect(await image.evaluate((element) => (element as HTMLElement).style.cssText)).toBe(
+      originalStyle,
+    );
+    expect(await opsCount(page)).toBe(0);
+    await expect(page.locator("#xyle-dirty")).toBeHidden();
+  });
+
   test("upload path uses detected bytes instead of the supplied MIME type", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
     const image = page
