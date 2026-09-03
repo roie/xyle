@@ -24,7 +24,7 @@ test("discovers and duplicates a source-backed Group item through the human UI",
       .map((item) => item.dataset.xyleGroupItem)
       .find((id) => id && id !== sourceId);
   }, firstItemId);
-  expect(createdId).toMatch(/^x-[a-f0-9]{8}$/);
+  expect(createdId).toMatch(/^x-[a-f0-9]{16}$/);
 
   const referenceState = await page.evaluate((itemId) => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;

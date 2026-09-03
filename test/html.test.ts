@@ -106,7 +106,7 @@ describe("Layout presets", () => {
       sourceNodes.map((candidate) => [
         candidate.id,
         createdNodeIdentity(
-          "x-12345678",
+          "x-1234567890abcdef",
           sourceTargetIdentity(
             "/index.html",
             candidate.kind,
@@ -121,7 +121,7 @@ describe("Layout presets", () => {
       {
         type: "duplicateSection",
         sourceId: target.id,
-        createdId: "x-12345678",
+        createdId: "x-1234567890abcdef",
         sequence: 1,
         insert: "after",
         snapshotOperations: [
@@ -137,11 +137,11 @@ describe("Layout presets", () => {
           },
         ],
         nodeMap: { ...nodeMap },
-        idMap: { first: duplicateHtmlId("x-12345678", "first") },
+        idMap: { first: duplicateHtmlId("x-1234567890abcdef", "first") },
         assetRefs: [],
       },
     ]);
-    const firstClone = duplicated.indexOf(`id="${duplicateHtmlId("x-12345678", "first")}"`);
+    const firstClone = duplicated.indexOf(`id="${duplicateHtmlId("x-1234567890abcdef", "first")}"`);
     expect(firstClone).toBeGreaterThan(duplicated.indexOf('class="content"'));
     expect(duplicated.lastIndexOf('class="content"')).toBeLessThan(
       duplicated.lastIndexOf('class="image"'),
@@ -1009,7 +1009,7 @@ describe("Group item duplication", () => {
     const title = [...analyzePage(source).candidates.values()].find(
       (candidate) => candidate.tag === "h3" && candidate.startTagStart > item.sourceStart,
     )!;
-    const operation = operationFor(source, "x-12345678", [
+    const operation = operationFor(source, "x-1234567890abcdef", [
       { type: "text", nodeId: `${title.id}#0`, value: "Frozen title" },
     ]);
     const output = await patchAndGetText(source, [
@@ -1022,7 +1022,7 @@ describe("Group item duplication", () => {
 
   it("remaps item-root HTML ids and local references", async () => {
     const source = `<main><section><div><article id="card-a" aria-labelledby="title-a"><h3 id="title-a">A</h3><p>One</p></article><article id="card-b" aria-labelledby="title-b"><h3 id="title-b">B</h3><p>Two</p></article></div></section></main>`;
-    const createdId = "x-12345678";
+    const createdId = "x-1234567890abcdef";
     const idMap = Object.fromEntries(
       ["card-a", "title-a"].map((id) => [id, duplicateGroupHtmlId(createdId, id)]),
     );
@@ -1035,8 +1035,8 @@ describe("Group item duplication", () => {
 
   it("keeps repeated duplicates in sequence order", async () => {
     const source = `<main><section><div><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article></div></section></main>`;
-    const first = operationFor(source, "x-12345678");
-    const second = { ...operationFor(source, "x-87654321"), sequence: 2 };
+    const first = operationFor(source, "x-1234567890abcdef");
+    const second = { ...operationFor(source, "x-fedcba0987654321"), sequence: 2 };
     const output = await patchAndGetText(source, [first, second]);
     expect(output.indexOf('data-xyle-group-item="')).toBe(-1);
     expect(output.indexOf("<h3>A</h3>")).toBeLessThan(output.indexOf("<h3>B</h3>"));
@@ -1078,7 +1078,7 @@ describe("safe structural patches", () => {
 
   it("duplicates a safe section after its source with deterministic id remapping", async () => {
     const [first] = sectionIds();
-    const createdId = "x-12345678";
+    const createdId = "x-1234567890abcdef";
     const duplicateSource = source.replace(
       '<section id="first"><h2>First</h2>',
       '<section id="first"><h2>First</h2><a href="#first">First</a>',
@@ -1108,7 +1108,7 @@ describe("safe structural patches", () => {
       (candidate) => candidate.kind === "text",
     )!;
     const createdTextId = createdNodeIdentity(
-      "x-12345678",
+      "x-1234567890abcdef",
       sourceTargetIdentity(
         "/index.html",
         sourceText.kind,
@@ -1121,7 +1121,7 @@ describe("safe structural patches", () => {
       {
         type: "duplicateSection",
         sourceId: "s1",
-        createdId: "x-12345678",
+        createdId: "x-1234567890abcdef",
         sequence: 1,
         insert: "after",
         snapshotOperations: [{ type: "text", nodeId: "n1#0", value: "Snapshot" }],
@@ -1147,12 +1147,12 @@ describe("safe structural patches", () => {
         {
           type: "duplicateSection",
           sourceId: first!,
-          createdId: "x-12345678",
+          createdId: "x-1234567890abcdef",
           sequence: 1,
           insert: "after",
           snapshotOperations: [],
           nodeMap: {},
-          idMap: { first: duplicateHtmlId("x-12345678", "first") },
+          idMap: { first: duplicateHtmlId("x-1234567890abcdef", "first") },
           assetRefs: [],
         },
       ]),
@@ -1165,12 +1165,12 @@ describe("safe structural patches", () => {
       {
         type: "duplicateSection",
         sourceId: first!,
-        createdId: "x-12345678",
+        createdId: "x-1234567890abcdef",
         sequence: 1,
         insert: "after",
         snapshotOperations: [],
         nodeMap: {},
-        idMap: { first: duplicateHtmlId("x-12345678", "first") },
+        idMap: { first: duplicateHtmlId("x-1234567890abcdef", "first") },
         assetRefs: [],
       },
       {
@@ -1182,7 +1182,7 @@ describe("safe structural patches", () => {
         sequence: 2,
       },
     ]);
-    const cloneId = duplicateHtmlId("x-12345678", "first");
+    const cloneId = duplicateHtmlId("x-1234567890abcdef", "first");
     expect(duplicated.indexOf(`id="${cloneId}"`)).toBeLessThan(duplicated.indexOf('id="second"'));
     expect(duplicated.lastIndexOf('id="first"')).toBeGreaterThan(duplicated.indexOf('id="second"'));
   });

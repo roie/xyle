@@ -1009,7 +1009,7 @@ test.describe("WebMCP editor tools", () => {
       itemId: sourceItemId,
     })) as { id: string; groupId: string; sourceItemId: string };
     expect(duplicate).toEqual({
-      id: expect.stringMatching(/^x-[a-f0-9]{8}$/),
+      id: expect.stringMatching(/^x-[a-f0-9]{16}$/),
       groupId,
       sourceItemId,
     });

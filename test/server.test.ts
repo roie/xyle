@@ -245,8 +245,8 @@ describe("page api", () => {
     expect(body.groups).toHaveLength(1);
     expect(body.groups[0]!.items).toHaveLength(2);
     expect(body.groups[0]!.items.map((item) => item.id)).toEqual([
-      expect.stringMatching(/^x-[a-f0-9]{8}$/),
-      expect.stringMatching(/^x-[a-f0-9]{8}$/),
+      expect.stringMatching(/^x-[a-f0-9]{16}$/),
+      expect.stringMatching(/^x-[a-f0-9]{16}$/),
     ]);
   });
 

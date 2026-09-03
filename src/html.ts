@@ -1655,7 +1655,7 @@ export async function patchHtml(
       case "moveSection": {
         const candidate = analysis.candidates.get(op.nodeId);
         const target = analysis.candidates.get(op.targetId);
-        const createdTarget = !target && /^x-[a-f0-9]{8}$/.test(op.targetId);
+        const createdTarget = !target && /^x-[a-f0-9]{16}$/.test(op.targetId);
         if (
           !candidate ||
           candidate.kind !== "section" ||
@@ -1719,7 +1719,7 @@ export async function patchHtml(
         if (!group || !item) throw new Error("duplicate target is not a source-backed Group item");
         if (
           op.insert !== "after" ||
-          !/^x-[a-f0-9]{8}$/.test(op.createdId) ||
+          !/^x-[a-f0-9]{16}$/.test(op.createdId) ||
           !Number.isInteger(op.sequence) ||
           op.sequence < 1 ||
           structuralSequences.has(op.sequence) ||
@@ -1794,7 +1794,7 @@ export async function patchHtml(
           throw new Error("section parent contains unsupported sibling content");
         if (
           op.insert !== "after" ||
-          !/^x-[a-f0-9]{8}$/.test(op.createdId) ||
+          !/^x-[a-f0-9]{16}$/.test(op.createdId) ||
           !Number.isInteger(op.sequence) ||
           op.sequence < 1 ||
           structuralSequences.has(op.sequence)
@@ -1812,7 +1812,7 @@ export async function patchHtml(
         const createdNodeIds = Object.values(op.nodeMap);
         if (
           new Set(createdNodeIds).size !== createdNodeIds.length ||
-          createdNodeIds.some((id) => !/^x-[a-f0-9]{8}$/.test(id))
+          createdNodeIds.some((id) => !/^x-[a-f0-9]{16}$/.test(id))
         ) {
           throw new Error("created descendant identity is invalid");
         }
