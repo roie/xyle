@@ -45,6 +45,22 @@ export interface SetBlockFormatOperation {
   targets: Array<{ nodeId: string; value: BlockFormat }>;
 }
 
+export type TextBlockTag = Exclude<BlockFormat, "ul" | "ol">;
+
+export interface ReplaceTextBlockOperation {
+  type: "replaceTextBlock";
+  /** Original server-backed block and publication anchor. */
+  nodeId: string;
+  blocks: Array<{
+    /** Bounded client identity; it is never written to the page. */
+    key: string;
+    tag: TextBlockTag;
+    html: string;
+    /** Exactly one block preserves the source element's attributes. */
+    source: boolean;
+  }>;
+}
+
 export interface Point {
   x: number;
   y: number;
@@ -114,6 +130,7 @@ export type PageOperation =
       after: "plain" | "ul" | "ol";
     }
   | { type: "html"; nodeId: string; value: string }
+  | ReplaceTextBlockOperation
   | { type: "media"; nodeId: string; value: MediaState }
   | { type: "seo"; nodeId: string; field: SeoField; value: string }
   | { type: "lineBreak"; nodeId: string; position: number }

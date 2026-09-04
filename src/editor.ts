@@ -71,6 +71,7 @@ import type {
   SetLayoutPresetOperation,
   SetRegionOrderOperation,
   SetBlockFormatOperation,
+  ReplaceTextBlockOperation,
   SnapshotOperation,
 } from "./types.ts";
 
@@ -131,6 +132,7 @@ type Op =
       after: "plain" | "ul" | "ol";
     }
   | { type: "html"; nodeId: string; value: string }
+  | ReplaceTextBlockOperation
   | { type: "media"; nodeId: string; value: MediaState }
   | { type: "seo"; nodeId: string; field: SeoField; value: string }
   | { type: "href"; nodeId: string; value: string }
@@ -454,6 +456,9 @@ async function boot(): Promise<void> {
     listLayoutOptions,
     setLayoutPreset,
     setRegionOrder,
+    insertParagraph,
+    insertLineBreak,
+    createLink,
     updateText,
     updateLink,
   });
@@ -1780,6 +1785,11 @@ function isControlledBreak(node: Node): node is HTMLBRElement {
   );
 }
 
+function markControlledBreak(br: HTMLBRElement): void {
+  controlledBreaks.add(br);
+  br.setAttribute("data-xyle-controlled-break", "");
+}
+
 function isFormatWrapper(node: Node): node is HTMLElement {
   if (node.nodeType !== Node.ELEMENT_NODE) return false;
   const marker = (node as HTMLElement).getAttribute("data-xyle-format");
@@ -1892,7 +1902,7 @@ function skeleton(el: HTMLElement): string {
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const element = node as HTMLElement;
     if (element.id === "xyle-overlay-root") return;
-    out += `<${element.tagName}>`;
+    out += isControlledBreak(element) ? "<XYLE-BR>" : `<${element.tagName}>`;
     for (const child of Array.from(node.childNodes)) walk(child);
   };
   for (const child of Array.from(el.childNodes)) walk(child);
@@ -1964,7 +1974,7 @@ function onPaste(event: ClipboardEvent): void {
     return;
   }
   if (text.includes("\n")) {
-    flash("Line-break editing is deferred.");
+    flash("Paste one paragraph at a time. Use Shift+Enter to add a line break.");
     return;
   }
   const win = iframe.contentWindow!;
@@ -1972,7 +1982,7 @@ function onPaste(event: ClipboardEvent): void {
 }
 
 function onKeyDown(event: KeyboardEvent): void {
-  if (!session) return;
+  if (!session || event.isComposing) return;
   if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
     rememberNonCollapsedSelection();
     pendingKeyboardSelection = lastNonCollapsedSelection?.cloneRange() ?? null;
@@ -1986,6 +1996,20 @@ function onKeyDown(event: KeyboardEvent): void {
     revertEdit();
     return;
   }
+  if (event.key === "Backspace") {
+    const selection = previewSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (range?.collapsed && session.el.contains(range.startContainer)) {
+      const before = session.el.ownerDocument.createRange();
+      before.selectNodeContents(session.el);
+      before.setEnd(range.startContainer, range.startOffset);
+      if (!before.toString().trim()) {
+        event.preventDefault();
+        flash("Merging separate text blocks is not supported yet.");
+        return;
+      }
+    }
+  }
   if (event.key === " ") {
     event.preventDefault();
     // Native contenteditable handling turns boundary spaces into NBSP and
@@ -1996,7 +2020,8 @@ function onKeyDown(event: KeyboardEvent): void {
   }
   if (event.key === "Enter") {
     event.preventDefault();
-    flash("Line-break editing is deferred.");
+    if (event.shiftKey) insertManualLineBreak();
+    else insertParagraphAtSelection();
     return;
   }
   if (event.ctrlKey || event.metaKey) {
@@ -2301,6 +2326,16 @@ function showFormatTools(): void {
     addInlineButton("italic", "Italic");
     addInlineButton("underline", "Underline");
     addInlineButton("strikethrough", "Strikethrough");
+    const linkButton = document.createElement("button");
+    linkButton.type = "button";
+    linkButton.textContent = "Link";
+    linkButton.setAttribute("aria-label", "Add link");
+    linkButton.setAttribute("title", "Add link");
+    linkButton.disabled = selectionTouchesLink(target, currentSelection.range);
+    if (linkButton.disabled) linkButton.title = "The selection already contains a link.";
+    linkButton.addEventListener("pointerdown", (event) => event.preventDefault());
+    linkButton.addEventListener("click", () => openCreateLinkEditor(tools, currentSelection));
+    tools.append(linkButton);
     updateFormatToolState(tools, target, currentSelection.range);
 
     if (supportsBlockStyle) {
@@ -2435,6 +2470,164 @@ function insertPlainTextAtSelection(value: string): void {
   validateStructure();
 }
 
+function insertManualLineBreak(): void {
+  const selection = previewSelection();
+  if (!selection || selection.rangeCount === 0 || !session || !session.meta.multiline) {
+    flash("Line breaks are not supported here.");
+    return;
+  }
+  const range = selection.getRangeAt(0);
+  if (!session.el.contains(range.commonAncestorContainer)) {
+    flash("Place the cursor inside the text before adding a line break.");
+    return;
+  }
+  range.deleteContents();
+  const br = session.el.ownerDocument.createElement("br");
+  markControlledBreak(br);
+  range.insertNode(br);
+  range.setStartAfter(br);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  validateStructure();
+}
+
+function replacementBlockId(
+  operation: ReplaceTextBlockOperation,
+  block: ReplaceTextBlockOperation["blocks"][number],
+): string {
+  return block.source
+    ? operation.nodeId
+    : stableIdentity(["replacement-text-block", operation.nodeId, block.key]);
+}
+
+function replacementOperationForNode(
+  pagePath: string,
+  nodeId: string,
+): ReplaceTextBlockOperation | null {
+  return (
+    state.ops.find((entry): entry is PendingOp & { op: ReplaceTextBlockOperation } => {
+      const operation = entry.op;
+      return (
+        entry.pagePath === pagePath &&
+        operation.type === "replaceTextBlock" &&
+        operation.blocks.some((block) => replacementBlockId(operation, block) === nodeId)
+      );
+    })?.op ?? null
+  );
+}
+
+function cleanRangeFragment(range: Range): string {
+  const doc = range.startContainer.ownerDocument;
+  if (!doc) return "";
+  const root = doc.createElement("div");
+  root.append(range.cloneContents());
+  return cleanInlineHtml(root);
+}
+
+function replacementFromDom(operation: ReplaceTextBlockOperation): ReplaceTextBlockOperation {
+  const doc = previewDoc();
+  if (!doc) return operation;
+  return {
+    ...operation,
+    blocks: operation.blocks.map((block) => {
+      const element = doc.querySelector<HTMLElement>(
+        `[data-xyle-node="${replacementBlockId(operation, block)}"]`,
+      );
+      if (!element) return block;
+      const tag = element.tagName.toLowerCase();
+      return {
+        ...block,
+        tag: /^(p|h[1-6])$/.test(tag)
+          ? (tag as ReplaceTextBlockOperation["blocks"][number]["tag"])
+          : block.tag,
+        html: cleanInlineHtml(element),
+      };
+    }),
+  };
+}
+
+function insertParagraphAtSelection(): string | null {
+  const activeSession = session;
+  const selection = previewSelection();
+  if (!activeSession || !selection || selection.rangeCount === 0) return null;
+  const element = activeSession.el;
+  const tag = element.tagName.toLowerCase();
+  if (!/^(p|h[1-6])$/.test(tag) || element.parentElement?.matches("ul, ol")) {
+    flash("Paragraph breaks are not supported in this text yet.");
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) {
+    flash("Place the cursor inside one text block before creating a paragraph.");
+    return null;
+  }
+  const beforeRange = element.ownerDocument.createRange();
+  beforeRange.selectNodeContents(element);
+  beforeRange.setEnd(range.startContainer, range.startOffset);
+  const afterRange = element.ownerDocument.createRange();
+  afterRange.selectNodeContents(element);
+  afterRange.setStart(range.endContainer, range.endOffset);
+  const beforeHtml = cleanRangeFragment(beforeRange);
+  const afterHtml = cleanRangeFragment(afterRange);
+  const splitAtStart = beforeRange.toString().length === 0;
+  const existing = replacementOperationForNode(activeSession.meta.pagePath, activeSession.meta.id);
+  const anchorId = existing?.nodeId ?? activeSession.meta.id;
+  const current = existing ? replacementFromDom(existing) : null;
+  const selectedIndex = current
+    ? current.blocks.findIndex(
+        (block) => replacementBlockId(current, block) === activeSession.meta.id,
+      )
+    : 0;
+  if (selectedIndex < 0) {
+    flash("This paragraph can no longer be split safely.");
+    return null;
+  }
+  const selectedBlock = current?.blocks[selectedIndex] ?? {
+    key: "source",
+    tag: tag as ReplaceTextBlockOperation["blocks"][number]["tag"],
+    html: cleanInlineHtml(element),
+    source: true,
+  };
+  const newBlock = {
+    key: `paragraph-${allocateStructuralSequence()}`,
+    tag: "p" as const,
+    html: splitAtStart ? beforeHtml : afterHtml,
+    source: false,
+  };
+  const retainedBlock = {
+    ...selectedBlock,
+    html: splitAtStart ? afterHtml : beforeHtml,
+  };
+  const blocks = current ? [...current.blocks] : [selectedBlock];
+  blocks.splice(
+    selectedIndex,
+    1,
+    ...(splitAtStart ? [newBlock, retainedBlock] : [retainedBlock, newBlock]),
+  );
+  const operation: ReplaceTextBlockOperation = {
+    type: "replaceTextBlock",
+    nodeId: anchorId,
+    blocks,
+  };
+  endEdit(false);
+  applyReplaceTextBlockToDom(activeSession.meta.pagePath, operation);
+  applyOp(activeSession.meta.pagePath, operation, "Create paragraph");
+  const createdId = replacementBlockId(operation, newBlock);
+  const created = previewDoc()?.querySelector<HTMLElement>(`[data-xyle-node="${createdId}"]`);
+  const createdMeta = metaById.get(createdId);
+  if (created && createdMeta) {
+    startEdit(created, createdMeta);
+    const caret = created.ownerDocument.createRange();
+    caret.selectNodeContents(created);
+    caret.collapse(true);
+    const createdSelection = created.ownerDocument.defaultView?.getSelection();
+    createdSelection?.removeAllRanges();
+    createdSelection?.addRange(caret);
+  }
+  return createdId;
+}
+
 function onBeforeInput(event: InputEvent): void {
   if (!session) return;
   if (event.inputType === "insertText" && event.data && !event.isComposing) {
@@ -2444,9 +2637,12 @@ function onBeforeInput(event: InputEvent): void {
   }
   switch (event.inputType) {
     case "insertParagraph":
+      event.preventDefault();
+      insertParagraphAtSelection();
+      return;
     case "insertLineBreak":
       event.preventDefault();
-      flash("Line-break editing is deferred.");
+      insertManualLineBreak();
       return;
     case "formatBold":
     case "formatItalic":
@@ -2547,9 +2743,10 @@ function validateStructure(): void {
   }
 }
 
-/** Only text mutations that preserve the existing inline structure may pass. */
+/** Allow text mutations and only the line breaks inserted by Xyle. */
 function structureAllowed(current: string, baseline: string): boolean {
-  return current === baseline;
+  if (current === baseline) return true;
+  return current.replaceAll("<XYLE-BR>", "") === baseline;
 }
 
 function restoreBaseline(): void {
@@ -2595,34 +2792,51 @@ function endEdit(recordChanges: boolean): void {
     recordChanges = false;
   }
   if (recordChanges) {
-    const currentHtml = cleanInlineHtml(s.el);
-    const hasInlineMarkup =
-      /<(?:a|b|strong|em|i|u)\b/i.test(s.baselineHtml) ||
-      /<(?:a|b|strong|em|i|u)\b/i.test(currentHtml);
-    if (hasInlineMarkup) {
-      const originalHtml =
-        originalMarkups.get(segmentIdentity(s.meta.pagePath, s.meta.id)) ?? s.baselineHtml;
-      reconcileInlineHtml(s.meta.pagePath, s.meta.id, originalHtml, currentHtml);
+    const replacement = replacementOperationForNode(s.meta.pagePath, s.meta.id);
+    if (replacement) {
+      const currentReplacement = replacementFromDom(replacement);
+      if (JSON.stringify(currentReplacement.blocks) !== JSON.stringify(replacement.blocks)) {
+        applyOp(s.meta.pagePath, currentReplacement, "Edit paragraph");
+      }
     } else {
-      const currentPairs = collectSegments(s.el);
-      const mappingChanged =
-        currentPairs.length !== s.baselineValues.length ||
-        authoredBreakCount(s.el) !== s.baselineAuthoredBreakCount;
-      if (mappingChanged) {
-        flash("That change was reverted because the browser changed the text structure.");
-        restoreBaseline();
+      const currentHtml = cleanInlineHtml(s.el);
+      const hasControlledBreak = [...s.el.querySelectorAll("br")].some(isControlledBreak);
+      const hasExistingHtmlOperation = state.ops.some(
+        (entry) =>
+          entry.pagePath === s.meta.pagePath &&
+          entry.op.type === "html" &&
+          entry.op.nodeId === s.meta.id,
+      );
+      const hasInlineMarkup =
+        /<(?:a|b|strong|em|i|u|s)\b/i.test(s.baselineHtml) ||
+        /<(?:a|b|strong|em|i|u|s)\b/i.test(currentHtml) ||
+        hasControlledBreak ||
+        hasExistingHtmlOperation;
+      if (hasInlineMarkup) {
+        const originalHtml =
+          originalMarkups.get(segmentIdentity(s.meta.pagePath, s.meta.id)) ?? s.baselineHtml;
+        reconcileInlineHtml(s.meta.pagePath, s.meta.id, originalHtml, currentHtml);
       } else {
-        for (const [i, pair] of currentPairs.entries()) {
-          if (pair.value !== s.baselineValues[i]) {
-            applyOp(
-              s.meta.pagePath,
-              {
-                type: "text",
-                nodeId: `${s.meta.id}#${i}`,
-                value: pair.value,
-              },
-              "Edit text",
-            );
+        const currentPairs = collectSegments(s.el);
+        const mappingChanged =
+          currentPairs.length !== s.baselineValues.length ||
+          authoredBreakCount(s.el) !== s.baselineAuthoredBreakCount;
+        if (mappingChanged) {
+          flash("That change was reverted because the browser changed the text structure.");
+          restoreBaseline();
+        } else {
+          for (const [i, pair] of currentPairs.entries()) {
+            if (pair.value !== s.baselineValues[i]) {
+              applyOp(
+                s.meta.pagePath,
+                {
+                  type: "text",
+                  nodeId: `${s.meta.id}#${i}`,
+                  value: pair.value,
+                },
+                "Edit text",
+              );
+            }
           }
         }
       }
@@ -2941,6 +3155,133 @@ function returnToSelectedToolbar(target: HTMLElement, reopen: () => void): void 
   } finally {
     toolbarActionInProgress = false;
   }
+}
+
+function selectionTouchesLink(root: HTMLElement, range: Range): boolean {
+  if (root.tagName === "A") return true;
+  const anchorAt = (node: Node): HTMLAnchorElement | null => {
+    const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+    const anchor = element?.closest("a") ?? null;
+    return anchor?.tagName === "A" && root.contains(anchor) ? (anchor as HTMLAnchorElement) : null;
+  };
+  if (anchorAt(range.startContainer) || anchorAt(range.endContainer)) return true;
+  const selected = range.cloneContents();
+  return selected.querySelector("a") !== null;
+}
+
+function addLinkToSelection(selection: FormatSelection, href: string): HTMLAnchorElement {
+  if (!session) throw new Error("The text selection is no longer active.");
+  const { el, meta } = session;
+  const range = selection.range.cloneRange();
+  if (
+    range.collapsed ||
+    !el.contains(range.startContainer) ||
+    !el.contains(range.endContainer) ||
+    selectionTouchesLink(el, range)
+  ) {
+    throw new Error("Select text that does not already contain a link.");
+  }
+
+  const identity = segmentIdentity(meta.pagePath, meta.id);
+  if (!originalMarkups.has(identity)) originalMarkups.set(identity, cleanInlineHtml(el));
+  const anchor = el.ownerDocument.createElement("a");
+  anchor.setAttribute("href", href);
+  anchor.append(range.extractContents());
+  range.insertNode(anchor);
+  el.normalize();
+
+  const selectedRange = el.ownerDocument.createRange();
+  selectedRange.selectNodeContents(anchor);
+  const activeSelection = previewSelection();
+  activeSelection?.removeAllRanges();
+  activeSelection?.addRange(selectedRange);
+
+  const replacement = replacementOperationForNode(meta.pagePath, meta.id);
+  if (replacement) {
+    applyOp(meta.pagePath, replacementFromDom(replacement), "Add link");
+  } else {
+    reconcileInlineHtml(
+      meta.pagePath,
+      meta.id,
+      originalMarkups.get(identity) ?? "",
+      cleanInlineHtml(el),
+    );
+  }
+  const pairs = collectSegments(el);
+  const baselineClone = el.ownerDocument.createDocumentFragment();
+  for (const child of Array.from(el.childNodes)) baselineClone.append(child.cloneNode(true));
+  session.baselineClone = baselineClone;
+  session.baselineValues = pairs.map((pair) => pair.value);
+  session.baselineKeys = pairs.map((pair) => pair.key);
+  session.baselineSkeleton = skeleton(el);
+  session.baselineAuthoredBreakCount = authoredBreakCount(el);
+  return anchor;
+}
+
+function openCreateLinkEditor(tools: HTMLElement, selection: FormatSelection): void {
+  if (!session) return;
+  const target = session.el;
+  const savedRange = selection.range.cloneRange();
+  toolbarActionInProgress = true;
+  toolbarPhase = "inline";
+  tools.replaceChildren(
+    document.createRange().createContextualFragment(`
+    <form class="xyle-inline-tool-form" novalidate>
+      <label class="xyle-inline-tool-label"><span class="xyle-sr-only">Link destination</span>
+        <input class="xyle-inline-tool-input" name="href" autocomplete="off" placeholder="https://example.com or /about" aria-describedby="xyle-link-create-error">
+      </label>
+      <p id="xyle-link-create-error" class="xyle-inline-tool-error" role="status" aria-live="polite"></p>
+      <div class="xyle-inline-tool-actions">
+        <button type="button" data-cancel>Cancel</button>
+        <button type="submit" value="save">Add link</button>
+      </div>
+    </form>`),
+  );
+  const hrefInput = tools.querySelector("input") as HTMLInputElement;
+  const restoreSelection = (): void => {
+    toolbarActionInProgress = false;
+    returnToSelectedToolbar(target, () => {
+      const activeSelection = previewSelection();
+      activeSelection?.removeAllRanges();
+      activeSelection?.addRange(savedRange.cloneRange());
+      showFormatTools();
+    });
+  };
+  tools
+    .querySelector<HTMLButtonElement>("[data-cancel]")
+    ?.addEventListener("click", restoreSelection);
+  tools.querySelector("form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const value = normalizeEditableUrl(hrefInput.value);
+    if (!isSafeUrl(value)) {
+      tools.querySelector<HTMLElement>(".xyle-inline-tool-error")!.textContent =
+        "Use /path, https://, http://, mailto: or tel:.";
+      hrefInput.setAttribute("aria-invalid", "true");
+      hrefInput.focus();
+      return;
+    }
+    try {
+      const anchor = addLinkToSelection({ ...selection, range: savedRange }, value);
+      toolbarActionInProgress = false;
+      closeContextTools(false);
+      endEdit(false);
+      anchor.focus({ preventScroll: true });
+    } catch (error) {
+      tools.querySelector<HTMLElement>(".xyle-inline-tool-error")!.textContent =
+        error instanceof Error ? error.message : "Xyle could not add this link.";
+      hrefInput.focus();
+    }
+  });
+  tools.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      restoreSelection();
+    }
+  });
+  hrefInput.focus();
+  window.requestAnimationFrame(() => {
+    if (tools.isConnected) positionInlineToolEditor(tools, target, "above");
+  });
 }
 
 function openHrefEditor(el: HTMLElement, meta: NodeMeta, tools: HTMLElement): void {
@@ -4496,6 +4837,7 @@ function cleanupUnreachableAssets(includeHistory = true): void {
 
 function operationMatchesAuthoredBaseline(pagePath: string, op: Op): boolean {
   if (op.type === "setBlockFormat") return op.targets.length === 0;
+  if (op.type === "replaceTextBlock") return false;
   if (isRichContentOp(op)) {
     const region =
       regionForNode(pagePath, richNodeIds(op)[0]!) ?? ensureRichContentRegion(pagePath, op);
@@ -4598,11 +4940,18 @@ function applyOp(pagePath: string, op: Op, label: string, pendingOp: Op | null =
   return entry;
 }
 
-function isRichContentOp(
-  op: Op,
-): op is Extract<
+function isRichContentOp(op: Op): op is Extract<
   Op,
-  { type: "text" | "format" | "setBlockFormat" | "formatBlock" | "toggleList" | "html" }
+  {
+    type:
+      | "text"
+      | "format"
+      | "setBlockFormat"
+      | "formatBlock"
+      | "toggleList"
+      | "html"
+      | "replaceTextBlock";
+  }
 > {
   return (
     op.type === "text" ||
@@ -4610,21 +4959,33 @@ function isRichContentOp(
     op.type === "setBlockFormat" ||
     op.type === "formatBlock" ||
     op.type === "toggleList" ||
-    op.type === "html"
+    op.type === "html" ||
+    op.type === "replaceTextBlock"
   );
 }
 
 function richNodeIds(
   op: Extract<
     Op,
-    { type: "text" | "format" | "setBlockFormat" | "formatBlock" | "toggleList" | "html" }
+    {
+      type:
+        | "text"
+        | "format"
+        | "setBlockFormat"
+        | "formatBlock"
+        | "toggleList"
+        | "html"
+        | "replaceTextBlock";
+    }
   >,
 ): string[] {
-  return op.type === "toggleList"
-    ? op.nodeIds.map((id) => id.split("#")[0]!)
-    : op.type === "setBlockFormat"
-      ? op.targets.map((target) => target.nodeId.split("#")[0]!)
-      : [op.nodeId.split("#")[0]!];
+  return op.type === "replaceTextBlock"
+    ? op.blocks.map((block) => replacementBlockId(op, block))
+    : op.type === "toggleList"
+      ? op.nodeIds.map((id) => id.split("#")[0]!)
+      : op.type === "setBlockFormat"
+        ? op.targets.map((target) => target.nodeId.split("#")[0]!)
+        : [op.nodeId.split("#")[0]!];
 }
 
 function stableTargetIdForNode(pagePath: string, nodeId: string): string {
@@ -4803,7 +5164,16 @@ function ensureRichContentRegion(
   pagePath: string,
   op: Extract<
     Op,
-    { type: "text" | "format" | "setBlockFormat" | "formatBlock" | "toggleList" | "html" }
+    {
+      type:
+        | "text"
+        | "format"
+        | "setBlockFormat"
+        | "formatBlock"
+        | "toggleList"
+        | "html"
+        | "replaceTextBlock";
+    }
   >,
 ): RichContentRegion {
   const ids = [...new Set(richNodeIds(op))];
@@ -5815,15 +6185,17 @@ function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: Pend
             ? op.after === "plain"
               ? "paragraphs"
               : op.after
-            : op.type === "media"
-              ? mediaStateDescription(op.value)
-              : op.type === "sectionVisibility"
-                ? op.visible
-                  ? "visible"
-                  : "hidden"
-                : op.type === "moveSection"
-                  ? `Moved “${displayNameForNode(pagePath, op.nodeId)}” ${sectionMoveDirection(op)}`
-                  : op.value,
+            : op.type === "replaceTextBlock"
+              ? op.blocks.map((block) => `<${block.tag}>${block.html}</${block.tag}>`).join("\n")
+              : op.type === "media"
+                ? mediaStateDescription(op.value)
+                : op.type === "sectionVisibility"
+                  ? op.visible
+                    ? "visible"
+                    : "hidden"
+                  : op.type === "moveSection"
+                    ? `Moved “${displayNameForNode(pagePath, op.nodeId)}” ${sectionMoveDirection(op)}`
+                    : op.value,
     ...(entry.changeSetId
       ? {
           changeSetId: entry.changeSetId,
@@ -6484,8 +6856,14 @@ function updateFormatting(
     throw new Error("That selection cannot be formatted safely");
   }
   const html = cleanInlineHtml(element);
-  const original = originalMarkups.get(identity) ?? "";
-  reconcileInlineHtml(current.pagePath, nodeId, original, html);
+  const replacement = replacementOperationForNode(current.pagePath, nodeId);
+  if (replacement) {
+    const updated = replacementFromDom(replacement);
+    applyOp(current.pagePath, updated, "Format paragraph text");
+  } else {
+    const original = originalMarkups.get(identity) ?? "";
+    reconcileInlineHtml(current.pagePath, nodeId, original, html);
+  }
   if (session) {
     const baselineClone = previewDoc()!.createDocumentFragment();
     for (const child of Array.from(element.childNodes)) baselineClone.append(child.cloneNode(true));
@@ -6588,14 +6966,149 @@ function toggleListFormatting(
 }
 
 function updateBlockFormatting(nodeId: string, format: BlockFormatting): FormattingUpdateResult {
-  return setBlockFormatting([nodeId], blockTagFor(format));
+  const current = state.current;
+  const initialReplacement = current ? replacementOperationForNode(current.pagePath, nodeId) : null;
+  if (!initialReplacement) return setBlockFormatting([nodeId], blockTagFor(format));
+  if (format === "unordered-list" || format === "ordered-list") {
+    throw new Error("List formatting for a new paragraph is not supported yet");
+  }
+  if (session) commitEdit();
+  const replacement = replacementOperationForNode(current!.pagePath, nodeId);
+  if (!replacement) throw new Error("The paragraph is no longer available");
+  const value = blockTagFor(format) as ReplaceTextBlockOperation["blocks"][number]["tag"];
+  const blocks = replacement.blocks.map((block) =>
+    replacementBlockId(replacement, block) === nodeId ? { ...block, tag: value } : block,
+  );
+  const operation: ReplaceTextBlockOperation = { ...replacement, blocks };
+  applyReplaceTextBlockToDom(current!.pagePath, operation);
+  applyOp(current!.pagePath, operation, "Change paragraph style");
+  return { id: nodeId, pagePath: current!.pagePath, format };
 }
 
-function updateText(nodeId: string, text: string): TextUpdateResult {
-  if (/[\r\n]/.test(text)) throw new Error("Line-break editing is deferred.");
+function caretRangeAtTextOffset(element: HTMLElement, offset: number): Range | null {
+  if (!Number.isInteger(offset) || offset < 0) return null;
+  const textNodes = formattingTextNodes(element);
+  if (textNodes.length === 0) {
+    if (offset !== 0) return null;
+    const range = element.ownerDocument.createRange();
+    range.setStart(element, 0);
+    range.collapse(true);
+    return range;
+  }
+  let consumed = 0;
+  for (const node of textNodes) {
+    if (offset <= consumed + node.length) {
+      const range = element.ownerDocument.createRange();
+      range.setStart(node, offset - consumed);
+      range.collapse(true);
+      return range;
+    }
+    consumed += node.length;
+  }
+  return null;
+}
+
+function startTextInsertion(nodeId: string, offset: number): HTMLElement {
   if (session) commitEdit();
   const current = state.current;
   if (!current) throw new Error("No page is loaded");
+  const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+  const element = currentNodeElement(nodeId);
+  if (!meta || !element || meta.kind !== "text" || !meta.textEditable) {
+    throw new Error(`Unknown or non-text-editable Xyle node ${nodeId}`);
+  }
+  const range = caretRangeAtTextOffset(element, offset);
+  if (!range) throw new Error("The insertion offset is outside this text block");
+  startEdit(element, meta);
+  if (session?.el !== element) throw new Error("This text block cannot be edited safely");
+  const selection = element.ownerDocument.defaultView?.getSelection();
+  if (!selection) throw new Error("The preview selection is unavailable");
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return element;
+}
+
+function insertParagraph(
+  nodeId: string,
+  offset: number,
+): { id: string; createdId: string; pagePath: string } {
+  startTextInsertion(nodeId, offset);
+  const createdId = insertParagraphAtSelection();
+  if (!createdId || !state.current) throw new Error("A paragraph cannot be created at this target");
+  commitEdit();
+  return { id: nodeId, createdId, pagePath: state.current.pagePath };
+}
+
+function insertLineBreak(nodeId: string, offset: number): { id: string; pagePath: string } {
+  startTextInsertion(nodeId, offset);
+  insertManualLineBreak();
+  commitEdit();
+  if (!state.current) throw new Error("No page is loaded");
+  return { id: nodeId, pagePath: state.current.pagePath };
+}
+
+function createLink(
+  nodeId: string,
+  start: number,
+  end: number,
+  rawHref: string,
+): { id: string; href: string; pagePath: string } {
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) {
+    throw new Error("The link text range is invalid");
+  }
+  const href = normalizeEditableUrl(rawHref);
+  if (!isSafeUrl(href)) throw new Error("The link destination is unsafe");
+  const element = startTextInsertion(nodeId, start);
+  try {
+    const startRange = caretRangeAtTextOffset(element, start);
+    const endRange = caretRangeAtTextOffset(element, end);
+    if (!startRange || !endRange) throw new Error("The link text range is outside this text block");
+    const range = element.ownerDocument.createRange();
+    range.setStart(startRange.startContainer, startRange.startOffset);
+    range.setEnd(endRange.startContainer, endRange.startOffset);
+    const rect = range.getBoundingClientRect();
+    addLinkToSelection(
+      {
+        start,
+        end,
+        range,
+        rect: {
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+          width: rect.width,
+          height: rect.height,
+        },
+      },
+      href,
+    );
+    endEdit(false);
+  } catch (error) {
+    revertEdit();
+    throw error;
+  }
+  if (!state.current) throw new Error("No page is loaded");
+  return { id: nodeId, href, pagePath: state.current.pagePath };
+}
+
+function updateText(nodeId: string, text: string): TextUpdateResult {
+  if (/[\r\n]/.test(text)) {
+    throw new Error(
+      "update_text accepts one text block; use a paragraph or line-break action instead",
+    );
+  }
+  if (session) commitEdit();
+  const current = state.current;
+  if (!current) throw new Error("No page is loaded");
+  const replacement = replacementOperationForNode(current.pagePath, nodeId);
+  const replacementElement = replacement ? currentNodeElement(nodeId) : null;
+  if (replacement && replacementElement) {
+    replacementElement.textContent = text;
+    const operation = replacementFromDom(replacement);
+    applyOp(current.pagePath, operation, "Edit paragraph");
+    return { id: nodeId, pagePath: current.pagePath, text };
+  }
   const meta = current.nodes.find((candidate) => candidate.id === nodeId);
   if (!meta || (meta.kind !== "text" && meta.kind !== "link") || !meta.textEditable) {
     throw new Error(`Unknown or non-text-editable Xyle node ${nodeId}`);
@@ -7251,6 +7764,8 @@ function changeTypeLabel(type: ChangeInfo["type"]): string {
     case "toggleList":
     case "html":
       return "Formatting";
+    case "replaceTextBlock":
+      return "Paragraphs";
     case "sectionVisibility":
     case "moveSection":
     case "duplicateSection":
@@ -7287,6 +7802,8 @@ function opLabel(op: Op): string {
       return "List formatting";
     case "html":
       return "Formatting";
+    case "replaceTextBlock":
+      return "Paragraphs";
     case "media":
       return "Media";
     case "seo":
@@ -7329,6 +7846,9 @@ function originalValue(pagePath: string, op: Op): string {
     return op.before === "plain" ? "paragraphs" : op.before;
   }
   if (op.type === "html") {
+    return originalMarkups.get(segmentIdentity(pagePath, op.nodeId)) ?? "";
+  }
+  if (op.type === "replaceTextBlock") {
     return originalMarkups.get(segmentIdentity(pagePath, op.nodeId)) ?? "";
   }
   if (op.type === "media") {
@@ -7662,6 +8182,10 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) replaceElementContentsFromHtml(el, op.value);
     return;
   }
+  if (op.type === "replaceTextBlock") {
+    applyReplaceTextBlockToDom(pagePath, op);
+    return;
+  }
   if (op.type === "media") {
     const el = doc.querySelector<HTMLImageElement>(`[data-xyle-node="${op.nodeId}"]`);
     if (el?.tagName === "IMG") applyMediaStateToDom(el, op.value);
@@ -7775,7 +8299,7 @@ function revertOpInDom(pagePath: string, op: Op): void {
         }
       }
     }
-  } else if (op.type === "setBlockFormat") {
+  } else if (op.type === "setBlockFormat" || op.type === "replaceTextBlock") {
     renderPreview();
   } else if (op.type === "formatBlock") {
     restoreOriginalBlockFormat(pagePath, op.nodeId);
@@ -8255,6 +8779,81 @@ function reconcileAdjacentRegionLists(pagePath: string, operation: SetBlockForma
   }
 }
 
+function applyReplaceTextBlockToDom(pagePath: string, operation: ReplaceTextBlockOperation): void {
+  if (pagePath !== state.current?.pagePath) return;
+  const doc = previewDoc();
+  if (!doc) return;
+  const elements = operation.blocks
+    .map((block) =>
+      doc.querySelector<HTMLElement>(`[data-xyle-node="${replacementBlockId(operation, block)}"]`),
+    )
+    .filter((element): element is HTMLElement => !!element);
+  const sourceElement =
+    doc.querySelector<HTMLElement>(`[data-xyle-node="${operation.nodeId}"]`) ?? elements[0];
+  const parent = sourceElement?.parentElement;
+  if (!sourceElement || !parent || elements.some((element) => element.parentElement !== parent)) {
+    return;
+  }
+  const insertionPoint =
+    [...parent.children]
+      .filter((child): child is HTMLElement => elements.includes(child as HTMLElement))
+      .sort(
+        (left, right) => [...parent.children].indexOf(left) - [...parent.children].indexOf(right),
+      )[0] ?? sourceElement;
+  const anchorMeta =
+    metaById.get(operation.nodeId) ??
+    state.current.nodes.find((candidate) => candidate.id === operation.nodeId);
+  if (!anchorMeta) return;
+  const fragment = doc.createDocumentFragment();
+  const created: Array<{ element: HTMLElement; meta: NodeMeta }> = [];
+  for (const block of operation.blocks) {
+    const element = doc.createElement(block.tag);
+    if (block.source) {
+      copyElementAttributes(sourceElement, element);
+      stripPreviewInstrumentation(element, { keepNodeMarkers: true });
+    }
+    const id = replacementBlockId(operation, block);
+    element.setAttribute("data-xyle-node", id);
+    replaceElementContentsFromHtml(element, block.html);
+    const meta: NodeMeta = {
+      ...anchorMeta,
+      id,
+      tag: block.tag,
+      multiline: block.tag === "p",
+      ...(block.source && anchorMeta.stableTargetId
+        ? { stableTargetId: anchorMeta.stableTargetId }
+        : block.source
+          ? {}
+          : {
+              stableTargetId: stableIdentity([
+                "replacement-text-block",
+                operation.nodeId,
+                block.key,
+              ]),
+            }),
+    };
+    delete meta.segmentCount;
+    delete meta.segments;
+    if (!block.source) {
+      delete meta.sourceStart;
+      delete meta.sourceEnd;
+      delete meta.elementStart;
+      delete meta.elementEnd;
+      delete meta.contentStart;
+    }
+    metaById.set(id, meta);
+    const nodeIndex = state.current.nodes.findIndex((candidate) => candidate.id === id);
+    if (nodeIndex >= 0) state.current.nodes[nodeIndex] = meta;
+    else state.current.nodes.push(meta);
+    fragment.append(element);
+    created.push({ element, meta });
+  }
+  parent.insertBefore(fragment, insertionPoint);
+  for (const element of elements.length > 0 ? elements : [sourceElement]) element.remove();
+  for (const item of created) wireText(item.element, item.meta);
+  refreshEditabilityOverlay();
+}
+
 function applySetBlockFormatToDom(pagePath: string, operation: SetBlockFormatOperation): void {
   if (pagePath !== state.current?.pagePath || operation.targets.length === 0) return;
   const doc = previewDoc();
@@ -8503,6 +9102,8 @@ function restoreOpsIntoDom(): void {
     } else if (op.type === "html") {
       const el = doc.querySelector(`[data-xyle-node="${op.nodeId}"]`) as HTMLElement | null;
       if (el) replaceElementContentsFromHtml(el, op.value);
+    } else if (op.type === "replaceTextBlock") {
+      applyReplaceTextBlockToDom(pagePath, op);
     } else if (op.type === "media") {
       const el = doc.querySelector<HTMLImageElement>(`[data-xyle-node="${op.nodeId}"]`);
       if (el?.tagName === "IMG") applyMediaStateToDom(el, op.value);

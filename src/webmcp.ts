@@ -23,6 +23,7 @@ import {
   parseChangeIdInput,
   parseChangeSetIdInput,
   parseChangeSetInput,
+  parseCreateLinkInput,
   parseFormattingInput,
   parseGroupItemInput,
   parseIdInput,
@@ -37,6 +38,7 @@ import {
   parseSetRegionOrderInput,
   parseSectionVisibilityInput,
   parseTextUpdateInput,
+  parseTextInsertionInput,
 } from "./webmcp-input.ts";
 
 interface ModelContextTool {
@@ -710,6 +712,102 @@ export async function registerWebMcpTools(
                   parsed.position,
                 ),
               ),
+            );
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.insertParagraph) {
+      await registerReportingTool(
+        context,
+        {
+          name: "insert_paragraph",
+          description:
+            "Split one paragraph or heading at a text offset. The new block is a paragraph.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "The editable Xyle text node id." },
+              offset: {
+                type: "integer",
+                minimum: 0,
+                description: "Zero-based text offset at which to create the paragraph.",
+              },
+            },
+            required: ["id", "offset"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseTextInsertionInput(input, "insert_paragraph");
+            return textResult(JSON.stringify(bridge.insertParagraph!(parsed.id, parsed.offset)));
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.insertLineBreak) {
+      await registerReportingTool(
+        context,
+        {
+          name: "insert_line_break",
+          description: "Insert a line break in one multiline Xyle text block at a text offset.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "The editable Xyle text node id." },
+              offset: {
+                type: "integer",
+                minimum: 0,
+                description: "Zero-based text offset at which to insert the line break.",
+              },
+            },
+            required: ["id", "offset"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseTextInsertionInput(input, "insert_line_break");
+            return textResult(JSON.stringify(bridge.insertLineBreak!(parsed.id, parsed.offset)));
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
+    if (bridge.createLink) {
+      await registerReportingTool(
+        context,
+        {
+          name: "create_link",
+          description: "Turn a text range into a safe link in one Xyle text block.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "The editable Xyle text node id." },
+              start: {
+                type: "integer",
+                minimum: 0,
+                description: "Zero-based start offset of the linked text.",
+              },
+              end: {
+                type: "integer",
+                minimum: 1,
+                description: "Zero-based exclusive end offset of the linked text.",
+              },
+              href: { type: "string", description: "The safe link destination." },
+            },
+            required: ["id", "start", "end", "href"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseCreateLinkInput(input);
+            return textResult(
+              JSON.stringify(bridge.createLink!(parsed.id, parsed.start, parsed.end, parsed.href)),
             );
           },
         },

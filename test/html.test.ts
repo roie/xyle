@@ -658,6 +658,24 @@ describe("patchHtml text fidelity", () => {
     ).resolves.toBe(`<p>Hello <strong>amazing</strong> world</p>`);
     await expect(
       patchAndGetText(source, [
+        {
+          type: "html",
+          nodeId: id,
+          value: `Hello <a href="/guide">amazing</a> world`,
+        },
+      ]),
+    ).resolves.toBe(`<p>Hello <a href="/guide">amazing</a> world</p>`);
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "html",
+          nodeId: id,
+          value: `Hello <a href="javascript:alert(1)">amazing</a> world`,
+        },
+      ]),
+    ).rejects.toThrow(/unsafe link/);
+    await expect(
+      patchAndGetText(source, [
         { type: "html", nodeId: id, value: `Hello <script>alert(1)</script>` },
       ]),
     ).rejects.toThrow(/unsupported/);
@@ -916,6 +934,93 @@ describe("patchHtml text fidelity", () => {
     ).resolves.toBe(
       `<ul class="steps" aria-label="Steps"><li>A</li></ul>\n<h2 data-kind="focus">B</h2>\n<ul class="steps" aria-label="Steps"><li>C</li></ul>`,
     );
+  });
+
+  it("splits a text block into safe siblings while preserving source attributes", async () => {
+    const source = `<!-- before -->\n<section>\n  <h2 class="title" data-owner="site">Hello <em>world</em></h2>\n</section>\n<!-- after -->`;
+    const candidate = [...analyzePage(source).candidates.values()].find(
+      (item) => item.tag === "h2",
+    )!;
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "replaceTextBlock",
+          nodeId: candidate.id,
+          blocks: [
+            { key: "source", tag: "h2", html: "Hello", source: true },
+            { key: "paragraph-1", tag: "p", html: "<em>world</em>", source: false },
+          ],
+        },
+      ]),
+    ).resolves.toBe(
+      `<!-- before -->\n<section>\n  <h2 class="title" data-owner="site">Hello</h2>\n  <p><em>world</em></p>\n</section>\n<!-- after -->`,
+    );
+    await expect(
+      patchAndGetText(source, [
+        {
+          type: "replaceTextBlock",
+          nodeId: candidate.id,
+          blocks: [
+            { key: "paragraph-1", tag: "p", html: "Intro", source: false },
+            {
+              key: "source",
+              tag: "h2",
+              html: "Hello <em>world</em>",
+              source: true,
+            },
+          ],
+        },
+      ]),
+    ).resolves.toContain(
+      `<p>Intro</p>\n  <h2 class="title" data-owner="site">Hello <em>world</em></h2>`,
+    );
+  });
+
+  it("lets a text-block replacement safely subsume an earlier text operation", async () => {
+    const source = `<p class="lede">Hello world</p>`;
+    const id = firstNodeId(source);
+    await expect(
+      patchAndGetText(source, [
+        { type: "text", nodeId: `${id}#0`, value: "Ignored earlier edit" },
+        {
+          type: "replaceTextBlock",
+          nodeId: id,
+          blocks: [
+            { key: "source", tag: "p", html: "Hello", source: true },
+            { key: "paragraph-1", tag: "p", html: "world", source: false },
+          ],
+        },
+      ]),
+    ).resolves.toBe(`<p class="lede">Hello</p>\n<p>world</p>`);
+  });
+
+  it("rejects unsafe or ambiguous text-block replacements", async () => {
+    const source = `<p>Hello world</p>`;
+    const id = firstNodeId(source);
+    await expect(
+      patchSource(source, [
+        {
+          type: "replaceTextBlock",
+          nodeId: id,
+          blocks: [
+            { key: "source", tag: "p", html: "Hello", source: true },
+            { key: "paragraph-1", tag: "p", html: "<script>alert(1)</script>", source: false },
+          ],
+        },
+      ]),
+    ).rejects.toThrow(/unsupported <script>/);
+    await expect(
+      patchSource(source, [
+        {
+          type: "replaceTextBlock",
+          nodeId: id,
+          blocks: [
+            { key: "source", tag: "p", html: "Hello", source: true },
+            { key: "paragraph-1", tag: "p", html: "world", source: true },
+          ],
+        },
+      ]),
+    ).rejects.toThrow(/not safely editable/);
   });
 
   it("changes a simple text block to a safe heading level", async () => {

@@ -5,7 +5,6 @@ import {
   editNode,
   editorText,
   findNodeByText,
-  flashText,
   focusCaret,
   loginAndOpenEditor,
   nodeHtml,
@@ -344,6 +343,54 @@ test.describe("editing fidelity gate", () => {
     }
   });
 
+  test("highlighted text becomes a safe reviewable link", async () => {
+    const nodeId = await findNodeByText(page, "See how Xyle works");
+    await editNode(page, nodeId!);
+    await setSelection(page, { nodeId: nodeId!, startOffset: 8, endOffset: 12 });
+    await page.locator(".xyle-format-tools").getByRole("button", { name: "Add link" }).click();
+    const form = page.locator(".xyle-format-tools form");
+    await form.getByLabel("Link destination").fill("example.com/guide");
+    await form.getByRole("button", { name: "Add link" }).click();
+
+    const link = page
+      .frameLocator("#xyle-preview")
+      .locator(`[data-xyle-node="${nodeId}"] a`, { hasText: "Xyle" });
+    await expect(link).toHaveAttribute("href", "https://example.com/guide");
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["html"]);
+
+    await page.keyboard.press("Control+z");
+    await expect(link).toHaveCount(0);
+    await page.keyboard.press("Control+Shift+z");
+    await expect(link).toHaveAttribute("href", "https://example.com/guide");
+
+    await page.locator("#xyle-changes").click();
+    const change = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
+    await expect(change).toContainText("https://example.com/guide");
+    await page.getByRole("button", { name: "Close changes drawer" }).click();
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get(ABOUT)).text();
+    expect(source).toContain(
+      '<h1 id="about-title">See how <a href="https://example.com/guide">Xyle</a> works</h1>',
+    );
+  });
+
+  test("link creation rejects unsafe URLs without changing the page", async () => {
+    const nodeId = await findNodeByText(page, "See how Xyle works");
+    await editNode(page, nodeId!);
+    await setSelection(page, { nodeId: nodeId!, startOffset: 8, endOffset: 12 });
+    await page.locator(".xyle-format-tools").getByRole("button", { name: "Add link" }).click();
+    const form = page.locator(".xyle-format-tools form");
+    await form.getByLabel("Link destination").fill("javascript:alert(1)");
+    await form.getByRole("button", { name: "Add link" }).click();
+    await expect(form.getByRole("status")).toContainText("Use /path");
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${nodeId}"] a`),
+    ).toHaveCount(0);
+    expect(await opsCount(page)).toBe(0);
+  });
+
   test("Changes shows compact raw HTML around a formatting edit", async () => {
     const nodeId = await findNodeByText(page, "The first Xyle edits happen");
     expect(nodeId).toBeTruthy();
@@ -592,26 +639,184 @@ test.describe("editing fidelity gate", () => {
     expect(await opsCount(page)).toBe(0);
   });
 
-  test("Enter is rejected in headings", async () => {
-    const h1 = await findNodeByText(page, "See how Xyle works");
-    await editNode(page, h1!);
-    await focusCaret(page, h1!, "end");
+  test("Enter after a heading creates an editable paragraph", async () => {
+    const headingId = await findNodeByText(page, "See how Xyle works");
+    await editNode(page, headingId!);
+    await focusCaret(page, headingId!, "end");
     await page.keyboard.press("Enter");
-    await page.waitForTimeout(150);
-    expect(await nodeHtml(page, h1!)).not.toContain("<br");
-    expect(await flashText(page)).toMatch(/line-break editing is deferred/i);
+    await page.keyboard.type("A new paragraph.");
+    await clickOutsideToCommit(page);
+
+    const heading = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${headingId}"]`);
+    await expect(heading).toHaveText("See how Xyle works");
+    await expect(heading.locator("+ p")).toHaveText("A new paragraph.");
+    const operations = await currentOps(page);
+    expect(operations.some((entry) => entry.op.type === "replaceTextBlock")).toBe(true);
+    await page.locator("#xyle-changes").click();
+    const change = page.locator("#xyle-changes-drawer .xyle-change-row").first();
+    await expect(change.locator(".xyle-change-before")).toContainText("<h1");
+    await expect(change.locator(".xyle-change-after")).toContainText("<p>A new paragraph.</p>");
   });
 
-  test("line-break editing is deferred in paragraphs", async () => {
+  test("paragraph creation has chronological undo and redo", async () => {
+    const headingId = await findNodeByText(page, "See how Xyle works");
+    await editNode(page, headingId!);
+    await focusCaret(page, headingId!, "end");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Undoable paragraph.");
+    await clickOutsideToCommit(page);
+    const paragraph = page
+      .frameLocator("#xyle-preview")
+      .getByText("Undoable paragraph.", { exact: true });
+    const paragraphId = await paragraph.getAttribute("data-xyle-node");
+
+    await page.keyboard.press("Control+z");
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${paragraphId}"]`),
+    ).toHaveText("");
+    await page.keyboard.press("Control+z");
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${paragraphId}"]`),
+    ).toHaveCount(0);
+    await page.keyboard.press("Control+Shift+z");
+    await page.keyboard.press("Control+Shift+z");
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${paragraphId}"]`),
+    ).toHaveText("Undoable paragraph.");
+  });
+
+  test("links in generated paragraphs stay in the replacement operation", async () => {
+    const headingId = await findNodeByText(page, "See how Xyle works");
+    await editNode(page, headingId!);
+    await focusCaret(page, headingId!, "end");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Generated link paragraph.");
+    await clickOutsideToCommit(page);
+    const paragraph = page
+      .frameLocator("#xyle-preview")
+      .getByText("Generated link paragraph.", { exact: true });
+    const paragraphId = await paragraph.getAttribute("data-xyle-node");
+
+    await editNode(page, paragraphId!);
+    await setSelection(page, { nodeId: paragraphId!, startOffset: 0, endOffset: 9 });
+    await page.locator(".xyle-format-tools").getByRole("button", { name: "Add link" }).click();
+    const form = page.locator(".xyle-format-tools form");
+    await form.getByLabel("Link destination").fill("/guide");
+    await form.getByRole("button", { name: "Add link" }).click();
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["replaceTextBlock"]);
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get(ABOUT)).text();
+    expect(source).toContain('<p><a href="/guide">Generated</a> link paragraph.</p>');
+  });
+
+  test("Enter at the start inserts a paragraph before the authored block", async () => {
+    const id = await findNodeByText(page, "Editors change content");
+    await editNode(page, id!);
+    await setSelection(page, { nodeId: id!, startOffset: 0, endOffset: 0 });
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Intro paragraph.");
+    await clickOutsideToCommit(page);
+
+    const sourceBlock = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${id}"]`);
+    await expect(sourceBlock.locator("xpath=preceding-sibling::*[1]")).toHaveText(
+      "Intro paragraph.",
+    );
+    await expect(sourceBlock).toContainText("Editors change content");
+  });
+
+  test("Shift+Enter inserts a line break and keeps typing in the paragraph", async () => {
     const id = await findNodeByText(page, "Editors change content");
     await editNode(page, id!);
     await focusCaret(page, id!, "start");
     for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Shift+Enter");
-    await page.waitForTimeout(150);
-    expect(await nodeHtml(page, id!)).not.toMatch(/<br(?:\s[^>]*)?>/);
-    expect(await flashText(page)).toMatch(/line-break editing is deferred/i);
+    await page.keyboard.type("continued ");
     await clickOutsideToCommit(page);
+
+    expect(await nodeHtml(page, id!)).toMatch(/<br(?:\s[^>]*)?>/);
+    const operation = (await currentOps(page)).find((entry) => entry.op.type === "html");
+    expect(operation?.op).toMatchObject({
+      type: "html",
+      nodeId: id,
+      value: expect.stringContaining("<br>continued "),
+    });
+  });
+
+  test("paragraph creation composes across a selection, repeated Enter, formatting, undo, and publish", async () => {
+    const id = await findNodeByText(page, "Editors change content");
+    await editNode(page, id!);
+    await setSelection(page, { nodeId: id!, startOffset: 8, endOffset: 14 });
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("NEW ");
+    const activeParagraphId = await page
+      .frameLocator("#xyle-preview")
+      .locator("p[data-xyle-node]")
+      .filter({ hasText: "NEW content" })
+      .getAttribute("data-xyle-node");
+    await focusCaret(page, activeParagraphId!, "end");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Third paragraph.");
+    await clickOutsideToCommit(page);
+
+    const preview = page.frameLocator("#xyle-preview");
+    const first = preview.locator(`[data-xyle-node="${id}"]`);
+    await expect(first).toHaveText("Editors ");
+    const second = first.locator("+ p");
+    await expect(second).toContainText("NEW content");
+    const third = second.locator("+ p");
+    await expect(third).toHaveText("Third paragraph.");
+    const thirdId = await third.getAttribute("data-xyle-node");
+    await editNode(page, thirdId!);
+    await setSelection(page, { nodeId: thirdId!, selectAll: true });
+    await page.locator(".xyle-format-tools").getByRole("button", { name: "Bold" }).click();
+    await clickOutsideToCommit(page);
+    await expect(third.locator("strong")).toHaveText("Third paragraph.");
+    await page.keyboard.press("Control+z");
+    await expect(third.locator("strong")).toHaveCount(0);
+    await page.keyboard.press("Control+Shift+z");
+    await expect(third.locator("strong")).toHaveText("Third paragraph.");
+
+    const operation = (await currentOps(page)).find(
+      (entry) => entry.op.type === "replaceTextBlock",
+    );
+    expect(operation?.op).toMatchObject({
+      type: "replaceTextBlock",
+      nodeId: id,
+      blocks: [
+        { tag: "p", source: true },
+        { tag: "p", source: false },
+        { tag: "p", source: false, html: "<strong>Third paragraph.</strong>" },
+      ],
+    });
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get(ABOUT)).text();
+    expect(source).toContain("<p>Editors </p>");
+    expect(source).toContain("<p>NEW content");
+    expect(source).toContain("<p><strong>Third paragraph.</strong></p>");
+
+    await loginAndOpenEditor(page, ABOUT, { resetFixture: false });
+    await expect(
+      page.frameLocator("#xyle-preview").getByText("Third paragraph.", { exact: true }),
+    ).toBeVisible();
+  });
+
+  test("Enter in a list fails closed", async () => {
+    const listItem = page
+      .frameLocator("#xyle-preview")
+      .locator("li[data-xyle-node]")
+      .filter({ hasText: "Edit in context" })
+      .first();
+    const listItemId = await listItem.getAttribute("data-xyle-node");
+    await editNode(page, listItemId!);
+    await focusCaret(page, listItemId!, "end");
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#xyle-flash")).toContainText(
+      "Paragraph breaks are not supported in this text yet",
+    );
     expect(await opsCount(page)).toBe(0);
   });
 

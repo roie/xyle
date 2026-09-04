@@ -197,18 +197,23 @@ test.describe("conflicts and recovery", () => {
     expect(await (await page.request.get("/contact.html")).text()).toContain(tokenB.trim());
   });
 
-  test("deferred line-break editing reports a clear no-op", async ({ page }) => {
+  test("line-break editing publishes through the normal conflict-safe path", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
     const id = await findNodeByText(page, "Editors change content");
     await editNode(page, id!);
     await focusCaret(page, id!, "start");
     for (let i = 0; i < 8; i++) await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("continued ");
     await clickOutsideCommit(page);
 
-    await expect(page.locator("#xyle-flash")).toContainText("Line-break editing is deferred");
-    expect(await htmlOf(page, id!)).not.toContain("<br");
-    expect(await currentOps(page)).toHaveLength(0);
+    expect(await htmlOf(page, id!)).toContain("<br");
+    expect(await currentOps(page)).toHaveLength(1);
+    await page.click("#xyle-publish");
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get("/about.html")).text();
+    expect(source).toContain("<br>continued ");
+    expect(source).not.toContain("data-xyle-controlled-break");
   });
 
   test("published content is served by a fresh public request", async ({ page }, info) => {

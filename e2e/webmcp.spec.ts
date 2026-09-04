@@ -133,6 +133,49 @@ test.describe("WebMCP editor tools", () => {
     expect(await opsCount(page)).toBe(0);
   });
 
+  test("inserts paragraphs and line breaks through WebMCP", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const heading = content.find(
+      (item) => item.type === "text" && item.preview === "Edit your static site visually",
+    )!;
+    const lede = content.find(
+      (item) => item.type === "text" && item.preview.includes("Change this page in place"),
+    )!;
+
+    const paragraph = (await invokeTool(page, "insert_paragraph", {
+      id: heading.id,
+      offset: heading.preview.length,
+    })) as { createdId: string };
+    await expect(
+      invokeTool(page, "update_text", {
+        id: paragraph.createdId,
+        text: "Paragraph created through WebMCP.",
+      }),
+    ).resolves.toMatchObject({ id: paragraph.createdId });
+    await expect(
+      invokeTool(page, "insert_line_break", { id: lede.id, offset: 8 }),
+    ).resolves.toMatchObject({ id: lede.id });
+
+    const preview = page.frameLocator("#xyle-preview");
+    await expect(preview.locator(`[data-xyle-node="${paragraph.createdId}"]`)).toHaveText(
+      "Paragraph created through WebMCP.",
+    );
+    expect(await preview.locator(`[data-xyle-node="${lede.id}"] br`).count()).toBeGreaterThan(0);
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual([
+      "replaceTextBlock",
+      "html",
+    ]);
+  });
+
   test("applies safe formatting through WebMCP and human editing", async ({
     page,
     browserName,
@@ -888,6 +931,49 @@ test.describe("WebMCP editor tools", () => {
       undone: true,
     });
     await expect(paragraphLocator).toHaveJSProperty("tagName", "P");
+  });
+
+  test("creates a safe link from a text range", async ({ page, browserName }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/about.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+      preview: string;
+    }>;
+    const heading = content.find(
+      (item) => item.type === "text" && item.preview === "See how Xyle works",
+    )!;
+
+    await expect(
+      invokeTool(page, "create_link", {
+        id: heading.id,
+        start: 8,
+        end: 12,
+        href: "example.com/guide",
+      }),
+    ).resolves.toMatchObject({ id: heading.id, href: "https://example.com/guide" });
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${heading.id}"] a`),
+    ).toHaveAttribute("href", "https://example.com/guide");
+    await expect(
+      invokeTool(page, "create_link", {
+        id: heading.id,
+        start: 0,
+        end: 3,
+        href: "javascript:alert(1)",
+      }),
+    ).resolves.toEqual({ error: "The link destination is unsafe" });
+
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get("/about.html")).text();
+    expect(source).toContain(
+      '<h1 id="about-title">See how <a href="https://example.com/guide">Xyle</a> works</h1>',
+    );
   });
 
   test("updates a link and rejects unsafe destinations", async ({ page, browserName }) => {

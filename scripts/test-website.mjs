@@ -146,7 +146,12 @@ try {
   await heading.click();
   await page.keyboard.press("Control+a");
   await page.keyboard.type("Edited in my private demo");
-  await page.frameLocator("#xyle-preview").locator("html").click({ position: { x: 1, y: 1 } });
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("A new demo paragraph");
+  await page
+    .frameLocator("#xyle-preview")
+    .getByText("A new demo paragraph", { exact: true })
+    .waitFor();
   await page.locator("#xyle-dirty").waitFor({ state: "visible" });
   await page.locator("#xyle-changes").click();
   const changeRow = page
@@ -158,6 +163,10 @@ try {
   await page
     .frameLocator("#xyle-preview")
     .getByRole("heading", { name: "Edited in my private demo" })
+    .waitFor();
+  await page
+    .frameLocator("#xyle-preview")
+    .getByText("A new demo paragraph", { exact: true })
     .waitFor();
   if (!(await heroImage.getAttribute("src"))?.startsWith("data:image/jpeg;base64,")) {
     throw new Error("The browser demo did not publish the replacement image in memory");

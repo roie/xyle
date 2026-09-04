@@ -103,6 +103,7 @@ export interface ChangeInfo {
     | "setBlockFormat"
     | "formatBlock"
     | "html"
+    | "replaceTextBlock"
     | "media"
     | "seo"
     | "toggleList"
@@ -188,6 +189,17 @@ export interface WebMcpBridge {
     preset: LayoutPreset,
   ) => { id: string; preset: LayoutPreset };
   setRegionOrder?: (targetId: string, order: RegionOrder) => { id: string; order: RegionOrder };
+  insertParagraph?: (
+    id: string,
+    offset: number,
+  ) => { id: string; createdId: string; pagePath: string };
+  insertLineBreak?: (id: string, offset: number) => { id: string; pagePath: string };
+  createLink?: (
+    id: string,
+    start: number,
+    end: number,
+    href: string,
+  ) => { id: string; href: string; pagePath: string };
   updateText(id: string, text: string): TextUpdateResult;
   updateLink(id: string, text?: string, href?: string): LinkUpdateResult;
 }

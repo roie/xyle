@@ -306,6 +306,7 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
             "formatBlock",
             "setBlockFormat",
             "html",
+            "replaceTextBlock",
             "media",
             "seo",
             "toggleList",

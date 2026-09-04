@@ -53,6 +53,13 @@ describe("WebMCP tools", () => {
       }),
       updateSectionVisibility: (id: string, visible: boolean) => ({ id, visible }),
       moveSection: (id: string, targetId: string, before: boolean) => ({ id, targetId, before }),
+      createLink: (id: string, start: number, end: number, href: string) => ({
+        id,
+        start,
+        end,
+        href,
+        pagePath: "/index.html",
+      }),
       updateText: (id: string, text: string) => ({ id, pagePath: "/index.html", text }),
       updateLink: (id: string, text?: string, href?: string) => ({
         id,
@@ -76,6 +83,7 @@ describe("WebMCP tools", () => {
       "update_formatting",
       "set_section_visibility",
       "move_section",
+      "create_link",
       "update_text",
     ]);
 
@@ -187,7 +195,17 @@ describe("WebMCP tools", () => {
         },
       ],
     });
-    await expect(tools[12]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
+    await expect(
+      tools[12]!.execute({ id: "n1", start: 0, end: 4, href: "/guide" }, { signal }),
+    ).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(bridge.createLink!("n1", 0, 4, "/guide")),
+        },
+      ],
+    });
+    await expect(tools[13]!.execute({ id: "n1", text: "Hello" }, { signal })).resolves.toEqual({
       content: [{ type: "text", text: JSON.stringify(bridge.updateText("n1", "Hello")) }],
     });
     await expect(

@@ -29,6 +29,48 @@ export function parseIdInput(value: unknown, toolName: string): string {
   return value.id;
 }
 
+export function parseTextInsertionInput(
+  value: unknown,
+  toolName: string,
+): { id: string; offset: number } {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    !Number.isInteger(value.offset) ||
+    (value.offset as number) < 0
+  ) {
+    throw new Error(`${toolName} requires a string id and a non-negative integer offset`);
+  }
+  return { id: value.id, offset: value.offset as number };
+}
+
+export function parseCreateLinkInput(value: unknown): {
+  id: string;
+  start: number;
+  end: number;
+  href: string;
+} {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    !Number.isInteger(value.start) ||
+    !Number.isInteger(value.end) ||
+    (value.start as number) < 0 ||
+    (value.end as number) <= (value.start as number) ||
+    typeof value.href !== "string"
+  ) {
+    throw new Error(
+      "create_link requires a string id and href with non-negative integer start and end offsets",
+    );
+  }
+  return {
+    id: value.id,
+    start: value.start as number,
+    end: value.end as number,
+    href: value.href,
+  };
+}
+
 export function parseGroupItemInput(value: unknown): { groupId: string; itemId: string } {
   if (!isRecord(value) || typeof value.groupId !== "string" || typeof value.itemId !== "string") {
     throw new Error("duplicate_group_item requires string groupId and itemId");

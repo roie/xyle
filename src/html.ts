@@ -1166,6 +1166,75 @@ function renderCandidateBlock(
   return `<${tag}${candidateAttributes(source, candidate)}>${content}</${tag}>`;
 }
 
+const REPLACEABLE_TEXT_BLOCK_TAGS = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6"]);
+const TEXT_BLOCK_PARENT_TAGS = new Set([
+  "body",
+  "main",
+  "section",
+  "article",
+  "header",
+  "footer",
+  "aside",
+  "nav",
+  "div",
+  "blockquote",
+  "li",
+]);
+
+function renderTextBlockReplacement(
+  source: string,
+  candidate: Candidate,
+  operation: import("./types.ts").ReplaceTextBlockOperation,
+): string {
+  if (
+    operation.nodeId !== candidate.id ||
+    !candidate.textEditable ||
+    !REPLACEABLE_TEXT_BLOCK_TAGS.has(candidate.tag) ||
+    !TEXT_BLOCK_PARENT_TAGS.has(candidate.parentTag ?? "body") ||
+    candidate.contentStart === undefined ||
+    candidate.contentEnd === undefined ||
+    candidate.elementEnd === undefined ||
+    operation.blocks.length < 2 ||
+    operation.blocks.length > 20 ||
+    operation.blocks.filter((block) => block.source).length !== 1 ||
+    new Set(operation.blocks.map((block) => block.key)).size !== operation.blocks.length ||
+    operation.blocks.some(
+      (block) =>
+        !/^[a-zA-Z0-9_-]{1,64}$/.test(block.key) ||
+        !REPLACEABLE_TEXT_BLOCK_TAGS.has(block.tag) ||
+        typeof block.html !== "string" ||
+        block.html.length > 100_000,
+    )
+  ) {
+    throw new Error(`replace text block target ${operation.nodeId} is not safely editable`);
+  }
+
+  const lineStart = source.lastIndexOf("\n", candidate.startTagStart - 1) + 1;
+  const leading = source.slice(lineStart, candidate.startTagStart);
+  const separator = `\n${/^\s*$/.test(leading) ? leading : ""}`;
+  const tags: string[] = [];
+  const replacement = operation.blocks
+    .map((block) => {
+      const html = sanitizeInlineMarkup(block.html);
+      tags.push(block.tag);
+      return block.source
+        ? `<${block.tag}${candidateAttributes(source, candidate)}>${html}</${block.tag}>`
+        : `<${block.tag}>${html}</${block.tag}>`;
+    })
+    .join(separator);
+  const parsed = parseFragment(replacement);
+  const children = parsed.childNodes.filter(
+    (node) => !(node.nodeName === "#text" && !((node as { value?: string }).value ?? "").trim()),
+  );
+  if (
+    children.length !== operation.blocks.length ||
+    children.some((node, index) => !isElement(node) || node.tagName !== tags[index])
+  ) {
+    throw new Error("text block replacement would be repaired by the HTML parser");
+  }
+  return replacement;
+}
+
 function renderCandidateList(
   source: string,
   candidates: Candidate[],
@@ -1725,6 +1794,10 @@ export async function patchHtml(
     op: PageOperation & { type: "formatBlock" };
   }[] = [];
   const htmlOps: { candidate: Candidate; op: PageOperation & { type: "html" } }[] = [];
+  const replaceTextBlockOps: {
+    candidate: Candidate;
+    op: import("./types.ts").ReplaceTextBlockOperation;
+  }[] = [];
   const mediaOps: { candidate: Candidate; op: PageOperation & { type: "media" } }[] = [];
   const sectionVisibilityOps: {
     candidate: Candidate;
@@ -1761,6 +1834,14 @@ export async function patchHtml(
   const structuralSequences = new Set<number>();
   const seoOps: (PageOperation & { type: "seo" })[] = [];
   const patches: SourcePatch[] = [];
+  const replaceTextBlockTargets = new Set(
+    change.operations
+      .filter(
+        (op): op is import("./types.ts").ReplaceTextBlockOperation =>
+          op.type === "replaceTextBlock",
+      )
+      .map((op) => op.nodeId),
+  );
   const htmlTargets = new Set(
     change.operations
       .filter((op): op is PageOperation & { type: "html" } => op.type === "html")
@@ -1771,7 +1852,7 @@ export async function patchHtml(
     switch (op.type) {
       case "text": {
         const ref = parseSegmentRef(op.nodeId);
-        if (htmlTargets.has(ref.nodeId)) break;
+        if (htmlTargets.has(ref.nodeId) || replaceTextBlockTargets.has(ref.nodeId)) break;
         const candidate = analysis.candidates.get(ref.nodeId);
         if (!candidate || (candidate.kind !== "text" && candidate.kind !== "link")) {
           throw new Error(`unknown text target ${op.nodeId}`);
@@ -1788,7 +1869,7 @@ export async function patchHtml(
         break;
       }
       case "format": {
-        if (htmlTargets.has(op.nodeId)) break;
+        if (htmlTargets.has(op.nodeId) || replaceTextBlockTargets.has(op.nodeId)) break;
         const candidate = analysis.candidates.get(op.nodeId);
         if (!candidate || (candidate.kind !== "text" && candidate.kind !== "link")) {
           throw new Error(`unknown formatting target ${op.nodeId}`);
@@ -1841,6 +1922,7 @@ export async function patchHtml(
         break;
       }
       case "html": {
+        if (replaceTextBlockTargets.has(op.nodeId)) break;
         const candidate = analysis.candidates.get(op.nodeId);
         if (
           !candidate ||
@@ -1856,6 +1938,16 @@ export async function patchHtml(
           throw new Error(`formatting HTML cannot add a line break to <${candidate.tag}>`);
         }
         htmlOps.push({ candidate, op: { ...op, value } });
+        break;
+      }
+      case "replaceTextBlock": {
+        const candidate = analysis.candidates.get(op.nodeId);
+        if (!candidate) throw new Error(`unknown text block target ${op.nodeId}`);
+        if (replaceTextBlockOps.some((item) => item.candidate.id === candidate.id)) {
+          throw new Error(`duplicate replace text block op on ${op.nodeId}`);
+        }
+        renderTextBlockReplacement(sourceText, candidate, op);
+        replaceTextBlockOps.push({ candidate, op });
         break;
       }
       case "setLayoutPreset": {
@@ -2234,10 +2326,12 @@ export async function patchHtml(
         break;
       }
       case "setBlockFormat": {
-        setBlockFormatOps.push(op);
+        const targets = op.targets.filter((target) => !replaceTextBlockTargets.has(target.nodeId));
+        if (targets.length > 0) setBlockFormatOps.push({ ...op, targets });
         break;
       }
       case "formatBlock": {
+        if (replaceTextBlockTargets.has(op.nodeId)) break;
         const candidate = analysis.candidates.get(op.nodeId);
         if (
           !candidate ||
@@ -2527,6 +2621,14 @@ export async function patchHtml(
         break;
       }
     }
+  }
+
+  for (const { candidate, op } of replaceTextBlockOps) {
+    patches.push({
+      start: candidate.startTagStart,
+      end: candidate.elementEnd!,
+      replacement: renderTextBlockReplacement(sourceText, candidate, op),
+    });
   }
 
   const initialBlockFormatPatches = setBlockFormatOps.flatMap((operation) =>
