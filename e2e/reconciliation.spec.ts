@@ -86,7 +86,7 @@ test.describe("canonical net reconciliation", () => {
     await expect(first).toHaveJSProperty("hidden", true);
     await page.locator("#xyle-control-hitbox").hover();
     await page.locator("#xyle-structure-shortcut").click();
-    const structure = page.getByRole("dialog", { name: "Structure" });
+    const structure = page.getByRole("dialog", { name: "Outline" });
     const firstRow = structure.locator(`.xyle-structure-row[data-section-id="${sectionIds[0]}"]`);
     await firstRow.getByRole("button", { name: "Show", exact: true }).click();
 

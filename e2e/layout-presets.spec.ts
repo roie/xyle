@@ -26,13 +26,13 @@ test("unsupported Layout controls explain why they are disabled", async ({ page 
   await expect(page.locator("#xyle-dirty")).toBeHidden();
 });
 
-test("Structure panel unifies safe layout controls and unsupported explanations", async ({
+test("Outline panel unifies safe layout controls and unsupported explanations", async ({
   page,
 }) => {
   await loginAndOpenEditor(page, "/layouts.html");
   await page.locator("#xyle-control-hitbox").hover();
   await page.locator("#xyle-structure-shortcut").click();
-  const structure = page.getByRole("dialog", { name: "Structure" });
+  const structure = page.getByRole("dialog", { name: "Outline" });
 
   const safeLayout = structure.locator(".xyle-structure-row").filter({ hasText: "Safe layout" });
   await safeLayout.getByRole("button", { name: "Select Safe layout" }).click();

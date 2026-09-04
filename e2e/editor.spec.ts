@@ -295,7 +295,7 @@ test.describe("chrome layout rules", () => {
     await touchPage.keyboard.press("Escape");
 
     await touchPage.locator("#xyle-structure-shortcut").tap();
-    const drawerClose = touchPage.getByRole("button", { name: "Close structure" });
+    const drawerClose = touchPage.getByRole("button", { name: "Close outline" });
     const drawerCloseBox = await drawerClose.boundingBox();
     expect(drawerCloseBox?.width).toBeGreaterThanOrEqual(43.9);
     expect(drawerCloseBox?.height).toBeGreaterThanOrEqual(43.9);
@@ -307,7 +307,7 @@ test.describe("chrome layout rules", () => {
     expect(hideButtonBox?.width).toBeGreaterThanOrEqual(43.9);
     expect(hideButtonBox?.height).toBeGreaterThanOrEqual(43.9);
     await touchPage.locator(".xyle-structure-locate").first().tap();
-    await expect(touchPage.getByRole("dialog", { name: "Structure" })).toHaveCount(0);
+    await expect(touchPage.getByRole("dialog", { name: "Outline" })).toHaveCount(0);
     await expect(touchPage.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await context.close();
   });
@@ -317,7 +317,7 @@ test.describe("chrome layout rules", () => {
     await page.locator("#xyle-control-hitbox").hover();
     const panels = [
       ["#xyle-media-shortcut", "Media"],
-      ["#xyle-structure-shortcut", "Structure"],
+      ["#xyle-structure-shortcut", "Outline"],
       ["#xyle-seo-shortcut", "SEO metadata"],
     ] as const;
 
@@ -1510,7 +1510,7 @@ test.describe("changes drawer and undo", () => {
     await expect(seoShortcut).toBeFocused();
 
     await structureShortcut.click();
-    const structure = page.getByRole("dialog", { name: "Structure" });
+    const structure = page.getByRole("dialog", { name: "Outline" });
     await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "overlay");
     await expect(structure).not.toHaveAttribute("aria-modal", "true");
     const shellBox = await page.locator("#xyle-shell").boundingBox();
@@ -1528,7 +1528,7 @@ test.describe("changes drawer and undo", () => {
     await expect(structure).toHaveAttribute("aria-modal", "true");
     await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
     await expect(page.locator("html")).not.toHaveAttribute("data-xyle-companion-open", "");
-    await expect(structure.getByRole("button", { name: "Close structure" })).toBeFocused();
+    await expect(structure.getByRole("button", { name: "Close outline" })).toBeFocused();
     await page.setViewportSize({ width: 1_000, height: 800 });
     await expect(structure).toHaveAttribute("data-xyle-drawer-mode", "overlay");
     await expect(structure).not.toHaveAttribute("aria-modal", "true");
@@ -1792,7 +1792,7 @@ test("hides and reorders safe sibling sections", async ({ page }) => {
   await expect(first).toHaveJSProperty("hidden", true);
   await page.locator("#xyle-control-hitbox").hover();
   await page.locator("#xyle-structure-shortcut").click();
-  const structurePanel = page.getByRole("dialog", { name: "Structure" });
+  const structurePanel = page.getByRole("dialog", { name: "Outline" });
   await expect(structurePanel).toBeVisible();
   const heroRow = structurePanel
     .locator(".xyle-structure-row")

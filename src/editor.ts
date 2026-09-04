@@ -4524,8 +4524,8 @@ function openStructurePanel(): void {
   drawer.setAttribute("aria-modal", "true");
   drawer.setAttribute("aria-labelledby", "xyle-structure-title");
   drawer.innerHTML = `<header class="xyle-drawer-header">
-    <strong id="xyle-structure-title"><span>Structure</span></strong>
-    <button class="xyle-icon-button" type="button" data-close aria-label="Close structure">×</button>
+    <strong id="xyle-structure-title"><span>Outline</span></strong>
+    <button class="xyle-icon-button" type="button" data-close aria-label="Close outline">×</button>
   </header>
   <p class="xyle-media-help">Choose a section, then adjust its position, visibility, or layout.</p>
   <div class="xyle-structure-list" data-structure-list></div>
@@ -7304,7 +7304,7 @@ function buildChrome(): void {
         <button id="xyle-media-shortcut" class="xyle-icon-button" data-tooltip="Media" aria-label="Open media" aria-controls="xyle-media-drawer" aria-expanded="false" title="Media">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m4 17 4-4 3 3 3-2 6 5"/></svg>
         </button>
-        <button id="xyle-structure-shortcut" class="xyle-icon-button" data-tooltip="Structure" aria-label="Open structure" aria-controls="xyle-structure-drawer" aria-expanded="false" title="Structure">
+        <button id="xyle-structure-shortcut" class="xyle-icon-button" data-tooltip="Outline" aria-label="Open outline" aria-controls="xyle-structure-drawer" aria-expanded="false" title="Outline">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="4" rx="1"/><rect x="4" y="10" width="16" height="4" rx="1"/><rect x="4" y="16" width="16" height="4" rx="1"/></svg>
         </button>
         <button id="xyle-seo-shortcut" class="xyle-icon-button" data-tooltip="SEO" aria-label="Open SEO metadata" aria-controls="xyle-seo-drawer" aria-expanded="false" title="SEO metadata">
