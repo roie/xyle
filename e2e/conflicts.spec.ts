@@ -83,7 +83,7 @@ test.describe("conflicts and recovery", () => {
       times: 1,
     });
     await page.locator("#xyle-publish").click();
-    await expect.poll(() => flashText(page)).toMatch(/check your connection and retry/i);
+    await expect.poll(() => flashText(page)).toMatch(/check your connection and try again/i);
     expect(await opsCount(page)).toBe(1);
     await expect(page.locator("#xyle-dirty")).toBeVisible();
     expect(await (await page.request.get("/about.html")).text()).toBe(beforeSource);
