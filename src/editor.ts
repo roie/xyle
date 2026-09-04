@@ -611,12 +611,6 @@ function wirePreview(): void {
     const id = el.getAttribute("data-xyle-node")!;
     wireCandidate(el, metaById.get(id));
   }
-  for (const group of doc.querySelectorAll<HTMLElement>("[data-xyle-group]")) {
-    wireGroupMarker(group);
-  }
-  for (const item of doc.querySelectorAll<HTMLElement>("[data-xyle-group-item]")) {
-    wireGroupItemMarker(item);
-  }
   doc.addEventListener(
     "pointerdown",
     (event) => {
@@ -1021,29 +1015,18 @@ function makePreviewTargetKeyboardAccessible(el: HTMLElement, description: strin
   });
 }
 
-function wireGroupMarker(el: HTMLElement): void {
-  el.addEventListener("mouseenter", () => beginCandidateHover(el));
-  el.addEventListener("mouseleave", () => endCandidateHover(el));
-  el.addEventListener("focus", () => refreshEditabilityOverlay());
-  el.addEventListener("blur", () => refreshEditabilityOverlay());
-}
-
-function wireGroupItemMarker(el: HTMLElement): void {
-  // Group structure belongs in Outline. Descendant text, links, and media remain
-  // directly editable on the canvas through their own candidate wiring.
-  wireGroupMarker(el);
+function isDirectlyEditableCandidate(meta: NodeMeta | undefined): meta is NodeMeta {
+  return Boolean(
+    meta &&
+      (meta.kind === "link" ||
+        meta.kind === "image" ||
+        (meta.kind === "text" && meta.textEditable)),
+  );
 }
 
 function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
-  if (!meta) return;
-  const targetName =
-    meta.kind === "text"
-      ? "text"
-      : meta.kind === "link"
-        ? "link"
-        : meta.kind === "image"
-          ? "image"
-          : "section";
+  if (!isDirectlyEditableCandidate(meta)) return;
+  const targetName = meta.kind === "text" ? "text" : meta.kind === "link" ? "link" : "image";
   makePreviewTargetKeyboardAccessible(
     el,
     `Editable ${targetName}. Press Enter or Space to edit. Use arrow keys to move between editable items.`,
@@ -1063,18 +1046,9 @@ function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
     refreshEditabilityOverlay();
   });
 
-  if (meta.kind === "text" && meta.textEditable) wireText(el, meta);
+  if (meta.kind === "text") wireText(el, meta);
   if (meta.kind === "link") wireLink(el, meta);
   if (meta.kind === "image") wireImage(el, meta);
-  if (meta.kind === "section") wireSection(el, meta);
-}
-
-function wireSection(el: HTMLElement, meta: NodeMeta): void {
-  el.addEventListener("keydown", (event) => {
-    if (session || (event.key !== "Enter" && event.key !== " ")) return;
-    event.preventDefault();
-    selectOutlineTarget(meta.id, false);
-  });
 }
 
 interface LayoutCapability {
@@ -1485,13 +1459,13 @@ function refreshEditabilityOverlay(): void {
   overlay.querySelectorAll(".xyle-editable-outline").forEach((overlayItem) => {
     overlayItem.remove();
   });
-  for (const el of doc.querySelectorAll<HTMLElement>(
-    "[data-xyle-node], [data-xyle-group], [data-xyle-group-item]",
-  )) {
+  for (const el of doc.querySelectorAll<HTMLElement>("[data-xyle-node]")) {
+    const meta = metaById.get(el.dataset.xyleNode ?? "");
+    const isOutlineSelected = el.hasAttribute("data-xyle-outline-selected");
+    if (!isDirectlyEditableCandidate(meta) && !isOutlineSelected) continue;
     const isEditing = el.classList.contains("xyle-editing");
     const isHovered = el.classList.contains("xyle-hover");
     const isChangeFocused = focusedChangeTarget === el;
-    const isOutlineSelected = el.hasAttribute("data-xyle-outline-selected");
     const isSelected =
       isEditing || isChangeFocused || isOutlineSelected || el.matches(":focus-visible");
     if (!showEditables && !isHovered && !isSelected) continue;
@@ -1506,6 +1480,7 @@ function refreshEditabilityOverlay(): void {
     if (right <= left || bottom <= top) continue;
     const outline = document.createElement("span");
     outline.className = `xyle-editable-outline${isEditing ? " is-editing" : isSelected ? " is-active" : ""}`;
+    if (el.dataset.xyleNode) outline.dataset.xyleTarget = el.dataset.xyleNode;
     outline.style.left = `${left}px`;
     outline.style.top = `${top}px`;
     outline.style.width = `${right - left}px`;

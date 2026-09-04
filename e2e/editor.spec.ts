@@ -583,21 +583,43 @@ test.describe("chrome layout rules", () => {
 });
 
 test.describe("editing affordances", () => {
-  test("Show editables and hover expose visible non-layout outlines", async ({ page }) => {
+  test("canvas outlines only direct content unless an area is selected in Outline", async ({
+    page,
+  }) => {
     await loginAndOpenEditor(page, "/index.html");
-    const heading = page.frameLocator("#xyle-preview").locator("h1");
-    const before = await heading.boundingBox();
+    const preview = page.frameLocator("#xyle-preview");
+    const section = preview.locator("main > section.hero");
+    const heading = section.locator("h1");
+    const sectionId = await section.getAttribute("data-xyle-node");
+    const headingId = await heading.getAttribute("data-xyle-node");
+    expect(sectionId).toBeTruthy();
+    expect(headingId).toBeTruthy();
+    await expect(section).not.toHaveAttribute("data-xyle-keyboard-target", "");
+    await expect(heading).toHaveAttribute("data-xyle-keyboard-target", "");
 
     await page.click("#xyle-editables");
     await expect(page.locator("#xyle-editables")).toHaveAttribute("aria-pressed", "true");
-    const shownOutline = await heading.evaluate((el) => getComputedStyle(el).outlineColor);
-    expect(shownOutline).not.toBe("rgba(0, 0, 0, 0)");
+    await expect(page.locator(`#xyle-overlay-root [data-xyle-target="${headingId}"]`)).toHaveCount(
+      1,
+    );
+    await expect(page.locator(`#xyle-overlay-root [data-xyle-target="${sectionId}"]`)).toHaveCount(
+      0,
+    );
 
     await page.click("#xyle-editables");
+    await section.dispatchEvent("mouseenter");
+    await expect(page.locator("#xyle-overlay-root .xyle-editable-outline")).toHaveCount(0);
     await heading.hover();
-    const hoverOutline = await heading.evaluate((el) => getComputedStyle(el).outlineColor);
-    expect(hoverOutline).not.toBe("rgba(0, 0, 0, 0)");
-    expect(await heading.boundingBox()).toEqual(before);
+    await expect(page.locator(`#xyle-overlay-root [data-xyle-target="${headingId}"]`)).toHaveCount(
+      1,
+    );
+
+    await page.locator("#xyle-structure-shortcut").click();
+    const sectionRow = page.locator(`.xyle-outline-node[data-section-id="${sectionId}"]`);
+    await sectionRow.locator(".xyle-outline-select").click();
+    await expect(
+      page.locator(`#xyle-overlay-root [data-xyle-target="${sectionId}"].is-active`),
+    ).toHaveCount(1);
   });
 
   test("link Edit text changes only the label", async ({ page }, info) => {
