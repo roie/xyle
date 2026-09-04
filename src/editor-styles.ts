@@ -1208,11 +1208,12 @@ export const editorStyles = `
     display: grid;
     gap: 0.6rem;
     width: min(24rem, calc(100vw - 2rem));
+    box-sizing: border-box;
     padding: 0.85rem;
-    border: 1px solid #d26d6d66;
+    border: 1px solid var(--xyle-line);
     border-radius: var(--xyle-radius-md);
-    background: #171b18f5;
-    box-shadow: 0 14px 36px #000b;
+    background: var(--xyle-surface);
+    box-shadow: none;
     color: var(--xyle-ink);
     font-size: 12px;
   }
@@ -1221,6 +1222,7 @@ export const editorStyles = `
   }
   .xyle-inline-confirmation-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 0.4rem;
   }

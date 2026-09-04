@@ -7522,10 +7522,11 @@ function confirmDiscard(action: string, onConfirm: () => void): boolean {
   if (count === 0) return true;
   $("#xyle-discard-confirmation")?.remove();
   const noun = count === 1 ? "change" : "changes";
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const prompt = document.createElement("aside");
   prompt.id = "xyle-discard-confirmation";
   prompt.className = "xyle-inline-confirmation";
-  prompt.setAttribute("role", "alert");
+  prompt.setAttribute("role", "alertdialog");
   prompt.setAttribute("aria-label", "Confirm discard");
   prompt.replaceChildren(
     document.createRange().createContextualFragment(`
@@ -7535,16 +7536,23 @@ function confirmDiscard(action: string, onConfirm: () => void): boolean {
       <button class="xyle-dialog-button xyle-dialog-button--accent" type="button" data-discard>Discard</button>
     </div>`),
   );
-  prompt.querySelector<HTMLButtonElement>("[data-keep]")?.addEventListener("click", () => {
+  const keepEditing = prompt.querySelector<HTMLButtonElement>("[data-keep]");
+  const closePrompt = (): void => {
     prompt.remove();
-    $("#xyle-menu-btn")?.focus();
+    returnFocus?.focus();
+  };
+  keepEditing?.addEventListener("click", closePrompt);
+  prompt.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    closePrompt();
   });
   prompt.querySelector<HTMLButtonElement>("[data-discard]")?.addEventListener("click", () => {
     prompt.remove();
     onConfirm();
   });
   document.body.append(prompt);
-  prompt.querySelector<HTMLButtonElement>("[data-keep]")?.focus();
+  keepEditing?.focus();
   return false;
 }
 

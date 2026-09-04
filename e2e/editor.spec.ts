@@ -936,10 +936,36 @@ test.describe("changes drawer and undo", () => {
     await focusCaret(page, id!, "end");
     await page.keyboard.type(" THROW-AWAY");
     await clickOutsideCommit(page);
+    await page.setViewportSize({ width: 480, height: 700 });
 
     await page.click("#xyle-changes");
     await page.click("#xyle-discard");
-    await page.click("#xyle-discard-confirmation [data-discard]");
+    const confirmation = page.getByRole("alertdialog", { name: "Confirm discard" });
+    await expect(confirmation.getByRole("button", { name: "Keep editing" })).toBeFocused();
+    const appearance = await confirmation.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return {
+        background: style.backgroundColor,
+        boxSizing: style.boxSizing,
+        boxShadow: style.boxShadow,
+        left: rect.left,
+        right: rect.right,
+      };
+    });
+    expect(appearance).toMatchObject({
+      background: "rgb(16, 19, 17)",
+      boxSizing: "border-box",
+      boxShadow: "none",
+    });
+    expect(appearance.left).toBeGreaterThanOrEqual(16);
+    expect(appearance.right).toBeLessThanOrEqual(464);
+    await page.keyboard.press("Escape");
+    await expect(confirmation).toHaveCount(0);
+    await expect(page.locator("#xyle-dirty")).toBeVisible();
+
+    await page.click("#xyle-discard");
+    await confirmation.getByRole("button", { name: "Discard", exact: true }).click();
     await expect(page.locator("#xyle-dirty")).toBeHidden();
     await page.waitForFunction(
       ({ nodeId, expected }) => {
