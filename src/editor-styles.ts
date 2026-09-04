@@ -1111,8 +1111,6 @@ export const editorStyles = `
     grid-template-columns: minmax(0, 1fr);
     gap: 1px;
     overflow: hidden;
-    border: 1px solid #ffffff12;
-    border-radius: 4px;
   }
   .xyle-change-value {
     position: relative;
