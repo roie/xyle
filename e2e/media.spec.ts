@@ -277,6 +277,9 @@ test.describe("media editing", () => {
       .locator('img[data-xyle-node][src="/assets/hero-wide.webp"]');
     await image.evaluate((element) => {
       Object.assign((element as HTMLImageElement).style, {
+        border: "3px solid rgb(130, 66, 50)",
+        borderRadius: "14px",
+        boxShadow: "none",
         height: "360px",
         left: "8px",
         maxWidth: "none",
@@ -291,22 +294,35 @@ test.describe("media editing", () => {
 
     const editor = page.getByRole("dialog", { name: "Adjust image" });
     await expect(editor).toHaveAttribute("data-xyle-placement", "bottom-sheet");
-    const [imageBox, stageBox, stageClientSize, panelBox] = await Promise.all([
-      image.boundingBox(),
-      editor.locator(".xyle-crop-stage").boundingBox(),
-      editor.locator(".xyle-crop-stage").evaluate((stage) => ({
-        height: stage.clientHeight,
-        width: stage.clientWidth,
-      })),
-      editor.locator(".xyle-media-editor-panel").boundingBox(),
-    ]);
+    const [imageBox, imageClientSize, stageBox, stageState, panelBox, panelShadow] =
+      await Promise.all([
+        image.boundingBox(),
+        image.evaluate((element) => ({
+          height: element.clientHeight,
+          width: element.clientWidth,
+        })),
+        editor.locator(".xyle-crop-stage").boundingBox(),
+        editor.locator(".xyle-crop-stage").evaluate((stage) => ({
+          borderRadius: getComputedStyle(stage).borderRadius,
+          height: stage.clientHeight,
+          guideShadow: getComputedStyle(stage.querySelector(".xyle-crop-guide")!).boxShadow,
+          width: stage.clientWidth,
+        })),
+        editor.locator(".xyle-media-editor-panel").boundingBox(),
+        editor
+          .locator(".xyle-media-editor-panel")
+          .evaluate((panel) => getComputedStyle(panel).boxShadow),
+      ]);
     expect(imageBox).not.toBeNull();
     expect(stageBox).not.toBeNull();
     expect(panelBox).not.toBeNull();
     expect(stageBox!.width).toBeCloseTo(imageBox!.width, 0);
     expect(stageBox!.height).toBeCloseTo(imageBox!.height, 0);
-    expect(stageClientSize.width).toBeCloseTo(imageBox!.width, 0);
-    expect(stageClientSize.height).toBeCloseTo(imageBox!.height, 0);
+    expect(stageState.width).toBeCloseTo(imageClientSize.width, 0);
+    expect(stageState.height).toBeCloseTo(imageClientSize.height, 0);
+    expect(stageState.borderRadius).toBe("14px");
+    expect(stageState.guideShadow).toBe("none");
+    expect(panelShadow).toBe("none");
     expect(panelBox!.y).toBeGreaterThanOrEqual(stageBox!.y + stageBox!.height);
   });
 

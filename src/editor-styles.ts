@@ -356,10 +356,10 @@ export const editorStyles = `
     max-height: calc(100vh - 1rem) !important;
     padding: 0.85rem !important;
     overflow: auto !important;
-    border: 1px solid #526050 !important;
-    border-radius: 10px !important;
-    background: #151815f7 !important;
-    box-shadow: 0 16px 44px #000b !important;
+    border: 1px solid var(--xyle-line) !important;
+    border-radius: var(--xyle-radius-md) !important;
+    background: var(--xyle-surface) !important;
+    box-shadow: none !important;
     pointer-events: auto !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-dialog-heading {
@@ -413,34 +413,30 @@ export const editorStyles = `
     top: var(--xyle-crop-top, 0) !important;
     left: var(--xyle-crop-left, 0) !important;
     width: var(--xyle-crop-width, 1px) !important;
+    box-sizing: border-box !important;
     min-width: 0 !important;
     min-height: 0 !important;
     height: var(--xyle-crop-height, 1px) !important;
-    border: 0 !important;
-    border-radius: 4px !important;
-    outline: 2px solid #eef3ec !important;
-    outline-offset: -2px !important;
+    border-top: var(--xyle-image-border-top, 0) !important;
+    border-right: var(--xyle-image-border-right, 0) !important;
+    border-bottom: var(--xyle-image-border-bottom, 0) !important;
+    border-left: var(--xyle-image-border-left, 0) !important;
+    border-radius: var(--xyle-image-border-radius, 0) !important;
+    outline: 0 !important;
     aspect-ratio: var(--xyle-crop-aspect, 16 / 9) !important;
-    background: #080a08 !important;
-    box-shadow: 0 0 0 3px #1f291fcc, 0 10px 30px #0008 !important;
+    background: var(--xyle-image-background, transparent) !important;
+    box-shadow: var(--xyle-image-box-shadow, none) !important;
     pointer-events: auto !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-stage img {
     height: 100% !important;
   }
-  #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-stage-hint {
-    position: absolute !important;
-    right: 0.75rem !important;
-    bottom: 0.75rem !important;
-    z-index: 3 !important;
-    padding: 0.35rem 0.55rem !important;
-    border: 1px solid #ffffff2e !important;
-    border-radius: 999px !important;
-    background: #0a0d0acc !important;
-    color: #eef3ec !important;
-    font: 600 10px / 1 var(--xyle-font-ui) !important;
-    letter-spacing: 0.02em !important;
-    pointer-events: none !important;
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-crop-guide {
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+  #xyle-overlay-root .xyle-inline-media-editor .xyle-focal-target {
+    box-shadow: none !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-presets {
     display: grid !important;
@@ -462,9 +458,9 @@ export const editorStyles = `
     box-sizing: border-box !important;
     width: 1.7rem !important;
     height: 1.7rem !important;
-    border: 1px solid #435047 !important;
-    border-radius: 4px !important;
-    background: #10130f !important;
+    border: 0 !important;
+    border-radius: 3px !important;
+    background: var(--xyle-raised) !important;
     cursor: pointer !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button::after {
@@ -481,10 +477,9 @@ export const editorStyles = `
   #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button:hover,
   #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button:focus-visible,
   #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button[aria-pressed="true"] {
-    border-color: #a8bea5 !important;
-    background: #253027 !important;
-    outline: 2px solid #a8bea5 !important;
-    outline-offset: 1px !important;
+    background: var(--xyle-accent-soft) !important;
+    outline: 1px solid var(--xyle-accent-hover) !important;
+    outline-offset: 0 !important;
   }
   #xyle-overlay-root .xyle-inline-media-editor .xyle-focus-preset-grid button[aria-pressed="true"]::after {
     width: 0.5rem !important;

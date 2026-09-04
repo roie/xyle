@@ -3540,6 +3540,13 @@ function openImageCropEditor(img: HTMLImageElement, meta: NodeMeta): void {
   editor.setAttribute("role", "dialog");
   editor.setAttribute("aria-labelledby", "xyle-crop-dialog-title");
   editor.style.setProperty("--xyle-crop-aspect", String(aspect));
+  editor.style.setProperty("--xyle-image-background", computed?.background ?? "transparent");
+  editor.style.setProperty("--xyle-image-border-top", computed?.borderTop ?? "0");
+  editor.style.setProperty("--xyle-image-border-right", computed?.borderRight ?? "0");
+  editor.style.setProperty("--xyle-image-border-bottom", computed?.borderBottom ?? "0");
+  editor.style.setProperty("--xyle-image-border-left", computed?.borderLeft ?? "0");
+  editor.style.setProperty("--xyle-image-border-radius", computed?.borderRadius ?? "0");
+  editor.style.setProperty("--xyle-image-box-shadow", computed?.boxShadow ?? "none");
   const positionEditor = (): void => {
     const rect = previewElementRect(img);
     editor.style.setProperty("--xyle-crop-left", `${rect.left}px`);
@@ -3570,11 +3577,10 @@ function openImageCropEditor(img: HTMLImageElement, meta: NodeMeta): void {
       <img alt="" src="">
       <div class="xyle-crop-guide" aria-hidden="true"></div>
       <button type="button" class="xyle-focal-target" aria-label="Focal point. Use arrow keys to move."></button>
-      <span class="xyle-crop-stage-hint" aria-hidden="true">Drag to reposition</span>
     </div>
     <div class="xyle-media-editor-panel">
-      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Image framing</span><strong id="xyle-crop-dialog-title">Adjust image</strong></div>
-      <p class="xyle-crop-hint">Drag on the image to keep its most important area in view.</p>
+      <div class="xyle-dialog-heading"><span class="xyle-dialog-kicker">Crop and focus</span><strong id="xyle-crop-dialog-title">Adjust image</strong></div>
+      <p class="xyle-crop-hint">Drag the focus point. The grid shows the part of the image that stays in frame.</p>
       <label class="xyle-dialog-label" data-frame-control>Frame
         <select class="xyle-dialog-input" name="fit">
           <option value="cover">Fill the frame</option>
