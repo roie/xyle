@@ -167,7 +167,7 @@ async function serveStatic(context: RuntimeContext, pathname: string): Promise<R
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Xyle — Sign in</title><link rel="icon" href="${XYLE_LOGO_DATA_URL}"><style>
+<title>Xyle | Sign in</title><link rel="icon" href="${XYLE_LOGO_DATA_URL}"><style>
 :root{color-scheme:dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#101311;color:#e7ebe8}
 *{box-sizing:border-box}
 body{display:grid;place-items:center;min-height:100svh;margin:0;padding:1rem;background:#101311}

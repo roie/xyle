@@ -577,7 +577,7 @@ test.describe("WebMCP editor tools", () => {
       description: string;
       canonical: string;
     };
-    const nextTitle = `${original.title} — Xyle`;
+    const nextTitle = `${original.title} | Xyle`;
     await expect(
       invokeTool(page, "update_seo", { field: "title", value: nextTitle }),
     ).resolves.toMatchObject({ field: "title", value: nextTitle, pagePath: "/index.html" });

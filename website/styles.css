@@ -58,6 +58,7 @@ a:focus-visible {
 }
 
 .site-header,
+.development-banner,
 footer,
 main > section {
   width: min(100% - (2 * var(--gutter)), var(--max));
@@ -71,6 +72,18 @@ main > section {
   justify-content: space-between;
   gap: 2rem;
   border-bottom: 1px solid var(--line);
+}
+
+.development-banner {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--coral);
+  background: #fff3ef;
+  font-size: 0.82rem;
+}
+
+.development-banner strong {
+  font-weight: 850;
 }
 
 .wordmark {
@@ -474,6 +487,7 @@ h3 {
 }
 
 .terminal {
+  min-width: 0;
   border: 1px solid #2d3347;
   background: var(--ink);
   color: #dce2f7;
@@ -629,6 +643,7 @@ footer > div {
 }
 
 .guide-body {
+  min-width: 0;
   max-width: 48rem;
 }
 

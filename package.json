@@ -2,8 +2,10 @@
   "name": "xyle",
   "version": "0.1.0",
   "description": "A human-first visual editor for existing static websites",
-  "private": true,
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "homepage": "https://github.com/roie/xyle#readme",
   "repository": {
     "type": "git",

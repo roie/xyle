@@ -1682,7 +1682,7 @@ test.describe("exit vs logout semantics", () => {
     await page.locator("#xyle-control-hitbox").hover();
     await page.click("#xyle-menu-btn");
     await page.click("#xyle-menu button[data-action='live']");
-    // view live site opens a tab but keeps session — verify session endpoint still ok
+    // View live site opens a tab but keeps the session. Verify that the session remains valid.
     const session1 = await (await page.request.get("/__xyle/api/session")).json();
     expect(session1.authenticated).toBe(true);
 

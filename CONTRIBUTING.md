@@ -6,7 +6,7 @@ These constraints are design decisions, not accidents. Proposals that
 violate them need a design discussion first:
 
 1. Static files are the canonical published content; no content database.
-2. Publish patches original source ranges narrowly — never serialize browser DOM.
+2. Publish patches original source ranges narrowly. Never serialize browser DOM.
 3. No required source annotations (`data-xyle` etc.) on customer sites.
 4. No frontend/HTTP/schema frameworks in the core (parse5 is the only runtime dep).
 5. Normal public pages load no Xyle JavaScript.
@@ -17,7 +17,7 @@ violate them need a design discussion first:
 
 ```bash
 pnpm install
-pnpm check          # typecheck + vitest + biome — must pass before every commit
+pnpm check          # Must pass: typecheck + vitest + biome
 pnpm build          # bundles src/editor.ts → dist/editor.js
 pnpm test:e2e       # Playwright across Chromium/Firefox (WebKit needs OS deps)
 ```

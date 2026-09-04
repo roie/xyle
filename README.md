@@ -4,15 +4,18 @@
 
 **Xyle is an open-source visual editor for non-technical owners of static websites.**
 
+> [!WARNING]
+> Xyle is an early development preview. Interfaces and editing behavior can change. Use version control. Test publication on a copy of your site first.
+
 Xyle publishes reviewed changes back to the site's HTML and assets.
 
 ```text
 static folder → xyle → /edit → Publish → actual files changed
 ```
 
-Xyle starts from the final static output — plain HTML, Astro, Hugo,
-Eleventy, SvelteKit static export, Next static export, AI-generated HTML —
-and never needs to know which tool produced it. The website *is* the content:
+Xyle starts from the final static output. It supports plain HTML, Astro, Hugo,
+Eleventy, SvelteKit static export, Next static export, and AI-generated HTML.
+Xyle does not need to know which tool produced it. The website *is* the content:
 there is no content database, no source annotations, and no Xyle runtime on
 normal public pages.
 
@@ -22,11 +25,12 @@ normal public pages.
 
 - `/edit` entry with one-owner high-entropy key login
 - click-to-edit existing text in a sandboxed preview (site scripts and forms disabled)
-- safe text editing preserves existing `<br>` structure; new line-break editing is deferred
+- edit existing text, split safe paragraphs and headings, and insert controlled line breaks
+- apply headings, lists, bold, italic, underline, strikethrough, and safe links
 - edit link text and destinations (`http(s)`, `mailto:`, `tel:`, relative)
-- replace simple images, edit alt text, browse/upload raster media (`/__media/`)
-- in-memory ChangeSet with undo/redo, per-change Undo, Changes drawer
-- Publish patches the original source bytes narrowly — everything outside an
+- replace simple images, edit alt text, browse or upload raster media, and adjust crop and focus
+- keep drafts in memory with Changes, per-change revert, undo, and redo
+- Publish patches the original source bytes narrowly. Everything outside an
   edited range stays byte-for-byte identical
 - Discard, stale-session `409 Conflict` handling, first-publish-wins
 - per-file atomic replacement with rollback for filesystem publication
@@ -34,6 +38,10 @@ normal public pages.
 - a curated Outline for safe reordering, duplication, reversible deletion, Groups, and visual layout choices with shared undo/history
 
 ## Quick start
+
+Try the browser demo at <https://xyle.pages.dev/demo/>. It does not require an editor key. Refresh the page to reset its in-memory draft.
+
+Install the public [`xyle` package](https://www.npmjs.com/package/xyle) to edit a local static website:
 
 ```bash
 cd /path/to/static-output
@@ -45,14 +53,6 @@ The `init` command prints the editor key once. The `dev` command prints the publ
 
 Open the editor URL and publish a change. Xyle writes the change to the static HTML and asset files.
 
-To run the browser demo:
-
-```bash
-pnpm demo:dev
-```
-
-Open the printed `/demo/` URL. The browser demo does not require an editor key. Refresh the page to reset it.
-
 See [demo/README.md](demo/README.md) to test the authenticated `/edit` workflow.
 
 ## Host `/edit` on Cloudflare Pages
@@ -63,7 +63,9 @@ Then run:
 
 ```bash
 cd /path/to/static-output
-npx xyle cloudflare . --project=my-static-site --account-id=YOUR_ACCOUNT_ID
+npx xyle cloudflare . \
+  --project=my-static-site \
+  --account-id=YOUR_ACCOUNT_ID
 ```
 
 This command creates or validates a Direct Upload Pages project, creates the owner credentials, stores the required encrypted Pages secrets, and deploys the complete static site with Xyle. It prints the editor key once and gives the owner `https://my-static-site.pages.dev/edit`.
@@ -82,21 +84,26 @@ Human and agent edits appear in the same Changes drawer. Review or undo any
 change before you publish. Publishing remains an explicit human action.
 
 Log in at `/edit` with the generated key, make edits, press **Publish**, then
-inspect your static output directory — the actual HTML changed.
+inspect your static output directory. The actual HTML changed.
 
 ## What v1 deliberately does not do
 
-No page building, no new sections or pages, no arbitrary CSS editing, no form or
-JS editing, no `picture`/`srcset` editing, no media deletion, no persisted
-drafts (refreshing loses unpublished work — by design), no collaboration, no
+No page building, no blank section or page creation, no arbitrary CSS editing,
+no form or JS editing, no `picture`/`srcset` editing, no media deletion, no persisted
+drafts (refreshing loses unpublished work by design), no collaboration, no
 content database.
 
 ## Developer handoff warning
 
-Xyle edits final static output. It cannot back-propagate changes into
-Astro/Hugo/etc. source templates. If you rebuild from framework source after
-customer edits, use `xyle deploy`, which refuses to overwrite remote changes
-made since your last managed deployment unless you pass `--force`.
+Xyle edits final static output. It cannot copy those edits into Astro, Hugo, or
+other source templates.
+
+For a managed Cloudflare Pages project, `xyle deploy` uploads the local snapshot.
+It rejects remote changes made after the last managed deployment unless you use
+`--force`.
+
+In filesystem mode, `xyle deploy` only records the current snapshot digest. It
+does not upload files to a hosting provider.
 
 ## Development
 
@@ -112,8 +119,5 @@ pnpm release:check             # run the complete local release matrix in sequen
 
 The release check includes WebKit. Run it on a host with the documented WebKit system libraries. It also runs native Chrome WebMCP checks with the required browser flags.
 
-See [docs/architecture.md](docs/architecture.md) for the design,
-[docs/COVERAGE_BASELINE.md](docs/COVERAGE_BASELINE.md) for the initial unit coverage report,
-[SECURITY.md](SECURITY.md) for the security model,
-[docs/webmcp.md](docs/webmcp.md) for the WebMCP interface, and
+See [SECURITY.md](SECURITY.md) for the security model and
 [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.

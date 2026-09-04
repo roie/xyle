@@ -69,7 +69,7 @@ export async function findNodeByText(page: Page, needle: string): Promise<string
   }, needle);
 }
 
-/** Structural skeleton of a candidate (elements only) — mirrors editor validation. */
+/** Structural skeleton of a candidate (elements only) that mirrors editor validation. */
 export async function nodeSkeleton(page: Page, nodeId: string): Promise<string> {
   return page.evaluate((id) => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;

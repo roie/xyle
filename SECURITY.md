@@ -40,7 +40,7 @@ bytes.
   client- and server-side.
 - Uploads: JPEG/PNG/WebP/AVIF validated by magic signature (not filename),
   ≤ 20 MiB, SVG and executable signatures rejected. Server recomputes the
-  content-addressed `/__media/…` path — submitted paths are never trusted.
+  content-addressed `/__media/…` path. Xyle never trusts submitted paths.
 - Page fetches resolve through manifest membership only; traversal fails closed.
 - Publish verifies the base file digest before patching; overlapping patches,
   unknown node ids and malformed segment refs are rejected.
@@ -51,7 +51,7 @@ Protected against: session forgery, CSRF, unsafe link schemes, path traversal,
 stale writes, malformed patches, malicious/oversized uploads, accidental
 structure mutation during editing.
 
-Out of scope: same-origin XSS in the customer's own site — if hostile
+Out of scope: same-origin XSS in the customer's own site. If hostile
 JavaScript executes with the editor's origin, it may compromise editing
 authority. The sandboxed preview substantially reduces this exposure while
 editing.

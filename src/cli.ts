@@ -547,7 +547,7 @@ async function runCloudflareSetup(args: CliArgs): Promise<number> {
   console.log(`Cloudflare Pages deployment created: ${result.id}`);
   console.log(`Editor: https://${projectName}.pages.dev/edit`);
   if (freshKey) {
-    console.log("\nEditor key (stored in .xyle/secrets.local.json — shown once):\n");
+    console.log("\nEditor key (stored in .xyle/secrets.local.json and shown once):\n");
     console.log(`  ${freshKey}\n`);
   }
   return 0;
@@ -621,7 +621,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       await readOrCreateState(root);
       console.log(`Xyle initialized for ${root}`);
       if (freshKey) {
-        console.log("\nEditor key (stored in .xyle/secrets.local.json — shown once):\n");
+        console.log("\nEditor key (stored in .xyle/secrets.local.json and shown once):\n");
         console.log(`  ${freshKey}\n`);
       }
       return 0;

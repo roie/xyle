@@ -6,10 +6,7 @@ import { CloudflarePagesPublisher } from "../src/publishers/cloudflare.ts";
 import { buildManifestFromDirectory, digestBytes } from "../src/manifest.ts";
 import type { SiteFile } from "../src/types.ts";
 
-/**
- * Credential-gated read-side smoke test. Full deploy/redeploy evidence is
- * recorded in docs/cloudflare-spike.md and uses a disposable project.
- */
+/** Credential-gated read-side smoke tests for a disposable Pages project. */
 const projectName = process.env.XYLE_CLOUDFLARE_PROJECT ?? process.env.CLOUDFLARE_PROJECT;
 const gated =
   !!process.env.CLOUDFLARE_API_TOKEN && !!process.env.CLOUDFLARE_ACCOUNT_ID && !!projectName;

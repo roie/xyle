@@ -1,4 +1,4 @@
-// Xyle editor shell — browser-side control layer.
+// Xyle editor shell: browser-side control layer.
 // Drafts live only in memory; publish patches original static source server-side.
 
 import {
@@ -10037,7 +10037,7 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     updateDirtyUi();
     await loadPage(state.current!.pagePath, { pushHistory: false });
   } catch {
-    flash("Couldn't publish — check your connection and retry.");
+    flash("Couldn't publish. Check your connection and try again.");
     button.disabled = false;
     label.textContent = idleLabel;
   }
