@@ -1296,6 +1296,16 @@ export const editorStyles = `
     stroke-width: 1.8;
   }
 
+  .xyle-empty-state {
+    margin: 0.75rem 0;
+    padding: 1rem;
+    border: 1px dashed var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: var(--xyle-raised);
+    color: var(--xyle-muted);
+    font: 500 12px / 1.5 var(--xyle-font-ui);
+    text-align: center;
+  }
   .xyle-media-search {
     width: 100%;
     min-height: 2.5rem;

@@ -75,6 +75,21 @@ describe("browser-only demo transport", () => {
     expect(isolated.html).not.toContain("Published heading");
   });
 
+  it("resolves a directory link to its configured index page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(source)),
+    );
+    const transport = createBrowserDemoTransport(config);
+
+    const response = await transport.request("/__xyle/api/page?path=%2Fdemo-content%2F");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      pagePath: "/demo-content/index.html",
+      html: expect.stringContaining("Original heading"),
+    });
+  });
+
   it("provides the demo media library without server storage", async () => {
     const mediaPath = "/demo-content/assets/photo.webp";
     const mediaBytes = new Uint8Array([82, 73, 70, 70]);

@@ -46,6 +46,12 @@ export function createBrowserDemoTransport(config: BrowserDemoConfig): BrowserDe
   const sources = new Map<string, string>();
   let mediaItems: Promise<MediaItem[]> | null = null;
 
+  const canonicalPagePath = (pagePath: string): string => {
+    if (config.pages[pagePath]) return pagePath;
+    const indexPath = pagePath.endsWith("/") ? `${pagePath}index.html` : "";
+    return indexPath && config.pages[indexPath] ? indexPath : pagePath;
+  };
+
   const sourceFor = async (pagePath: string): Promise<string> => {
     const existing = sources.get(pagePath);
     if (existing !== undefined) return existing;
@@ -66,7 +72,8 @@ export function createBrowserDemoTransport(config: BrowserDemoConfig): BrowserDe
     return digestBytes(encoder.encode(parts.join("")));
   };
 
-  const pageResponse = async (pagePath: string): Promise<Response> => {
+  const pageResponse = async (requestedPath: string): Promise<Response> => {
+    const pagePath = canonicalPagePath(requestedPath);
     if (!config.pages[pagePath]) return json({ error: "not an editable demo page" }, 404);
     const source = await sourceFor(pagePath);
     const baseDigest = await digestBytes(encoder.encode(source));
