@@ -102,7 +102,9 @@ test("duplicates a safe section through its complete independent lifecycle", asy
   const duplicateHeading = await page.evaluate(() => {
     const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
     return [...doc.querySelectorAll("main > section.work-standard[data-xyle-node]")][1]
-      ?.querySelector("h1[data-xyle-node],h2[data-xyle-node],h3[data-xyle-node],h4[data-xyle-node],h5[data-xyle-node],h6[data-xyle-node]")
+      ?.querySelector(
+        "h1[data-xyle-node],h2[data-xyle-node],h3[data-xyle-node],h4[data-xyle-node],h5[data-xyle-node],h6[data-xyle-node]",
+      )
       ?.getAttribute("data-xyle-node");
   });
   const duplicateImage = page
