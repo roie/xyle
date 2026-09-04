@@ -83,23 +83,18 @@ export const editorStyles = `
     left: 0;
     z-index: 2147483646;
     display: flex;
-    min-height: 2rem;
+    min-height: 2.75rem;
     align-items: center;
     justify-content: center;
-    gap: 0.45rem;
-    padding: 0.4rem 1rem;
-    border-bottom: 1px solid #4b5549;
-    background: #171b17;
-    color: #c4cec1;
-    font: 500 11px / 1.3 var(--xyle-font-ui);
+    padding: 0.45rem 1rem;
+    border-bottom: 1px solid #b8c5b3;
+    background: #e5ebdf;
+    color: #243025;
+    font: 600 12px / 1.35 var(--xyle-font-ui);
     text-align: center;
   }
-  #xyle-demo-notice strong {
-    color: #eef3ec;
-    font-weight: 700;
-  }
   #xyle-demo-notice + #xyle-shell {
-    top: 2rem;
+    top: 2.75rem;
   }
 
   #xyle-preview-host {

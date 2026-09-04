@@ -7264,7 +7264,7 @@ function toggleDockPanel(panel: DockPanel, trigger: HTMLElement): void {
 
 function buildChrome(): void {
   const demoNotice = demoConfig
-    ? `<aside id="xyle-demo-notice" role="note"><strong>Demo site</strong><span>Changes reset on refresh.</span></aside>`
+    ? `<aside id="xyle-demo-notice" role="note">This is an interactive demo. Hover over text or images and select one to edit; changes reset when you refresh.</aside>`
     : "";
   const shell = new DOMParser().parseFromString(
     `

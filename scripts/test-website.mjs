@@ -94,8 +94,12 @@ try {
   await page.getByRole("link", { name: "Edit the live demo" }).click();
   await page.locator("#xyle-preview").waitFor({ state: "visible" });
   await page.locator('#xyle-dock-handle img.xyle-brand-logo[src^="data:image/png;base64,"]').waitFor();
-  await page.getByText("Demo site", { exact: true }).waitFor();
-  await page.getByText("Changes reset on refresh.", { exact: true }).waitFor();
+  await page
+    .getByText(
+      "This is an interactive demo. Hover over text or images and select one to edit; changes reset when you refresh.",
+      { exact: true },
+    )
+    .waitFor();
   await page.waitForFunction(() => {
     const frame = document.querySelector("#xyle-preview");
     return frame instanceof HTMLIFrameElement && frame.contentDocument?.body.dataset.xyleWired === "true";
