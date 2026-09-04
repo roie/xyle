@@ -20,6 +20,7 @@
     "dist",
     "assets/brand/xyle-logo.png",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "README.md"
   ],
   "engines": {

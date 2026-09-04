@@ -1,7 +1,17 @@
 import { expect, test } from "@playwright/test";
 import { loginAndOpenEditor } from "./helpers.ts";
 
-test("unsupported Layout controls explain why they are disabled", async ({ page }) => {
+async function openOutline(page: import("@playwright/test").Page) {
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-structure-shortcut").click();
+  return page.getByRole("dialog", { name: "Outline" });
+}
+
+function areaRow(outline: import("@playwright/test").Locator, name: string) {
+  return outline.locator(".xyle-outline-node").filter({ hasText: name });
+}
+
+test("unsupported layout choices explain why they are unavailable", async ({ page }) => {
   await loginAndOpenEditor(page, "/layouts.html");
   await page.waitForFunction(
     () =>
@@ -12,34 +22,23 @@ test("unsupported Layout controls explain why they are disabled", async ({ page 
   await expect
     .poll(() => layout.evaluate((element) => getComputedStyle(element).direction))
     .toBe("rtl");
-  await layout.press("Enter");
-  const tools = page.locator(".xyle-section-tools");
-  await expect(tools).toBeVisible();
-  for (const name of ["Stack", "Split", "Swap sides"]) {
-    const button = tools.getByRole("button", { name });
-    await expect(button).toBeDisabled();
-    await expect(button).toHaveAttribute(
-      "title",
-      "Layout uses unsupported positioning or writing mode",
-    );
-  }
+
+  const outline = await openOutline(page);
+  await areaRow(outline, "Authored flex").locator(".xyle-outline-select").click();
+  const inspector = outline.locator(".xyle-structure-inspector");
+  await expect(inspector).toBeEmpty();
+  await expect(outline.getByRole("button", { name: "Change layout" })).toHaveCount(0);
   await expect(page.locator("#xyle-dirty")).toBeHidden();
 });
 
-test("Outline panel unifies safe layout controls and unsupported explanations", async ({
-  page,
-}) => {
+test("Outline presents safe visual layout outcomes", async ({ page }) => {
   await loginAndOpenEditor(page, "/layouts.html");
-  await page.locator("#xyle-control-hitbox").hover();
-  await page.locator("#xyle-structure-shortcut").click();
-  const structure = page.getByRole("dialog", { name: "Outline" });
-
-  const safeLayout = structure.locator(".xyle-structure-row").filter({ hasText: "Safe layout" });
-  await safeLayout.getByRole("button", { name: "Select Safe layout" }).click();
-  const inspector = structure.locator(".xyle-structure-inspector");
-  await inspector.getByRole("button", { name: "Split" }).click();
-  await expect(structure).toBeVisible();
-  await expect(inspector.getByRole("button", { name: "Split" })).toHaveAttribute(
+  const outline = await openOutline(page);
+  await areaRow(outline, "Safe layout").locator(".xyle-outline-select").click();
+  const inspector = outline.locator(".xyle-structure-inspector");
+  await inspector.getByRole("button", { name: "Image left" }).click();
+  await expect(outline).toBeVisible();
+  await expect(inspector.getByRole("button", { name: "Image left" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
@@ -48,37 +47,46 @@ test("Outline panel unifies safe layout controls and unsupported explanations", 
     "split",
   );
 
-  const authoredLayout = structure
-    .locator(".xyle-structure-row")
-    .filter({ hasText: "Authored flex" });
-  await authoredLayout.getByRole("button", { name: "Select Authored flex" }).click();
-  await expect(inspector).toContainText("Layout uses unsupported positioning or writing mode");
-  await expect(inspector.getByRole("button", { name: "Stack" })).toBeDisabled();
-  await expect(inspector.getByRole("button", { name: "Split" })).toBeDisabled();
-  await expect(inspector.getByRole("button", { name: "Swap sides" })).toBeDisabled();
+  await areaRow(outline, "Authored flex").locator(".xyle-outline-select").click();
+  await expect(inspector).toBeEmpty();
 });
 
-test("applies and publishes the safe Split preset", async ({ page }) => {
+test("mobile ChangeSet undo releases the replaced drawer focus trap", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
   await loginAndOpenEditor(page, "/layouts.html");
-  await page.waitForFunction(
-    () =>
-      (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument?.body.dataset
-        .xyleWired === "true",
-  );
-  await page.frameLocator("#xyle-preview").locator("#layout-basic").press("Enter");
-  await expect(page.locator(".xyle-layout-tools").first()).toBeVisible();
-  await page.locator(".xyle-layout-tools button", { hasText: "Split" }).click();
+  const outline = await openOutline(page);
+  await outline.getByRole("button", { name: "Text left" }).click();
+  await outline.getByRole("button", { name: "Close outline" }).click();
+
+  await page.locator("#xyle-changes").click();
+  const changes = page.getByRole("dialog", { name: "Changes" });
+  await changes.getByRole("button", { name: /Undo task/ }).click();
+  const refreshed = page.getByRole("dialog", { name: "Changes" });
+  await expect(refreshed).toHaveAttribute("data-xyle-drawer-mode", "modal");
+  await expect(page.locator("#xyle-shell")).toHaveAttribute("inert", "");
+  await refreshed.getByRole("button", { name: "Close changes drawer" }).click();
+  await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
+});
+
+test("publishes one atomic visual layout choice", async ({ page }) => {
+  await loginAndOpenEditor(page, "/layouts.html");
+  const outline = await openOutline(page);
+  await areaRow(outline, "Safe layout").locator(".xyle-outline-select").click();
+  const inspector = outline.locator(".xyle-structure-inspector");
+  await inspector.getByRole("button", { name: "Text left" }).click();
+
   const preview = page.frameLocator("#xyle-preview");
   await expect(preview.locator("#layout-basic")).toHaveAttribute("data-xyle-layout", "split");
-  await expect(preview.locator("#layout-basic h2")).toContainText("Safe layout");
-  await page.frameLocator("#xyle-preview").locator("#layout-basic").press("Enter");
-  await expect(page.locator(".xyle-layout-tools button", { hasText: "Swap sides" })).toBeEnabled();
-  await page.locator(".xyle-layout-tools button", { hasText: "Swap sides" }).click();
   await expect(preview.locator("#layout-basic > div").nth(0)).toHaveClass(/layout-content/);
   await expect(preview.locator("#layout-basic > div").nth(1)).toHaveClass(/layout-image/);
-  await page.frameLocator("#xyle-preview").locator("#layout-unsafe").press("Enter");
-  await expect(page.locator(".xyle-layout-tools")).toHaveCount(0);
-  await expect(preview.locator("#layout-unsafe")).not.toHaveAttribute("data-xyle-layout");
+  await expect(page.locator("#xyle-count")).toHaveText("2");
+  await page.keyboard.press("Control+z");
+  await expect(preview.locator("#layout-basic")).not.toHaveAttribute("data-xyle-layout");
+  await expect(preview.locator("#layout-basic > div").nth(0)).toHaveClass(/layout-image/);
+  await page.keyboard.press("Control+Shift+z");
+  await expect(preview.locator("#layout-basic")).toHaveAttribute("data-xyle-layout", "split");
+  await expect(preview.locator("#layout-basic > div").nth(0)).toHaveClass(/layout-content/);
+
   const publishResponse = page.waitForResponse((response) =>
     response.url().includes("/__xyle/api/publish"),
   );

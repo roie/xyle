@@ -85,9 +85,11 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("keyboard spaces survive inline formatting boundaries", async () => {
+    const pagePath = "/index.html";
+    await loginAndOpenEditor(page, pagePath);
     const id = await findNodeByText(page, "We are a");
     const originalHtml = await nodeHtml(page, id!);
-    const expectedHtml = originalHtml.replace("human-controlled", "foo bar");
+    const expectedHtml = originalHtml.replace("small editing layer", "foo bar");
     await editNode(page, id!);
     await page.evaluate((nodeId) => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
@@ -109,18 +111,18 @@ test.describe("editing fidelity gate", () => {
     const ops = await currentOps(page);
     expect(ops).toHaveLength(1);
     expect(ops[0]).toEqual({
-      pagePath: ABOUT,
+      pagePath,
       op: { type: "html", nodeId: id, value: expectedHtml },
     });
 
     await page.click("#xyle-publish");
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
-    const source = await (await page.request.get(ABOUT)).text();
+    const source = await (await page.request.get(pagePath)).text();
     expect(source).toContain(`<p>${expectedHtml}</p>`);
     expect(source).not.toContain("data-xyle-node");
     expect(source).not.toContain("xyle-editing");
 
-    await page.goto(ABOUT);
+    await page.goto(pagePath);
     const published = page.locator("p").filter({ hasText: "We are a foo bar" });
     await expect(published).toHaveCount(1);
     expect(await published.evaluate((element) => element.innerHTML)).toBe(expectedHtml);
@@ -209,6 +211,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("formatted HTML paste is neutralized to plain structure-safe content", async () => {
+    await loginAndOpenEditor(page, "/index.html");
     const skeletonBefore = await nodeSkeleton(page, (await findNodeByText(page, "We are a"))!);
     const id = await findNodeByText(page, "We are a");
     await editNode(page, id!);
@@ -363,16 +366,38 @@ test.describe("editing fidelity gate", () => {
     await page.keyboard.press("Control+Shift+z");
     await expect(link).toHaveAttribute("href", "https://example.com/guide");
 
+    await link.click();
+    const linkTools = page.locator(".xyle-link-tools");
+    await expect(linkTools.getByRole("button", { name: "Edit URL" })).toBeVisible();
+    await expect(page.locator("#xyle-flash")).not.toContainText(
+      "External links do not navigate in edit mode",
+    );
+    await linkTools.getByRole("button", { name: "Edit URL" }).click();
+    const editForm = linkTools.locator("form");
+    await editForm.getByLabel("Link destination").fill("/updated-guide");
+    await editForm.getByRole("button", { name: "Save" }).click();
+    await expect(link).toHaveAttribute("href", "/updated-guide");
+    await linkTools.getByRole("button", { name: "Edit URL" }).click();
+    await linkTools.getByLabel("Link destination").fill("/updated-guide-again");
+    await linkTools.getByRole("button", { name: "Save" }).click();
+    await expect(link).toHaveAttribute("href", "/updated-guide-again");
+    expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["html"]);
+
+    await page.keyboard.press("Control+z");
+    await expect(link).toHaveAttribute("href", "/updated-guide");
+    await page.keyboard.press("Control+Shift+z");
+    await expect(link).toHaveAttribute("href", "/updated-guide-again");
+
     await page.locator("#xyle-changes").click();
     const change = page.getByRole("dialog", { name: "Changes" }).locator(".xyle-change-row");
-    await expect(change).toContainText("https://example.com/guide");
+    await expect(change).toContainText("/updated-guide-again");
     await page.getByRole("button", { name: "Close changes drawer" }).click();
 
     await page.locator("#xyle-publish").click();
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     const source = await (await page.request.get(ABOUT)).text();
     expect(source).toContain(
-      '<h1 id="about-title">See how <a href="https://example.com/guide">Xyle</a> works</h1>',
+      '<h1 id="about-title">See how <a href="/updated-guide-again">Xyle</a> works</h1>',
     );
   });
 
@@ -512,6 +537,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("editing fully inside <strong> preserves the strong element", async () => {
+    await loginAndOpenEditor(page, "/index.html");
     const pId = await findNodeByText(page, "We are a");
     const before = await nodeSkeleton(page, pId!);
     await editNode(page, pId!);
@@ -613,6 +639,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("selection crossing the <strong> boundary is reverted", async () => {
+    await loginAndOpenEditor(page, "/index.html");
     const pId = await findNodeByText(page, "We are a");
     const before = await nodeSkeleton(page, pId!);
     await editNode(page, pId!);
@@ -656,6 +683,32 @@ test.describe("editing fidelity gate", () => {
     const change = page.locator("#xyle-changes-drawer .xyle-change-row").first();
     await expect(change.locator(".xyle-change-before")).toContainText("<h1");
     await expect(change.locator(".xyle-change-after")).toContainText("<p>A new paragraph.</p>");
+  });
+
+  test("publishes deletion after creating a draft paragraph inside the area", async () => {
+    const headingId = await findNodeByText(page, "See how Xyle works");
+    await editNode(page, headingId!);
+    await focusCaret(page, headingId!, "end");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("Draft-only paragraph.");
+    await clickOutsideToCommit(page);
+
+    await page.locator("#xyle-structure-shortcut").click();
+    const row = page
+      .getByRole("dialog", { name: "Outline" })
+      .locator(".xyle-outline-node")
+      .filter({ hasText: "See how Xyle works" });
+    await row.locator(".xyle-outline-menu-trigger").click();
+    await row.getByRole("menuitem", { name: "Delete", exact: true }).click();
+    const publishResponse = page.waitForResponse((response) =>
+      response.url().includes("/__xyle/api/publish"),
+    );
+    await page.locator("#xyle-publish").click();
+    expect((await publishResponse).ok()).toBe(true);
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    const source = await (await page.request.get("/about.html")).text();
+    expect(source).not.toContain('class="page-intro"');
+    expect(source).not.toContain("Draft-only paragraph.");
   });
 
   test("paragraph creation has chronological undo and redo", async () => {
@@ -703,12 +756,19 @@ test.describe("editing fidelity gate", () => {
     const form = page.locator(".xyle-format-tools form");
     await form.getByLabel("Link destination").fill("/guide");
     await form.getByRole("button", { name: "Add link" }).click();
+    const createdLink = paragraph.locator("a");
+    await createdLink.click();
+    const linkTools = page.locator(".xyle-link-tools");
+    await linkTools.getByRole("button", { name: "Edit URL" }).click();
+    await linkTools.getByLabel("Link destination").fill("/updated-guide");
+    await linkTools.getByRole("button", { name: "Save" }).click();
+    await expect(createdLink).toHaveAttribute("href", "/updated-guide");
     expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["replaceTextBlock"]);
 
     await page.locator("#xyle-publish").click();
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     const source = await (await page.request.get(ABOUT)).text();
-    expect(source).toContain('<p><a href="/guide">Generated</a> link paragraph.</p>');
+    expect(source).toContain('<p><a href="/updated-guide">Generated</a> link paragraph.</p>');
   });
 
   test("Enter at the start inserts a paragraph before the authored block", async () => {
@@ -821,6 +881,7 @@ test.describe("editing fidelity gate", () => {
   });
 
   test("drag/drop text cannot restructure markup", async () => {
+    await loginAndOpenEditor(page, "/index.html");
     const pId = await findNodeByText(page, "We are a");
     const before = await nodeSkeleton(page, pId!);
     // simulate a drop that would inject foreign markup

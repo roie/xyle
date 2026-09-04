@@ -61,9 +61,11 @@ import type {
   AssetReference,
   BlockFormat,
   DuplicateGroupItemOperation,
+  DeleteSectionOperation,
   GroupDescriptor,
   GroupItemDescriptor,
   GroupMoveCapability,
+  LayoutOutcome,
   LayoutPreset,
   LayoutTargetDescriptor,
   RegionOrder,
@@ -139,6 +141,7 @@ type Op =
   | { type: "src"; nodeId: string; value: string; assetName?: string }
   | { type: "alt"; nodeId: string; value: string }
   | { type: "sectionVisibility"; nodeId: string; visible: boolean; before: boolean }
+  | DeleteSectionOperation
   | {
       type: "moveSection";
       nodeId: string;
@@ -380,7 +383,10 @@ function configureEditorDrawer(drawer: HTMLElement, close: () => void): void {
     }
     if (event.key !== "Tab" || drawer.dataset.xyleDrawerMode !== "modal") return;
     const focusable = [...drawer.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)].filter(
-      (element) => !element.hidden && element.getAttribute("aria-hidden") !== "true",
+      (element) =>
+        !element.hidden &&
+        element.getAttribute("aria-hidden") !== "true" &&
+        element.getClientRects().length > 0,
     );
     const first = focusable[0];
     const last = focusable.at(-1);
@@ -408,6 +414,9 @@ function closeOverlayDrawerForPreviewInteraction(): void {
     '.xyle-drawer[data-xyle-drawer-mode="overlay"]',
   );
   if (!drawer) return;
+  // The desktop Outline is a persistent companion to direct canvas editing.
+  // Mobile drawers are modal and are not selected by the overlay query above.
+  if (drawer.id === "xyle-structure-drawer") return;
   if (drawer.id === "xyle-media-drawer") closeMediaDrawer(false);
   else if (drawer.id === "xyle-structure-drawer") closeStructurePanel(false);
   else if (drawer.id === "xyle-seo-drawer") closeSeoDrawer(false);
@@ -451,9 +460,11 @@ async function boot(): Promise<void> {
     updateSectionVisibility,
     moveSection,
     duplicateSection,
+    deleteSection,
     duplicateGroupItem,
     moveGroupItem,
     listLayoutOptions,
+    applyLayoutOutcome,
     setLayoutPreset,
     setRegionOrder,
     insertParagraph,
@@ -635,7 +646,14 @@ function wirePreview(): void {
     const anchor = target.closest("a");
     if (!anchor) return;
     event.preventDefault();
-    if (anchor.hasAttribute("data-xyle-node")) return; // link editing handles it
+    if (anchor.hasAttribute("data-xyle-node")) return; // authored link editing handles it
+    const owner = createdLinkOwner(anchor as HTMLAnchorElement);
+    if (owner) {
+      event.stopImmediatePropagation();
+      if (session) commitEdit();
+      showCreatedLinkTools(anchor as HTMLAnchorElement, owner, event.detail === 0);
+      return;
+    }
     handlePreviewNavigation(anchor as HTMLAnchorElement);
   });
   doc.body.addEventListener("submit", (e) => e.preventDefault(), true);
@@ -879,13 +897,6 @@ function groupForId(id: string): GroupDescriptor | undefined {
   return state.current?.groups.find((group) => group.id === id);
 }
 
-function groupItemForId(
-  groupId: string,
-  itemId: string,
-): GroupDescriptor["items"][number] | undefined {
-  return groupForId(groupId)?.items.find((item) => item.id === itemId);
-}
-
 function groupItemsInDom(groupId: string): GroupItemDescriptor[] {
   const group = groupForId(groupId);
   const container = previewDoc()?.querySelector<HTMLElement>(
@@ -929,6 +940,7 @@ function moveGroupItem(
   const operation: Op = {
     type: "moveGroupItem",
     groupId,
+    sectionId: group.sectionId,
     itemId,
     targetItemId,
     position,
@@ -943,60 +955,6 @@ function moveGroupItem(
     position === "before" ? "Move Group item before" : "Move Group item after",
   );
   return { id: itemId, targetItemId, position };
-}
-
-function showGroupItemTools(item: HTMLElement, itemDescriptor: GroupItemDescriptor): void {
-  if (session || (toolbarIsInline() && activeToolsTarget !== item)) return;
-  if (selectedImage && selectedImage.el !== item) {
-    hideImageTools(selectedImage.el);
-    selectedImage = null;
-  }
-  const overlay = shellOverlay();
-  if (!overlay) return;
-  const groupId = item.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
-  if (!groupId) return;
-  const group = groupForId(groupId);
-  if (!group) return;
-  const tools = document.createElement("div");
-  tools.className = "xyle-link-tools xyle-group-item-tools";
-  tools.setAttribute("role", "toolbar");
-  tools.setAttribute("aria-label", "Group item actions");
-  const capability = groupMoveCapability(group);
-  const order = groupItemsInDom(groupId);
-  const index = order.findIndex((candidate) => candidate.id === itemDescriptor.id);
-  const addMove = (
-    label: string,
-    target: GroupItemDescriptor | undefined,
-    position: "before" | "after",
-  ): void => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    if (!capability.supported || !target) {
-      button.disabled = true;
-      if (!capability.supported)
-        button.title = capability.reason ?? "Group movement is unavailable";
-    } else {
-      button.addEventListener("click", () => {
-        moveGroupItem(groupId, itemDescriptor.id, target.id, position);
-        closeContextTools(false);
-      });
-    }
-    tools.append(button);
-  };
-  addMove("Move earlier", order[index - 1], "before");
-  addMove("Move later", order[index + 1], "after");
-  const duplicate = document.createElement("button");
-  duplicate.type = "button";
-  duplicate.textContent = "Duplicate item";
-  duplicate.addEventListener("click", () => {
-    duplicateGroupItem(groupId, itemDescriptor.id);
-    closeContextTools(false);
-  });
-  tools.append(duplicate);
-  registerContextTools(tools, item, "above");
-  overlay.append(tools);
-  positionContextTools(tools, previewElementRect(item), "above");
 }
 
 function editablePreviewTargets(doc: Document): HTMLElement[] {
@@ -1071,29 +1029,9 @@ function wireGroupMarker(el: HTMLElement): void {
 }
 
 function wireGroupItemMarker(el: HTMLElement): void {
+  // Group structure belongs in Outline. Descendant text, links, and media remain
+  // directly editable on the canvas through their own candidate wiring.
   wireGroupMarker(el);
-  makePreviewTargetKeyboardAccessible(
-    el,
-    "Editable group item. Press Enter or Space to open item actions. Use arrow keys to move between editable items.",
-  );
-  const showTools = (): void => {
-    const groupId = el.closest<HTMLElement>("[data-xyle-group]")?.dataset.xyleGroup;
-    const itemId = el.dataset.xyleGroupItem;
-    const item = groupId && itemId ? groupItemForId(groupId, itemId) : undefined;
-    if (groupId && item && !toolbarOwnsInteraction()) showGroupItemTools(el, item);
-  };
-  el.addEventListener("pointerdown", (event) => {
-    const target = event.target as Element | null;
-    if (target?.closest("[data-xyle-node]")) return;
-    showTools();
-  });
-  el.addEventListener("focus", showTools);
-  el.addEventListener("keydown", (event) => {
-    if (session || (event.key !== "Enter" && event.key !== " ")) return;
-    event.preventDefault();
-    event.stopPropagation();
-    showTools();
-  });
 }
 
 function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
@@ -1110,6 +1048,10 @@ function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
     el,
     `Editable ${targetName}. Press Enter or Space to edit. Use arrow keys to move between editable items.`,
   );
+  el.addEventListener("pointerdown", (event) => {
+    const target = (event.target as Element | null)?.closest?.("[data-xyle-node]");
+    if (target === el) selectOutlineTarget(meta.id, false);
+  });
   el.addEventListener("mouseenter", () => beginCandidateHover(el));
   el.addEventListener("mouseleave", () => endCandidateHover(el));
   el.addEventListener("focus", () => {
@@ -1128,13 +1070,10 @@ function wireCandidate(el: HTMLElement, meta: NodeMeta | undefined): void {
 }
 
 function wireSection(el: HTMLElement, meta: NodeMeta): void {
-  el.addEventListener("pointerdown", (event) => {
-    if (event.target === el) showSectionTools(el, meta);
-  });
   el.addEventListener("keydown", (event) => {
     if (session || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
-    showSectionTools(el, meta, true);
+    selectOutlineTarget(meta.id, false);
   });
 }
 
@@ -1280,7 +1219,7 @@ function layoutCapability(target: LayoutTargetDescriptor): LayoutCapability {
       else section.removeAttribute(LAYOUT_ATTRIBUTE);
       return {
         supported: false,
-        reason: `${preset === "stacked" ? "Stack" : "Split"} is defeated by authored CSS`,
+        reason: `${preset === "stacked" ? "Above-and-below" : "Side-by-side"} is unavailable with the site's existing styles`,
       };
     }
   }
@@ -1430,7 +1369,12 @@ function setRegionOrder(targetId: string, order: RegionOrder): { id: string; ord
     sequence: allocateStructuralSequence(),
   };
   applyRegionOrderToDom(target, order);
-  applyOp(current.pagePath, operation, "Swap sides", order === "original" ? null : operation);
+  applyOp(
+    current.pagePath,
+    operation,
+    "Change area order",
+    order === "original" ? null : operation,
+  );
   return { id: targetId, order };
 }
 
@@ -1467,33 +1411,29 @@ function setLayoutPreset(
   };
   const pending = preset === (sourceManaged ?? capability.baseline) ? null : operation;
   if (pending) applyLayoutToDom(current.pagePath, operation);
-  applyOp(
-    current.pagePath,
-    operation,
-    preset === "stacked" ? "Set layout to Stack" : "Set layout to Split",
-    pending,
-  );
+  applyOp(current.pagePath, operation, "Change layout", pending);
   if (!pending) restoreLayoutToDom(current.pagePath, target);
   return { id: targetId, preset };
 }
 
 function listLayoutOptions(targetId: string): {
   id: string;
-  current: LayoutPreset;
-  baseline: LayoutPreset;
-  options: LayoutPreset[];
+  current: LayoutOutcome;
+  options: LayoutOutcome[];
 } {
   const target = layoutTargetForId(targetId);
   if (!target) throw new Error("Layout target is unavailable");
   const capability = layoutCapability(target);
-  if (!capability.supported || !capability.baseline || !capability.current)
+  if (!capability.supported || !capability.current)
     throw new Error(capability.reason ?? "Layout is unavailable");
-  return {
-    id: targetId,
-    current: capability.current,
-    baseline: capability.baseline,
-    options: ["stacked", "two-column"],
-  };
+  const order = regionOrderInDom(target);
+  if (!order) throw new Error("Layout order is unavailable");
+  const outcomes: LayoutOutcome[] = ["above-and-below", "text-left", "image-left"];
+  const current = outcomes.find((outcome) => {
+    const plan = layoutOutcomePlan(target, outcome);
+    return plan.preset === capability.current && plan.order === order;
+  });
+  return { id: targetId, current: current ?? "above-and-below", options: outcomes };
 }
 
 function applyLayoutToDom(pagePath: string, op: SetLayoutPresetOperation): void {
@@ -1517,127 +1457,6 @@ function restoreLayoutToDom(pagePath: string, target: LayoutTargetDescriptor): v
   if (target.managedPreset)
     section.setAttribute(LAYOUT_ATTRIBUTE, layoutAttributeValue(target.managedPreset));
   else section.removeAttribute(LAYOUT_ATTRIBUTE);
-}
-
-function showSectionTools(section: HTMLElement, meta: NodeMeta, focusFirst = false): void {
-  if (!session && (!toolbarIsInline() || activeToolsTarget === section)) {
-    const overlay = shellOverlay();
-    if (!overlay) return;
-    const tools = document.createElement("div");
-    tools.className = "xyle-link-tools xyle-section-tools";
-    tools.setAttribute("role", "toolbar");
-    tools.setAttribute("aria-label", "Section actions");
-
-    const layoutTarget = layoutTargetForId(meta.id);
-    if (layoutTarget) {
-      const capability = layoutCapability(layoutTarget);
-      const layoutTools = document.createElement("div");
-      layoutTools.className = "xyle-layout-tools";
-      layoutTools.setAttribute("role", "group");
-      layoutTools.setAttribute("aria-label", "Layout");
-      const label = document.createElement("strong");
-      label.className = "xyle-tool-group-label";
-      label.textContent = "Layout";
-      layoutTools.append(label);
-      for (const [preset, text] of [
-        ["stacked", "Stack"],
-        ["two-column", "Split"],
-      ] as const) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = text;
-        button.dataset.state = capability.current === preset ? "on" : "off";
-        button.setAttribute("aria-pressed", String(capability.current === preset));
-        button.disabled = !capability.supported;
-        if (!capability.supported) button.title = capability.reason ?? "Layout is unavailable";
-        else
-          button.addEventListener("click", () => {
-            setLayoutPreset(meta.id, preset);
-            closeContextTools(false);
-          });
-        layoutTools.append(button);
-      }
-      const currentOrder = regionOrderInDom(layoutTarget);
-      const orderButton = document.createElement("button");
-      orderButton.type = "button";
-      orderButton.textContent = "Swap sides";
-      const nextOrder: RegionOrder = currentOrder === "swapped" ? "original" : "swapped";
-      const orderSupported = capability.supported && canSetRegionOrder(layoutTarget, nextOrder);
-      orderButton.disabled = !orderSupported;
-      if (!orderSupported) orderButton.title = capability.reason ?? "Region order is unavailable";
-      else
-        orderButton.addEventListener("click", () => {
-          setRegionOrder(meta.id, nextOrder);
-          closeContextTools(false);
-        });
-      layoutTools.append(orderButton);
-      tools.append(layoutTools);
-    }
-
-    const sectionActions = document.createElement("div");
-    sectionActions.className = "xyle-section-action-tools";
-    sectionActions.setAttribute("role", "group");
-    sectionActions.setAttribute("aria-label", "Section");
-    const sectionLabel = document.createElement("strong");
-    sectionLabel.className = "xyle-tool-group-label";
-    sectionLabel.textContent = "Section";
-    sectionActions.append(sectionLabel);
-
-    const parent = section.parentElement;
-    const siblings = parent ? sectionChildren(parent) : [];
-    const structuralIntegrity = !!parent && siblings.length === parent.children.length;
-    const structuralReason = "Section actions require supported sibling sections";
-    const duplicate = document.createElement("button");
-    duplicate.type = "button";
-    duplicate.textContent = "Duplicate section";
-    const createdSection = state.ops.some(
-      ({ pagePath, op }) =>
-        pagePath === state.current?.pagePath &&
-        op.type === "duplicateSection" &&
-        op.createdId === meta.id,
-    );
-    duplicate.disabled = !structuralIntegrity || createdSection;
-    if (createdSection) duplicate.title = "Publish this section before duplicating it again";
-    else if (!structuralIntegrity) duplicate.title = structuralReason;
-    else
-      duplicate.addEventListener("click", () => {
-        duplicateSection(meta.id);
-        closeContextTools(false);
-      });
-    sectionActions.append(duplicate);
-
-    const visibility = document.createElement("button");
-    visibility.type = "button";
-    visibility.textContent = section.hidden ? "Show section" : "Hide section";
-    visibility.addEventListener("click", () => {
-      updateSectionVisibility(meta.id, Boolean(section.hidden));
-      closeContextTools(false);
-    });
-    sectionActions.append(visibility);
-
-    const index = siblings.indexOf(section);
-    const addMove = (label: string, target: HTMLElement | undefined, before: boolean): void => {
-      if (!target) return;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = label;
-      button.disabled = !structuralIntegrity;
-      if (!structuralIntegrity) button.title = structuralReason;
-      else
-        button.addEventListener("click", () => {
-          moveSection(meta.id, target.getAttribute("data-xyle-node")!, before);
-          closeContextTools(false);
-        });
-      sectionActions.append(button);
-    };
-    addMove("Move up", siblings[index - 1], true);
-    addMove("Move down", siblings[index + 1], false);
-    tools.append(sectionActions);
-    registerContextTools(tools, section, "inside-bottom");
-    overlay.append(tools);
-    positionContextTools(tools, previewElementRect(section), "inside-bottom");
-    if (focusFirst) tools.querySelector("button")?.focus();
-  }
 }
 
 let overlayRefreshFrame = 0;
@@ -1672,7 +1491,9 @@ function refreshEditabilityOverlay(): void {
     const isEditing = el.classList.contains("xyle-editing");
     const isHovered = el.classList.contains("xyle-hover");
     const isChangeFocused = focusedChangeTarget === el;
-    const isSelected = isEditing || isChangeFocused || el.matches(":focus-visible");
+    const isOutlineSelected = el.hasAttribute("data-xyle-outline-selected");
+    const isSelected =
+      isEditing || isChangeFocused || isOutlineSelected || el.matches(":focus-visible");
     if (!showEditables && !isHovered && !isSelected) continue;
 
     const rect = previewElementRect(el);
@@ -2853,6 +2674,29 @@ function endEdit(recordChanges: boolean): void {
 
 /* ---------- link editing ---------- */
 
+interface CreatedLinkOwner {
+  root: HTMLElement;
+  meta: NodeMeta;
+}
+
+function createdLinkOwner(link: HTMLAnchorElement): CreatedLinkOwner | null {
+  if (link.hasAttribute("data-xyle-node") || !state.current) return null;
+  const root = link.closest<HTMLElement>("[data-xyle-node]");
+  const nodeId = root?.dataset.xyleNode;
+  const meta = nodeId
+    ? state.current.nodes.find((candidate) => candidate.id === nodeId)
+    : undefined;
+  if (!root || !meta || (meta.kind !== "text" && meta.kind !== "link")) return null;
+  const pending = state.ops.some(
+    ({ pagePath, op }) =>
+      pagePath === state.current?.pagePath &&
+      ((op.type === "html" && op.nodeId === nodeId) ||
+        (op.type === "replaceTextBlock" &&
+          op.blocks.some((block) => replacementBlockId(op, block) === nodeId))),
+  );
+  return pending ? { root, meta } : null;
+}
+
 function wireLink(el: HTMLElement, meta: NodeMeta): void {
   const show = (event: Event): void => {
     if (session?.el === el) return;
@@ -3002,6 +2846,84 @@ function positionInlineToolEditor(
     return;
   }
   positionContextTools(tools, targetRect, fallback);
+}
+
+function persistCreatedLink(owner: CreatedLinkOwner): void {
+  const { root, meta } = owner;
+  const replacement = replacementOperationForNode(meta.pagePath, meta.id);
+  if (replacement) {
+    applyOp(meta.pagePath, replacementFromDom(replacement), "Edit link");
+    return;
+  }
+  const identity = segmentIdentity(meta.pagePath, meta.id);
+  const original = originalMarkups.get(identity);
+  if (original === undefined) throw new Error("The original text markup is unavailable");
+  applyOp(
+    meta.pagePath,
+    { type: "html", nodeId: meta.id, value: cleanInlineHtml(root) },
+    "Edit link",
+  );
+}
+
+function showCreatedLinkTools(
+  link: HTMLAnchorElement,
+  owner: CreatedLinkOwner,
+  focusFirst = false,
+  focusAction?: "url",
+): void {
+  if (toolbarIsInline() && activeToolsTarget !== link) return;
+  const overlay = shellOverlay();
+  if (!overlay) return;
+  const tools = document.createElement("div");
+  tools.className = "xyle-link-tools";
+  tools.setAttribute("role", "group");
+  tools.setAttribute("aria-label", "Link actions");
+
+  const editText = document.createElement("button");
+  editText.type = "button";
+  editText.textContent = "Edit text";
+  editText.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeContextTools(false);
+    startEdit(owner.root, owner.meta);
+    const range = owner.root.ownerDocument.createRange();
+    range.selectNodeContents(link);
+    const selection = previewSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  const editUrl = document.createElement("button");
+  editUrl.type = "button";
+  editUrl.textContent = "Edit URL";
+  editUrl.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openCreatedHrefEditor(link, owner, tools);
+  });
+  tools.append(editText, editUrl);
+
+  const target = resolveInternalPath(link.getAttribute("href") ?? "");
+  if (target) {
+    const follow = document.createElement("button");
+    follow.type = "button";
+    follow.textContent = "Follow";
+    follow.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeContextTools(false);
+      void loadPage(target, { pushHistory: true });
+    });
+    tools.append(follow);
+  }
+  tools.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    closeContextTools();
+  });
+  registerContextTools(tools, link, "above");
+  overlay.append(tools);
+  positionContextTools(tools, previewElementRect(link), "above");
+  if (focusFirst) {
+    (focusAction === "url" ? editUrl : tools.querySelector("button"))?.focus();
+  }
 }
 
 function showLinkTools(
@@ -3281,6 +3203,62 @@ function openCreateLinkEditor(tools: HTMLElement, selection: FormatSelection): v
   hrefInput.focus();
   window.requestAnimationFrame(() => {
     if (tools.isConnected) positionInlineToolEditor(tools, target, "above");
+  });
+}
+
+function openCreatedHrefEditor(
+  link: HTMLAnchorElement,
+  owner: CreatedLinkOwner,
+  tools: HTMLElement,
+): void {
+  tools.dataset.xyleEditingUrl = "1";
+  toolbarActionInProgress = true;
+  toolbarPhase = "inline";
+  tools.replaceChildren(
+    document.createRange().createContextualFragment(`
+    <form class="xyle-inline-tool-form" novalidate>
+      <label class="xyle-inline-tool-label"><span class="xyle-sr-only">Link destination</span>
+        <input class="xyle-inline-tool-input" name="href" autocomplete="off" placeholder="https://example.com or /about" aria-describedby="xyle-created-link-edit-error">
+      </label>
+      <p id="xyle-created-link-edit-error" class="xyle-inline-tool-error" role="status" aria-live="polite"></p>
+      <div class="xyle-inline-tool-actions">
+        <button type="button" data-cancel>Cancel</button>
+        <button type="submit">Save</button>
+      </div>
+    </form>`),
+  );
+  const hrefInput = tools.querySelector("input") as HTMLInputElement;
+  hrefInput.value = link.getAttribute("href") ?? "";
+  const restore = (): void => {
+    delete tools.dataset.xyleEditingUrl;
+    toolbarActionInProgress = false;
+    returnToSelectedToolbar(link, () => showCreatedLinkTools(link, owner, true, "url"));
+  };
+  tools.querySelector<HTMLButtonElement>("[data-cancel]")?.addEventListener("click", restore);
+  tools.querySelector("form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const value = normalizeEditableUrl(hrefInput.value);
+    if (!isSafeUrl(value)) {
+      tools.querySelector<HTMLElement>(".xyle-inline-tool-error")!.textContent =
+        "Use /path, https://, http://, mailto: or tel:.";
+      hrefInput.setAttribute("aria-invalid", "true");
+      hrefInput.focus();
+      return;
+    }
+    link.setAttribute("href", value);
+    persistCreatedLink(owner);
+    restore();
+  });
+  tools.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !tools.dataset.xyleEditingUrl) return;
+    event.preventDefault();
+    restore();
+  });
+  hrefInput.focus();
+  hrefInput.select();
+  window.requestAnimationFrame(() => {
+    if (tools.isConnected && tools.dataset.xyleEditingUrl)
+      positionInlineToolEditor(tools, link, "above");
   });
 }
 
@@ -4194,8 +4172,23 @@ interface MediaItem {
 let drawerOpen = false;
 let structurePanelTrigger: HTMLElement | null = null;
 let structureSelectedId: string | null = null;
+let outlineSelectedId: string | null = null;
+let outlineSelectedGroupId: string | null = null;
+const outlineExpandedIds = new Set<string>();
+const deletedSectionPositions = new Map<string, number>();
+interface DeletedCreatedSectionRecord {
+  duplicate: PendingOp & { op: Extract<Op, { type: "duplicateSection" }> };
+  dependents: PendingOp[];
+  meta: NodeMeta;
+  label: string;
+  position: number;
+}
+const deletedCreatedSections = new Map<string, DeletedCreatedSectionRecord>();
+let draggedOutlineSectionId: string | null = null;
+let closeOpenOutlineMenu: (() => void) | null = null;
 
 function closeStructurePanel(restoreFocus = true): void {
+  closeOpenOutlineMenu?.();
   removeTrappedDialog(document.getElementById("xyle-structure-drawer"));
   const trigger = structurePanelTrigger;
   structurePanelTrigger = null;
@@ -4204,76 +4197,350 @@ function closeStructurePanel(restoreFocus = true): void {
   if (!session && !activeTools) setInteractionMode(hoveredCandidate ? "hover" : "idle");
 }
 
-function structureActionButton(
-  label: string,
-  actionKey: string,
-  action: (() => void) | null,
-  reason?: string,
-): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "xyle-structure-button";
-  button.textContent = label;
-  button.dataset.structureAction = actionKey;
-  button.disabled = action === null;
-  if (!action && reason) button.dataset.unavailableReason = reason;
-  if (action) {
-    button.addEventListener("click", () => {
-      try {
-        action();
-        document
-          .querySelector<HTMLButtonElement>(`[data-structure-action="${CSS.escape(actionKey)}"]`)
-          ?.focus();
-      } catch (error) {
-        flash(error instanceof Error ? error.message : "This structure change is unavailable");
-      }
-    });
-  }
-  return button;
+function outlineContentPresentation(
+  meta: NodeMeta,
+  element: HTMLElement,
+): { type: string; icon: ReiconOutlineName; label: string } {
+  const presentation =
+    meta.kind === "image"
+      ? { type: "Image", icon: "image" as const }
+      : meta.kind === "link"
+        ? { type: "Link", icon: "link" as const }
+        : /^h[1-6]$/i.test(meta.tag ?? element.tagName)
+          ? { type: "Heading", icon: "subtitle" as const }
+          : meta.tag === "li"
+            ? { type: "List", icon: "list" as const }
+            : { type: "Text", icon: "text" as const };
+  const text =
+    meta.kind === "image"
+      ? element.getAttribute("alt")?.trim()
+      : element.textContent?.replace(/\s+/g, " ").trim();
+  return { ...presentation, label: text?.slice(0, 56) || presentation.type };
 }
 
-type StructureActionIcon = "locate" | "up" | "down" | "hide" | "show" | "duplicate";
+function outlineChildren(section: HTMLElement): Array<{ element: HTMLElement; meta: NodeMeta }> {
+  if (!state.current) return [];
+  const metadata = new Map(state.current.nodes.map((node) => [node.id, node]));
+  return [...section.querySelectorAll<HTMLElement>("[data-xyle-node]")]
+    .map((element) => {
+      const id = element.dataset.xyleNode;
+      const meta = id ? metadata.get(id) : undefined;
+      if (!meta || meta.kind === "section") return null;
+      if (element.closest("section[data-xyle-node]") !== section) return null;
+      if (element.closest("[data-xyle-group-item]")) return null;
+      return { element, meta };
+    })
+    .filter((entry): entry is { element: HTMLElement; meta: NodeMeta } => entry !== null);
+}
 
-function structureActionIcon(icon: StructureActionIcon): SVGSVGElement {
-  const namespace = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(namespace, "svg");
+function outlineGroups(sectionId: string): PageData["groups"] {
+  return state.current?.groups.filter((group) => group.sectionId === sectionId) ?? [];
+}
+
+function applyOutlineSelectionHighlight(): void {
+  const doc = previewDoc();
+  if (!doc) return;
+  for (const element of doc.querySelectorAll<HTMLElement>("[data-xyle-outline-selected]")) {
+    element.removeAttribute("data-xyle-outline-selected");
+  }
+  const selected = outlineSelectedId ? currentNodeElement(outlineSelectedId) : null;
+  selected?.setAttribute("data-xyle-outline-selected", "");
+  scheduleOverlayRefresh();
+}
+
+function selectOutlineTarget(nodeId: string, focusCanvas: boolean): void {
+  outlineSelectedGroupId = null;
+  const element = currentNodeElement(nodeId);
+  const section = element?.matches("section[data-xyle-node]")
+    ? element
+    : element?.closest<HTMLElement>("section[data-xyle-node]");
+  outlineSelectedId = nodeId;
+  if (section?.dataset.xyleNode) {
+    structureSelectedId = section.dataset.xyleNode;
+    outlineExpandedIds.add(section.dataset.xyleNode);
+  }
+  applyOutlineSelectionHighlight();
+  const drawer = document.getElementById("xyle-structure-drawer");
+  if (drawer) renderStructurePanel(drawer);
+  if (!focusCanvas || !element) return;
+  if (drawer?.dataset.xyleDrawerMode === "modal") closeStructurePanel(false);
+  element.scrollIntoView({ block: "center", inline: "nearest" });
+  focusPreviewElement(element);
+}
+
+// Individual Outline SVGs copied from Reicon's MIT-licensed raw SVG set.
+// https://github.com/dqev/reicon/tree/main/docs/svg
+const REICON_OUTLINE_PATHS = {
+  "chevron-right":
+    '<polyline points="8.6666 3.6667 17 12 8.6666 20.3333" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></polyline>',
+  "chevron-down":
+    '<polyline points="20.3333 8.6666 12 17 3.6667 8.6666" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></polyline>',
+  reorder:
+    '<path fill-rule="evenodd" clip-rule="evenodd" d="M19.75 10C19.75 10.4142 19.4142 10.75 19 10.75L5 10.75C4.58579 10.75 4.25 10.4142 4.25 10C4.25 9.58579 4.58579 9.25 5 9.25L19 9.25C19.4142 9.25 19.75 9.58579 19.75 10Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M19.75 14C19.75 14.4142 19.4142 14.75 19 14.75L5 14.75C4.58579 14.75 4.25 14.4142 4.25 14C4.25 13.5858 4.58579 13.25 5 13.25L19 13.25C19.4142 13.25 19.75 13.5858 19.75 14Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M19.75 6C19.75 6.41421 19.4142 6.75 19 6.75L5 6.75C4.58579 6.75 4.25 6.41421 4.25 6C4.25 5.58579 4.58579 5.25 5 5.25L19 5.25C19.4142 5.25 19.75 5.58579 19.75 6Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M19.75 18C19.75 18.4142 19.4142 18.75 19 18.75L5 18.75C4.58579 18.75 4.25 18.4142 4.25 18C4.25 17.5858 4.58579 17.25 5 17.25L19 17.25C19.4142 17.25 19.75 17.5858 19.75 18Z" fill="currentColor"/>',
+  more: '<path fill-rule="evenodd" clip-rule="evenodd" d="M2.25 12C2.25 10.4812 3.48122 9.25 5 9.25C6.51878 9.25 7.75 10.4812 7.75 12C7.75 13.5188 6.51878 14.75 5 14.75C3.48122 14.75 2.25 13.5188 2.25 12ZM5 10.75C4.30964 10.75 3.75 11.3096 3.75 12C3.75 12.6904 4.30964 13.25 5 13.25C5.69036 13.25 6.25 12.6904 6.25 12C6.25 11.3096 5.69036 10.75 5 10.75Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M9.25 12C9.25 10.4812 10.4812 9.25 12 9.25C13.5188 9.25 14.75 10.4812 14.75 12C14.75 13.5188 13.5188 14.75 12 14.75C10.4812 14.75 9.25 13.5188 9.25 12ZM12 10.75C11.3096 10.75 10.75 11.3096 10.75 12C10.75 12.6904 11.3096 13.25 12 13.25C12.6904 13.25 13.25 12.6904 13.25 12C13.25 11.3096 12.6904 10.75 12 10.75Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M19 9.25C17.4812 9.25 16.25 10.4812 16.25 12C16.25 13.5188 17.4812 14.75 19 14.75C20.5188 14.75 21.75 13.5188 21.75 12C21.75 10.4812 20.5188 9.25 19 9.25ZM17.75 12C17.75 11.3096 18.3096 10.75 19 10.75C19.6904 10.75 20.25 11.3096 20.25 12C20.25 12.6904 19.6904 13.25 19 13.25C18.3096 13.25 17.75 12.6904 17.75 12Z" fill="currentColor"/>',
+  "arrow-up":
+    '<path fill-rule="evenodd" clip-rule="evenodd" d="M11.4697 3.46967C11.7626 3.17678 12.2374 3.17678 12.5303 3.46967L18.5303 9.46967C18.8232 9.76256 18.8232 10.2374 18.5303 10.5303C18.2374 10.8232 17.7626 10.8232 17.4697 10.5303L12.75 5.81066L12.75 20C12.75 20.4142 12.4142 20.75 12 20.75C11.5858 20.75 11.25 20.4142 11.25 20L11.25 5.81066L6.53033 10.5303C6.23744 10.8232 5.76256 10.8232 5.46967 10.5303C5.17678 10.2374 5.17678 9.76256 5.46967 9.46967L11.4697 3.46967Z" fill="currentColor"/>',
+  "arrow-down":
+    '<path fill-rule="evenodd" clip-rule="evenodd" d="M12 3.25C12.4142 3.25 12.75 3.58579 12.75 4L12.75 18.1893L17.4697 13.4697C17.7626 13.1768 18.2374 13.1768 18.5303 13.4697C18.8232 13.7626 18.8232 14.2374 18.5303 14.5303L12.5303 20.5303C12.3897 20.671 12.1989 20.75 12 20.75C11.8011 20.75 11.6103 20.671 11.4697 20.5303L5.46967 14.5303C5.17678 14.2374 5.17678 13.7626 5.46967 13.4697C5.76256 13.1768 6.23744 13.1768 6.53033 13.4697L11.25 18.1893L11.25 4C11.25 3.58579 11.5858 3.25 12 3.25Z" fill="currentColor"/>',
+  text: '<path d="M7.948 2.25C7.04954 2.24997 6.3003 2.24995 5.70552 2.32991C5.07773 2.41432 4.51093 2.59999 4.05546 3.05546C3.59999 3.51093 3.41432 4.07773 3.32991 4.70552C3.24995 5.3003 3.24997 6.04951 3.25 6.94798L3.25 7.95C3.25 8.36422 3.58579 8.7 4 8.7C4.41422 8.7 4.75 8.36422 4.75 7.95V7C4.75 6.03599 4.7516 5.38843 4.81654 4.9054C4.87858 4.44393 4.9858 4.24644 5.11612 4.11612C5.24644 3.9858 5.44393 3.87858 5.9054 3.81654C6.38843 3.7516 7.03599 3.75 8 3.75H11.25V20.25H7C6.58579 20.25 6.25 20.5858 6.25 21C6.25 21.4142 6.58579 21.75 7 21.75H17C17.4142 21.75 17.75 21.4142 17.75 21C17.75 20.5858 17.4142 20.25 17 20.25H12.75V3.75H16C16.964 3.75 17.6116 3.7516 18.0946 3.81654C18.5561 3.87858 18.7536 3.9858 18.8839 4.11612C19.0142 4.24644 19.1214 4.44393 19.1835 4.9054C19.2484 5.38843 19.25 6.03599 19.25 7V7.95C19.25 8.36422 19.5858 8.7 20 8.7C20.4142 8.7 20.75 8.36422 20.75 7.95V6.94801C20.75 6.04953 20.7501 5.30031 20.6701 4.70552C20.5857 4.07773 20.4 3.51093 19.9445 3.05546C19.4891 2.59999 18.9223 2.41432 18.2945 2.32991C17.6997 2.24995 16.9505 2.24997 16.052 2.25H7.948Z" fill="currentColor"/>',
+  subtitle:
+    '<path d="M9 22H15C20 22 22 20 22 15V9C22 4 20 2 15 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17.5 17.0801H15.65" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.97 17.0801H6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M17.5 13.3201H11.97" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.27 13.3201H6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  link: '<path d="M15.7285 3.88396C17.1629 2.44407 19.2609 2.41383 20.4224 3.57981C21.586 4.74798 21.5547 6.85922 20.1194 8.30009L17.6956 10.7333C17.4033 11.0268 17.4042 11.5017 17.6976 11.794C17.9911 12.0863 18.466 12.0854 18.7583 11.7919L21.1821 9.35869C23.0934 7.43998 23.3334 4.37665 21.4851 2.5212C19.6346 0.663551 16.5781 0.905664 14.6658 2.82536L9.81817 7.69182C7.90688 9.61053 7.66692 12.6739 9.51519 14.5293C9.80751 14.8228 10.2824 14.8237 10.5758 14.5314C10.8693 14.2391 10.8702 13.7642 10.5779 13.4707C9.41425 12.3026 9.44559 10.1913 10.8809 8.75042L15.7285 3.88396Z" fill="currentColor"/><path d="M14.4851 9.47074C14.1928 9.17728 13.7179 9.17636 13.4244 9.46868C13.131 9.76101 13.1301 10.2359 13.4224 10.5293C14.586 11.6975 14.5547 13.8087 13.1194 15.2496L8.27178 20.1161C6.83745 21.556 4.73937 21.5863 3.57791 20.4203C2.41424 19.2521 2.44559 17.1408 3.88089 15.6999L6.30473 13.2667C6.59706 12.9732 6.59614 12.4984 6.30268 12.206C6.00922 11.9137 5.53434 11.9146 5.24202 12.2081L2.81818 14.6413C0.906876 16.5601 0.666916 19.6234 2.51519 21.4789C4.36567 23.3365 7.42221 23.0944 9.33449 21.1747L14.1821 16.3082C16.0934 14.3895 16.3334 11.3262 14.4851 9.47074Z" fill="currentColor"/>',
+  image:
+    '<path fill-rule="evenodd" clip-rule="evenodd" d="M7.5 6.75C6.25736 6.75 5.25 7.75736 5.25 9C5.25 10.2426 6.25736 11.25 7.5 11.25C8.74264 11.25 9.75 10.2426 9.75 9C9.75 7.75736 8.74264 6.75 7.5 6.75ZM6.75 9C6.75 8.58579 7.08579 8.25 7.5 8.25C7.91421 8.25 8.25 8.58579 8.25 9C8.25 9.41421 7.91421 9.75 7.5 9.75C7.08579 9.75 6.75 9.41421 6.75 9Z" fill="currentColor"/> <path fill-rule="evenodd" clip-rule="evenodd" d="M7.06739 2.75H16.9326C17.8851 2.74999 18.6456 2.74999 19.2599 2.80018C19.8899 2.85165 20.4318 2.95963 20.9295 3.21322C21.7291 3.62068 22.3793 4.27085 22.7868 5.07054C23.0404 5.56824 23.1483 6.11012 23.1998 6.74013C23.25 7.35438 23.25 8.1149 23.25 9.0673V14.9642L23.2502 14.9805C23.2501 15.9226 23.2494 16.6761 23.1978 17.2861C23.1455 17.9049 23.0371 18.4386 22.787 18.9296C22.3795 19.7293 21.7293 20.3794 20.9296 20.7869C20.4319 21.0405 19.8901 21.1485 19.26 21.1999C18.6458 21.2501 17.8853 21.2501 16.9329 21.2501H7.06755C6.11514 21.2501 5.35456 21.2501 4.74031 21.1999C4.1103 21.1485 3.56842 21.0405 3.07072 20.7869L3.03315 20.7675C2.9462 20.7221 2.86106 20.6738 2.77785 20.6228C2.1121 20.2144 1.56975 19.6292 1.21322 18.9295C0.959634 18.4318 0.85165 17.8899 0.800176 17.2599C0.749989 16.6456 0.749994 15.8851 0.75 14.9326V9.06739C0.749994 8.11495 0.749989 7.35439 0.800176 6.74013C0.85165 6.11012 0.959634 5.56824 1.21322 5.07054C1.62068 4.27085 2.27085 3.62068 3.07054 3.21322C3.56824 2.95963 4.11012 2.85165 4.74013 2.80018C5.35439 2.74999 6.11495 2.74999 7.06739 2.75ZM21.75 9.1V13.1697L17.7374 9.15709C17.054 8.47369 15.946 8.47368 15.2626 9.15707L9.49929 14.9201L8.25665 13.6772C7.57322 12.9936 6.46498 12.9935 5.78152 13.6771L2.29721 17.162L2.29519 17.1377C2.25058 16.5917 2.25 15.8925 2.25 14.9V9.1C2.25 8.10753 2.25058 7.40829 2.29519 6.86228C2.33909 6.32503 2.42184 6.00252 2.54973 5.75153C2.81338 5.23408 3.23408 4.81338 3.75153 4.54973C4.00252 4.42184 4.32503 4.33909 4.86228 4.29519C5.40829 4.25058 6.10753 4.25 7.1 4.25H16.9C17.8925 4.25 18.5917 4.25058 19.1377 4.29519C19.675 4.33909 19.9975 4.42184 20.2485 4.54973C20.7659 4.81338 21.1866 5.23408 21.4503 5.75153C21.5782 6.00252 21.6609 6.32503 21.7048 6.86228C21.7494 7.40829 21.75 8.10753 21.75 9.1ZM3.65565 19.399C3.57282 19.3526 3.49269 19.3021 3.41553 19.2477C3.20564 19.0997 3.01773 18.9231 2.85714 18.7234L6.84227 14.7377C6.93991 14.64 7.09822 14.64 7.19586 14.7377L8.96882 16.5111C9.10947 16.6518 9.30024 16.7308 9.49916 16.7308C9.69809 16.7308 9.88887 16.6518 10.0295 16.5112L16.3232 10.2178C16.4209 10.1201 16.5791 10.1201 16.6768 10.2178L21.7499 15.2908C21.749 16.0807 21.7433 16.6663 21.7048 17.1377C21.6609 17.675 21.5782 17.9975 21.4503 18.2485C21.1866 18.7659 20.7659 19.1866 20.2485 19.4503C19.9975 19.5782 19.675 19.6609 19.1377 19.7048C18.5917 19.7494 17.8925 19.75 16.9 19.75H7.1C6.10753 19.75 5.40829 19.7494 4.86228 19.7048C4.32503 19.6609 4.00252 19.5782 3.75153 19.4503C3.71919 19.4338 3.68722 19.4167 3.65565 19.399Z" fill="currentColor"/>',
+  list: '<path fill-rule="evenodd" clip-rule="evenodd" d="M17 3.25C17.2361 3.25 17.4584 3.36115 17.6 3.55L20.6 7.55C20.8485 7.88137 20.7814 8.35147 20.45 8.6C20.1186 8.84853 19.6485 8.78137 19.4 8.45L17.75 6.25V17.75L19.4 15.55C19.6485 15.2186 20.1186 15.1515 20.45 15.4C20.7814 15.6485 20.8485 16.1186 20.6 16.45L17.6 20.45C17.4584 20.6389 17.2361 20.75 17 20.75C16.7639 20.75 16.5416 20.6389 16.4 20.45L13.4 16.45C13.1515 16.1186 13.2186 15.6485 13.55 15.4C13.8814 15.1515 14.3515 15.2186 14.6 15.55L16.25 17.75V6.25L14.6 8.45C14.3515 8.78137 13.8814 8.84853 13.55 8.6C13.2186 8.35147 13.1515 7.88137 13.4 7.55L16.4 3.55C16.5416 3.36115 16.7639 3.25 17 3.25ZM3.25 7C3.25 6.58579 3.58579 6.25 4 6.25H11C11.4142 6.25 11.75 6.58579 11.75 7C11.75 7.41421 11.4142 7.75 11 7.75H4C3.58579 7.75 3.25 7.41421 3.25 7ZM3.25 12C3.25 11.5858 3.58579 11.25 4 11.25H11C11.4142 11.25 11.75 11.5858 11.75 12C11.75 12.4142 11.4142 12.75 11 12.75H4C3.58579 12.75 3.25 12.4142 3.25 12ZM3.25 17C3.25 16.5858 3.58579 16.25 4 16.25H11C11.4142 16.25 11.75 16.5858 11.75 17C11.75 17.4142 11.4142 17.75 11 17.75H4C3.58579 17.75 3.25 17.4142 3.25 17Z" fill="currentColor"/>',
+  x: '<path d="M18.4697 19.5303C18.7626 19.8232 19.2374 19.8232 19.5303 19.5303C19.8232 19.2374 19.8232 18.7626 19.5303 18.4697L13.0607 12L19.5303 5.53033C19.8232 5.23744 19.8232 4.76256 19.5303 4.46967C19.2374 4.17678 18.7626 4.17678 18.4697 4.46967L12 10.9393L5.53033 4.46967C5.23744 4.17678 4.76256 4.17678 4.46967 4.46967C4.17678 4.76256 4.17678 5.23744 4.46967 5.53033L10.9393 12L4.46967 18.4697C4.17678 18.7626 4.17678 19.2374 4.46967 19.5303C4.76256 19.8232 5.23744 19.8232 5.53033 19.5303L12 13.0607L18.4697 19.5303Z" fill="currentColor"/>',
+  refresh:
+    '<path fill-rule="evenodd" clip-rule="evenodd" d="M2.93077 11.2003C3.00244 6.23968 7.07619 2.25 12.0789 2.25C15.3873 2.25 18.287 3.99427 19.8934 6.60721C20.1103 6.96007 20.0001 7.42199 19.6473 7.63892C19.2944 7.85585 18.8325 7.74565 18.6156 7.39279C17.2727 5.20845 14.8484 3.75 12.0789 3.75C7.8945 3.75 4.50372 7.0777 4.431 11.1982L4.83138 10.8009C5.12542 10.5092 5.60029 10.511 5.89203 10.8051C6.18377 11.0991 6.18191 11.574 5.88787 11.8657L4.20805 13.5324C3.91565 13.8225 3.44398 13.8225 3.15157 13.5324L1.47176 11.8657C1.17772 11.574 1.17585 11.0991 1.46759 10.8051C1.75933 10.5111 2.2342 10.5092 2.52824 10.8009L2.93077 11.2003ZM19.7864 10.4666C20.0786 10.1778 20.5487 10.1778 20.8409 10.4666L22.5271 12.1333C22.8217 12.4244 22.8245 12.8993 22.5333 13.1939C22.2421 13.4885 21.7673 13.4913 21.4727 13.2001L21.0628 12.7949C20.9934 17.7604 16.9017 21.75 11.8825 21.75C8.56379 21.75 5.65381 20.007 4.0412 17.3939C3.82366 17.0414 3.93307 16.5793 4.28557 16.3618C4.63806 16.1442 5.10016 16.2536 5.31769 16.6061C6.6656 18.7903 9.09999 20.25 11.8825 20.25C16.0887 20.25 19.4922 16.9171 19.5625 12.7969L19.1546 13.2001C18.86 13.4913 18.3852 13.4885 18.094 13.1939C17.8028 12.8993 17.8056 12.4244 18.1002 12.1333L19.7864 10.4666Z" fill="currentColor"/>',
+} as const;
+
+type ReiconOutlineName = keyof typeof REICON_OUTLINE_PATHS;
+
+function reiconOutline(name: ReiconOutlineName): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
   svg.setAttribute("aria-hidden", "true");
-  const add = (name: "path" | "circle" | "rect", attributes: Record<string, string>): void => {
-    const element = document.createElementNS(namespace, name);
-    for (const [attribute, value] of Object.entries(attributes)) {
-      element.setAttribute(attribute, value);
-    }
-    svg.append(element);
-  };
-  if (icon === "locate") {
-    add("path", { d: "M4 12h16M12 4v16" });
-    add("circle", { cx: "12", cy: "12", r: "5" });
-  } else if (icon === "up") add("path", { d: "m7 14 5-5 5 5" });
-  else if (icon === "down") add("path", { d: "m7 10 5 5 5-5" });
-  else if (icon === "duplicate") {
-    add("rect", { x: "8", y: "8", width: "11", height: "11", rx: "1" });
-    add("path", { d: "M16 8V5H5v11h3" });
-  } else {
-    add("path", { d: "M3 12s3.5-5 9-5 9 5 9 5-3.5 5-9 5-9-5-9-5Z" });
-    add("circle", { cx: "12", cy: "12", r: "2" });
+  const parsed = new DOMParser().parseFromString(
+    `<svg xmlns="http://www.w3.org/2000/svg">${REICON_OUTLINE_PATHS[name]}</svg>`,
+    "image/svg+xml",
+  );
+  for (const child of [...parsed.documentElement.children]) {
+    svg.append(document.importNode(child, true));
   }
   return svg;
 }
 
-function structureIconButton(
+function outlineActionButton(
   label: string,
-  icon: StructureActionIcon,
-  actionKey: string,
-  action: (() => void) | null,
-  reason?: string,
+  action: () => void,
+  disabledReason?: string,
+  icon?: ReiconOutlineName,
 ): HTMLButtonElement {
-  const button = structureActionButton("", actionKey, action, reason);
-  button.classList.add("xyle-structure-icon-button");
-  button.setAttribute("aria-label", label);
-  button.title = action ? label : (reason ?? label);
-  button.append(structureActionIcon(icon));
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `xyle-outline-action${icon ? ` xyle-outline-action--${icon}` : ""}`;
+  if (icon) {
+    button.append(reiconOutline(icon));
+    button.setAttribute("aria-label", label);
+    button.title = disabledReason ?? label;
+  } else {
+    button.textContent = label;
+  }
+  if (disabledReason) {
+    button.disabled = true;
+    button.title = disabledReason;
+  } else {
+    button.addEventListener("click", action);
+  }
   return button;
+}
+
+function layoutOutcomePlan(
+  target: LayoutTargetDescriptor,
+  outcome: LayoutOutcome,
+): { preset: LayoutPreset; order: RegionOrder } {
+  if (outcome === "above-and-below") return { preset: "stacked", order: "original" };
+  const regions = regionElements(target);
+  if (!regions) throw new Error("Layout regions are unavailable");
+  const imageIsOriginalFirst = Boolean(
+    regions[0].tagName === "PICTURE" || regions[0].querySelector("img, picture"),
+  );
+  const imageFirst = imageIsOriginalFirst ? "original" : "swapped";
+  return {
+    preset: "two-column",
+    order:
+      outcome === "image-left" ? imageFirst : imageFirst === "original" ? "swapped" : "original",
+  };
+}
+
+function applyLayoutOutcome(
+  targetId: string,
+  outcome: LayoutOutcome,
+): { id: string; outcome: LayoutOutcome } {
+  const target = layoutTargetForId(targetId);
+  const section = currentNodeElement(targetId);
+  if (!target || !section) throw new Error("Layout target is unavailable");
+  const capability = layoutCapability(target);
+  const currentOrder = regionOrderInDom(target);
+  if (!capability.supported || !capability.current || !currentOrder) {
+    throw new Error(capability.reason ?? "Layout is unavailable");
+  }
+  const plan = layoutOutcomePlan(target, outcome);
+  if (!canSetRegionOrder(target, plan.order) && currentOrder !== plan.order) {
+    throw new Error("That layout outcome is unavailable");
+  }
+  const record: ChangeSetRecord = {
+    id: `changeset-${++state.changeSetSequence}`,
+    label: `Change ${sectionPreview(section)} layout`,
+    entries: [],
+    undone: false,
+  };
+  state.changeSets.set(record.id, record);
+  activeChangeSet = record;
+  try {
+    if (currentOrder !== plan.order) setRegionOrder(targetId, plan.order);
+    if (capability.current !== plan.preset) setLayoutPreset(targetId, plan.preset);
+  } finally {
+    activeChangeSet = null;
+  }
+  if (record.entries.length === 0) {
+    state.changeSets.delete(record.id);
+    return { id: targetId, outcome };
+  }
+  const history: HistoryEntry = {
+    label: record.label,
+    changeSetId: record.id,
+    assetPaths: [],
+    undo: () => {
+      for (const entry of [...record.entries].reverse()) entry.undo();
+      record.undone = true;
+    },
+    redo: () => {
+      for (const entry of record.entries) entry.redo();
+      record.undone = false;
+    },
+  };
+  record.history = history;
+  pushHistory(history);
+  return { id: targetId, outcome };
+}
+
+function renderOutlineLayoutChoices(inspector: HTMLElement, meta: NodeMeta): void {
+  const target = layoutTargetForId(meta.id);
+  if (!target) return;
+  const capability = layoutCapability(target);
+  if (!capability.supported) return;
+  const order = regionOrderInDom(target);
+  const group = document.createElement("section");
+  group.className = "xyle-outline-layout";
+  group.setAttribute("aria-labelledby", `xyle-outline-layout-${meta.id}`);
+  const heading = document.createElement("strong");
+  heading.id = `xyle-outline-layout-${meta.id}`;
+  heading.textContent = "Change layout";
+  const choices = document.createElement("div");
+  choices.className = "xyle-outline-layout-choices";
+  const addChoice = (
+    label: string,
+    outcome: LayoutOutcome,
+    preview: "vertical" | "text-left" | "image-left",
+  ): void => {
+    const plan = layoutOutcomePlan(target, outcome);
+    if (!canSetRegionOrder(target, plan.order) && order !== plan.order) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "xyle-outline-layout-choice";
+    button.dataset.preview = preview;
+    button.setAttribute(
+      "aria-pressed",
+      String(capability.current === plan.preset && order === plan.order),
+    );
+    const diagram = document.createElement("span");
+    diagram.className = "xyle-outline-layout-diagram";
+    diagram.setAttribute("aria-hidden", "true");
+    diagram.append(document.createElement("i"), document.createElement("i"));
+    const text = document.createElement("span");
+    text.textContent = label;
+    button.append(diagram, text);
+    button.addEventListener("click", () => {
+      try {
+        applyLayoutOutcome(meta.id, outcome);
+        renderStructurePanel(inspector.closest("#xyle-structure-drawer") as HTMLElement);
+      } catch (error) {
+        flash(error instanceof Error ? error.message : "That layout could not be applied.");
+      }
+    });
+    choices.append(button);
+  };
+  addChoice("Above and below", "above-and-below", "vertical");
+  addChoice("Text left", "text-left", "text-left");
+  addChoice("Image left", "image-left", "image-left");
+  group.append(heading, choices);
+  inspector.append(group);
+}
+
+function renderOutlineGroupInspector(
+  inspector: HTMLElement,
+  drawer: HTMLElement,
+  group: GroupDescriptor,
+): void {
+  const section = document.createElement("section");
+  section.className = "xyle-outline-group-inspector";
+  const heading = document.createElement("h3");
+  heading.textContent = "Repeating group";
+  const help = document.createElement("p");
+  help.textContent = "Move or duplicate the items in this group.";
+  const list = document.createElement("ul");
+  const capability = groupMoveCapability(group);
+  const order = groupItemsInDom(group.id);
+  const renderAndRestoreFocus = (itemId: string, action: string): void => {
+    renderStructurePanel(drawer);
+    const selector = `[data-outline-group-item="${CSS.escape(itemId)}"]`;
+    const requested = drawer.querySelector<HTMLButtonElement>(
+      `${selector}[data-outline-group-action="${action}"]`,
+    );
+    const target =
+      requested && !requested.disabled
+        ? requested
+        : [...drawer.querySelectorAll<HTMLButtonElement>(selector)].find(
+            (candidate) => !candidate.disabled,
+          );
+    target?.focus();
+  };
+  for (const item of order) {
+    const element = previewDoc()?.querySelector<HTMLElement>(
+      `[data-xyle-group-item="${CSS.escape(item.id)}"]`,
+    );
+    const row = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = displayNameForElement(element);
+    const actions = document.createElement("div");
+    const index = order.findIndex((candidate) => candidate.id === item.id);
+    const move = (
+      text: string,
+      action: "earlier" | "later",
+      target: GroupItemDescriptor | undefined,
+      position: "before" | "after",
+    ): HTMLButtonElement => {
+      const button = outlineActionButton(
+        text,
+        () => {
+          try {
+            moveGroupItem(group.id, item.id, target!.id, position);
+            renderAndRestoreFocus(item.id, action);
+          } catch (error) {
+            flash(error instanceof Error ? error.message : "That item could not be moved.");
+          }
+        },
+        capability.supported && target
+          ? undefined
+          : (capability.reason ?? (text === "Move earlier" ? "Already first" : "Already last")),
+        text === "Move earlier" ? "arrow-up" : "arrow-down",
+      );
+      button.dataset.outlineGroupItem = item.id;
+      button.dataset.outlineGroupAction = action;
+      return button;
+    };
+    const duplicate = outlineActionButton("Duplicate item", () => {
+      try {
+        duplicateGroupItem(group.id, item.id);
+        renderAndRestoreFocus(item.id, "duplicate");
+      } catch (error) {
+        flash(error instanceof Error ? error.message : "That item could not be duplicated.");
+      }
+    });
+    duplicate.dataset.outlineGroupItem = item.id;
+    duplicate.dataset.outlineGroupAction = "duplicate";
+    actions.append(
+      move("Move earlier", "earlier", order[index - 1], "before"),
+      move("Move later", "later", order[index + 1], "after"),
+      duplicate,
+    );
+    row.append(label, actions);
+    list.append(row);
+  }
+  section.append(heading, help, list);
+  inspector.append(section);
 }
 
 function renderStructurePanel(drawer: HTMLElement): void {
@@ -4281,227 +4548,433 @@ function renderStructurePanel(drawer: HTMLElement): void {
   const inspector = drawer.querySelector<HTMLElement>("[data-structure-inspector]");
   const doc = previewDoc();
   if (!list || !inspector || !doc || !state.current) return;
+  const previousScroll = list.scrollTop;
+  closeOpenOutlineMenu?.();
   list.replaceChildren();
   inspector.replaceChildren();
   const sectionMetadata = new Map(
     state.current.nodes.filter((node) => node.kind === "section").map((node) => [node.id, node]),
   );
-  const sections = [...doc.querySelectorAll<HTMLElement>("[data-xyle-node]")]
+  const liveSections = [...doc.querySelectorAll<HTMLElement>("section[data-xyle-node]")]
     .map((element) => {
-      const id = element.getAttribute("data-xyle-node");
+      const id = element.dataset.xyleNode;
       const meta = id ? sectionMetadata.get(id) : undefined;
-      return meta ? { element, meta } : null;
+      return meta ? { element, meta, deleted: false as const } : null;
     })
-    .filter((entry): entry is { element: HTMLElement; meta: NodeMeta } => entry !== null);
-  if (sections.length === 0) {
+    .filter(
+      (entry): entry is { element: HTMLElement; meta: NodeMeta; deleted: false } => entry !== null,
+    );
+  const entries: Array<
+    | { element: HTMLElement; meta: NodeMeta; deleted: false }
+    | { element: null; meta: NodeMeta; deleted: true }
+  > = [...liveSections];
+  for (const pending of state.ops) {
+    if (pending.pagePath !== state.current.pagePath || pending.op.type !== "deleteSection")
+      continue;
+    const meta = sectionMetadata.get(pending.op.nodeId);
+    if (!meta) continue;
+    entries.splice(
+      Math.min(deletedSectionPositions.get(meta.id) ?? entries.length, entries.length),
+      0,
+      { element: null, meta, deleted: true },
+    );
+  }
+  for (const record of deletedCreatedSections.values()) {
+    if (record.duplicate.pagePath !== state.current.pagePath) continue;
+    entries.splice(Math.min(record.position, entries.length), 0, {
+      element: null,
+      meta: record.meta,
+      deleted: true,
+    });
+  }
+  if (entries.length === 0) {
     const empty = document.createElement("p");
     empty.className = "xyle-empty-state";
-    empty.textContent = "No safe sections found on this page.";
+    empty.textContent = "No safe areas found on this page.";
     list.append(empty);
     return;
   }
 
-  const selected =
-    sections.find(({ meta }) => meta.id === structureSelectedId) ??
-    sections.find(({ meta }) => {
-      const target = layoutTargetForId(meta.id);
-      return target ? layoutCapability(target).supported : false;
-    }) ??
-    sections[0]!;
-  structureSelectedId = selected.meta.id;
+  if (!structureSelectedId || !entries.some(({ meta }) => meta.id === structureSelectedId)) {
+    structureSelectedId = entries[0]!.meta.id;
+  }
+  if (!outlineSelectedId) outlineSelectedId = structureSelectedId;
+  const tree = document.createElement("ul");
+  tree.className = "xyle-outline-tree";
+  tree.setAttribute("aria-label", "Page outline");
 
-  for (const [sectionIndex, { element, meta }] of sections.entries()) {
-    const sectionName = sectionPreview(element);
-    const row = document.createElement("article");
-    row.className = "xyle-structure-row";
-    row.dataset.sectionId = meta.id;
-    row.toggleAttribute("data-selected", meta.id === selected.meta.id);
-
-    const rowHeader = document.createElement("header");
-    rowHeader.className = "xyle-structure-row-header";
-    const select = document.createElement("button");
-    select.type = "button";
-    select.className = "xyle-structure-select";
-    select.dataset.selectSection = meta.id;
-    select.setAttribute("aria-pressed", String(meta.id === selected.meta.id));
-    select.setAttribute("aria-label", `Select ${sectionName}`);
-    const position = document.createElement("span");
-    position.className = "xyle-structure-position";
-    position.textContent = String(sectionIndex + 1).padStart(2, "0");
-    const title = document.createElement("span");
-    title.className = "xyle-structure-title";
-    title.textContent = sectionName;
-    select.append(position, title);
-    select.addEventListener("click", () => {
-      structureSelectedId = meta.id;
-      element.scrollIntoView({ block: "center", inline: "nearest" });
+  for (const entry of entries) {
+    const { element, meta, deleted } = entry;
+    const name = element
+      ? sectionPreview(element)
+      : (deletedSectionLabels.get(meta.id) ??
+        deletedCreatedSections.get(meta.id)?.label ??
+        "Untitled area");
+    const selected = outlineSelectedId === meta.id || structureSelectedId === meta.id;
+    const item = document.createElement("li");
+    item.className = "xyle-outline-node";
+    item.dataset.sectionId = meta.id;
+    item.toggleAttribute("data-selected", selected);
+    item.toggleAttribute("data-hidden", Boolean(element?.hidden));
+    item.toggleAttribute("data-deleted", deleted);
+    const row = document.createElement("div");
+    row.className = "xyle-outline-row";
+    row.addEventListener("dragover", (event) => {
+      if (
+        !draggedOutlineSectionId ||
+        deleted ||
+        draggedOutlineSectionId === meta.id ||
+        !canMoveSectionTo(draggedOutlineSectionId, meta.id)
+      ) {
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+        delete row.dataset.drop;
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      const bounds = row.getBoundingClientRect();
+      row.dataset.drop = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+    });
+    row.addEventListener("dragleave", () => delete row.dataset.drop);
+    row.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const sourceId = draggedOutlineSectionId;
+      const before = row.dataset.drop !== "after";
+      delete row.dataset.drop;
+      if (!sourceId || deleted || sourceId === meta.id || !canMoveSectionTo(sourceId, meta.id)) {
+        flash("That area cannot be moved to this position.");
+        return;
+      }
+      try {
+        moveSection(sourceId, meta.id, before);
+      } catch (error) {
+        flash(error instanceof Error ? error.message : "That area could not be moved.");
+        return;
+      }
+      outlineSelectedId = sourceId;
+      structureSelectedId = sourceId;
       renderStructurePanel(drawer);
       drawer
-        .querySelector<HTMLButtonElement>(`[data-select-section="${CSS.escape(meta.id)}"]`)
+        .querySelector<HTMLButtonElement>(`[data-outline-select="${CSS.escape(sourceId)}"]`)
         ?.focus();
-      scheduleOverlayRefresh();
     });
-    rowHeader.append(select);
-    if (element.hidden) {
+
+    const children = element ? outlineChildren(element) : [];
+    const groups = deleted ? [] : outlineGroups(meta.id);
+    const expanded = outlineExpandedIds.has(meta.id);
+    if (children.length + groups.length > 0) {
+      const disclosure = document.createElement("button");
+      disclosure.type = "button";
+      disclosure.className = "xyle-outline-disclosure";
+      disclosure.append(reiconOutline(expanded ? "chevron-down" : "chevron-right"));
+      disclosure.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} ${name}`);
+      disclosure.setAttribute("aria-expanded", String(expanded));
+      disclosure.addEventListener("click", () => {
+        if (expanded) outlineExpandedIds.delete(meta.id);
+        else outlineExpandedIds.add(meta.id);
+        renderStructurePanel(drawer);
+        drawer
+          .querySelector<HTMLButtonElement>(
+            `.xyle-outline-node[data-section-id="${CSS.escape(meta.id)}"] > .xyle-outline-row > .xyle-outline-disclosure`,
+          )
+          ?.focus();
+      });
+      row.append(disclosure);
+    } else {
+      const disclosureSpacer = document.createElement("span");
+      disclosureSpacer.className = "xyle-outline-disclosure xyle-outline-disclosure--spacer";
+      disclosureSpacer.setAttribute("aria-hidden", "true");
+      row.append(disclosureSpacer);
+    }
+
+    if (!deleted) {
+      const drag = document.createElement("button");
+      drag.type = "button";
+      drag.className = "xyle-outline-drag";
+      drag.append(reiconOutline("reorder"));
+      const dragUnavailable = state.ops.some(
+        (pending) =>
+          pending.pagePath === state.current?.pagePath &&
+          ((pending.op.type === "duplicateSection" && pending.op.createdId === meta.id) ||
+            (pending.op.type === "moveSection" && pending.op.nodeId !== meta.id)),
+      );
+      drag.draggable = !dragUnavailable;
+      drag.disabled = dragUnavailable;
+      drag.setAttribute("aria-label", `Drag ${name}`);
+      if (dragUnavailable)
+        drag.title = "Publish the pending structural change before moving this area";
+      drag.addEventListener("dragstart", (event) => {
+        draggedOutlineSectionId = meta.id;
+        event.dataTransfer?.setData("text/plain", meta.id);
+      });
+      drag.addEventListener("dragend", () => {
+        draggedOutlineSectionId = null;
+        for (const candidate of tree.querySelectorAll<HTMLElement>("[data-drop]")) {
+          delete candidate.dataset.drop;
+        }
+      });
+      row.append(drag);
+    }
+
+    if (deleted) {
+      const label = document.createElement("span");
+      label.className = "xyle-outline-select xyle-outline-select--deleted";
+      label.textContent = name;
+      row.append(label);
+    } else {
+      const select = document.createElement("button");
+      select.type = "button";
+      select.className = "xyle-outline-select";
+      select.dataset.outlineSelect = meta.id;
+      select.setAttribute("aria-current", String(selected));
+      select.textContent = name;
+      select.addEventListener("click", () => selectOutlineTarget(meta.id, true));
+      row.append(select);
+    }
+    if (deleted || element?.hidden) {
       const status = document.createElement("span");
-      status.className = "xyle-structure-status";
-      status.textContent = "Hidden";
-      rowHeader.append(status);
+      status.className = "xyle-outline-status";
+      status.textContent = deleted ? "Deleted" : "Hidden";
+      row.append(status);
     }
-    row.append(rowHeader);
 
-    const actions = document.createElement("div");
-    actions.className = "xyle-structure-actions";
-    actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", `${sectionName} section actions`);
-    const parent = element.parentElement;
-    const siblings = parent ? sectionChildren(parent) : [];
-    const index = siblings.indexOf(element);
-    const structurallySafe = Boolean(parent) && siblings.length === parent?.children.length;
-    const structuralReason = "Section actions require supported sibling sections";
-    const previous = siblings[index - 1];
-    const next = siblings[index + 1];
-    const previousId = previous?.getAttribute("data-xyle-node");
-    const nextId = next?.getAttribute("data-xyle-node");
-    const locate = structureIconButton(
-      `Show ${sectionName} in preview`,
-      "locate",
-      `${meta.id}:locate`,
-      () => {
-        if (drawer.dataset.xyleDrawerMode === "modal") closeStructurePanel(false);
-        element.scrollIntoView({ block: "center", inline: "nearest" });
-        focusPreviewElement(element);
-        scheduleOverlayRefresh();
-      },
-    );
-    locate.classList.add("xyle-structure-locate");
-    actions.append(
-      locate,
-      structureIconButton(
-        "Up",
-        "up",
-        `${meta.id}:up`,
-        structurallySafe && previousId ? () => moveSection(meta.id, previousId, true) : null,
-        previous ? structuralReason : "Already first",
-      ),
-      structureIconButton(
-        "Down",
-        "down",
-        `${meta.id}:down`,
-        structurallySafe && nextId ? () => moveSection(meta.id, nextId, false) : null,
-        next ? structuralReason : "Already last",
-      ),
-      structureIconButton(
-        element.hidden ? "Show" : "Hide",
-        element.hidden ? "show" : "hide",
-        `${meta.id}:visibility`,
-        () => updateSectionVisibility(meta.id, Boolean(element.hidden)),
-      ),
-    );
-    const createdSection = state.ops.some(
-      ({ pagePath, op }) =>
-        pagePath === state.current?.pagePath &&
-        op.type === "duplicateSection" &&
-        op.createdId === meta.id,
-    );
-    actions.append(
-      structureIconButton(
-        "Duplicate",
-        "duplicate",
-        `${meta.id}:duplicate`,
-        structurallySafe && !createdSection ? () => duplicateSection(meta.id) : null,
-        createdSection ? "Publish this section before duplicating it again" : structuralReason,
-      ),
-    );
-    row.append(actions);
-    list.append(row);
-  }
-
-  const selectedName = sectionPreview(selected.element);
-  const inspectorHeader = document.createElement("header");
-  const inspectorLabel = document.createElement("span");
-  inspectorLabel.textContent = "Selected section";
-  const inspectorTitle = document.createElement("strong");
-  inspectorTitle.textContent = selectedName;
-  inspectorHeader.append(inspectorLabel, inspectorTitle);
-  inspector.append(inspectorHeader);
-
-  const selectedRow = list.querySelector<HTMLElement>(".xyle-structure-row[data-selected]");
-  const unavailableButtons = [
-    ...(selectedRow?.querySelectorAll<HTMLButtonElement>("[data-unavailable-reason]") ?? []),
-  ];
-  const unavailableReasons = [
-    ...new Set(unavailableButtons.map((button) => button.dataset.unavailableReason)),
-  ].filter((reason): reason is string => Boolean(reason));
-  if (unavailableReasons.length > 0) {
-    const unavailable = document.createElement("div");
-    unavailable.className = "xyle-structure-unavailable";
-    const unavailableLabel = document.createElement("strong");
-    unavailableLabel.textContent = "Unavailable";
-    unavailable.append(unavailableLabel);
-    for (const [reasonIndex, reason] of unavailableReasons.entries()) {
-      const id = `xyle-structure-unavailable-${selected.meta.id}-${reasonIndex}`;
-      const message = document.createElement("p");
-      message.id = id;
-      message.textContent = reason;
-      unavailable.append(message);
-      for (const button of unavailableButtons) {
-        if (button.dataset.unavailableReason === reason)
-          button.setAttribute("aria-describedby", id);
+    if (deleted) {
+      const restoreIssue =
+        deletedCreatedSections.has(meta.id) &&
+        state.ops.some(
+          (pending) =>
+            pending.pagePath === state.current?.pagePath && pending.op.type === "duplicateSection",
+        )
+          ? "Delete or publish the pending duplication before restoring this area"
+          : undefined;
+      row.append(
+        outlineActionButton("Restore", () => restoreDeletedSection(meta.id), restoreIssue),
+      );
+    } else if (element) {
+      const parent = element.parentElement;
+      const siblings = parent ? sectionChildren(parent) : [];
+      const index = siblings.indexOf(element);
+      const safe = Boolean(parent) && siblings.length === parent?.children.length;
+      const createdSection = state.ops.some(
+        (pending) =>
+          pending.pagePath === state.current?.pagePath &&
+          pending.op.type === "duplicateSection" &&
+          pending.op.createdId === meta.id,
+      );
+      const otherPendingMove = state.ops.some(
+        (pending) =>
+          pending.pagePath === state.current?.pagePath &&
+          pending.op.type === "moveSection" &&
+          pending.op.nodeId !== meta.id,
+      );
+      const moveIssue = createdSection
+        ? "Publish this duplicated area before moving it"
+        : otherPendingMove
+          ? "Publish the pending area move before moving another area"
+          : null;
+      if (selected) {
+        row.append(
+          outlineActionButton(
+            "Move up",
+            () => moveSection(meta.id, siblings[index - 1]!.dataset.xyleNode!, true),
+            safe && index > 0 && !moveIssue
+              ? undefined
+              : (moveIssue ?? (index === 0 ? "Already first" : "Move is unavailable")),
+            "arrow-up",
+          ),
+          outlineActionButton(
+            "Move down",
+            () => moveSection(meta.id, siblings[index + 1]!.dataset.xyleNode!, false),
+            safe && index >= 0 && index < siblings.length - 1 && !moveIssue
+              ? undefined
+              : (moveIssue ??
+                  (index === siblings.length - 1 ? "Already last" : "Move is unavailable")),
+            "arrow-down",
+          ),
+        );
       }
+      const menu = document.createElement("div");
+      menu.className = "xyle-outline-menu";
+      const menuButton = document.createElement("button");
+      menuButton.type = "button";
+      menuButton.className = "xyle-outline-menu-trigger";
+      menuButton.append(reiconOutline("more"));
+      menuButton.setAttribute("aria-label", `More actions for ${name}`);
+      menuButton.setAttribute("aria-haspopup", "menu");
+      menuButton.setAttribute("aria-expanded", "false");
+      const commands = document.createElement("div");
+      commands.id = `xyle-outline-menu-${meta.id}`;
+      commands.hidden = true;
+      commands.setAttribute("role", "menu");
+      commands.setAttribute("aria-label", `Actions for ${name}`);
+      menuButton.setAttribute("aria-controls", commands.id);
+      const otherPendingDuplicate = state.ops.some(
+        (pending) =>
+          pending.pagePath === state.current?.pagePath && pending.op.type === "duplicateSection",
+      );
+      commands.append(
+        outlineActionButton(
+          "Duplicate",
+          () => {
+            const created = duplicateSection(meta.id);
+            outlineSelectedId = created.id;
+            structureSelectedId = created.id;
+            renderStructurePanel(drawer);
+          },
+          createdSection
+            ? "Publish this area before duplicating it again"
+            : otherPendingDuplicate
+              ? "Publish the pending duplication before duplicating another area"
+              : safe
+                ? undefined
+                : "Duplication is unavailable",
+        ),
+        outlineActionButton(element.hidden ? "Show" : "Hide", () => {
+          updateSectionVisibility(meta.id, Boolean(element.hidden));
+          renderStructurePanel(drawer);
+        }),
+      );
+      const issue = sectionDeleteIssue(element);
+      commands.append(
+        outlineActionButton("Delete", () => deleteSection(meta.id), issue ?? undefined),
+      );
+      for (const command of commands.querySelectorAll<HTMLButtonElement>("button")) {
+        command.setAttribute("role", "menuitem");
+      }
+      let positionListeners: AbortController | null = null;
+      const closeMenu = (restoreFocus = false): void => {
+        positionListeners?.abort();
+        positionListeners = null;
+        commands.hidden = true;
+        menuButton.setAttribute("aria-expanded", "false");
+        if (closeOpenOutlineMenu === closeMenu) closeOpenOutlineMenu = null;
+        if (restoreFocus) menuButton.focus();
+      };
+      menuButton.addEventListener("click", () => {
+        const opening = commands.hidden;
+        closeOpenOutlineMenu?.();
+        commands.hidden = !opening;
+        menuButton.setAttribute("aria-expanded", String(opening));
+        if (opening) {
+          const triggerBounds = menuButton.getBoundingClientRect();
+          const menuBounds = commands.getBoundingClientRect();
+          const left = Math.max(
+            8,
+            Math.min(
+              triggerBounds.right - menuBounds.width,
+              window.innerWidth - menuBounds.width - 8,
+            ),
+          );
+          const below = triggerBounds.bottom + 4;
+          const top =
+            below + menuBounds.height <= window.innerHeight - 8
+              ? below
+              : Math.max(8, triggerBounds.top - menuBounds.height - 4);
+          commands.style.left = `${left}px`;
+          commands.style.top = `${top}px`;
+          closeOpenOutlineMenu = closeMenu;
+          positionListeners = new AbortController();
+          list.addEventListener("scroll", () => closeMenu(), {
+            once: true,
+            signal: positionListeners.signal,
+          });
+          window.addEventListener("resize", () => closeMenu(), {
+            once: true,
+            signal: positionListeners.signal,
+          });
+          commands.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+        }
+      });
+      commands.addEventListener("keydown", (event) => {
+        const items = [...commands.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+        const current = items.indexOf(document.activeElement as HTMLButtonElement);
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeMenu(true);
+          return;
+        }
+        const direction = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+        if (!direction || items.length === 0) return;
+        event.preventDefault();
+        items[(current + direction + items.length) % items.length]?.focus();
+      });
+      menu.addEventListener("focusout", () => {
+        window.setTimeout(() => {
+          if (!menu.contains(document.activeElement)) closeMenu();
+        }, 0);
+      });
+      menu.append(menuButton, commands);
+      row.append(menu);
     }
-    inspector.append(unavailable);
-  }
+    item.append(row);
 
-  const layoutTarget = layoutTargetForId(selected.meta.id);
-  if (!layoutTarget) {
-    const message = document.createElement("p");
-    message.className = "xyle-structure-reason";
-    message.textContent = "This section does not have a supported two-region layout.";
-    inspector.append(message);
-    return;
+    if (!deleted && element && children.length + groups.length > 0) {
+      const childList = document.createElement("ul");
+      childList.className = "xyle-outline-children";
+      childList.hidden = !expanded;
+      for (const child of children) {
+        const childItem = document.createElement("li");
+        const childButton = document.createElement("button");
+        childButton.type = "button";
+        childButton.className = "xyle-outline-child";
+        const presentation = outlineContentPresentation(child.meta, child.element);
+        const contentIcon = reiconOutline(presentation.icon);
+        contentIcon.classList.add("xyle-outline-content-icon");
+        const contentLabel = document.createElement("span");
+        contentLabel.textContent = presentation.label;
+        childButton.append(contentIcon, contentLabel);
+        childButton.setAttribute("aria-label", `${presentation.type}: ${presentation.label}`);
+        childButton.toggleAttribute("data-selected", outlineSelectedId === child.meta.id);
+        childButton.setAttribute("aria-current", String(outlineSelectedId === child.meta.id));
+        childButton.addEventListener("click", () => selectOutlineTarget(child.meta.id, true));
+        childItem.append(childButton);
+        childList.append(childItem);
+      }
+      for (const group of groups) {
+        const groupItem = document.createElement("li");
+        const summary = document.createElement("button");
+        summary.type = "button";
+        summary.className = "xyle-outline-child xyle-outline-group-summary";
+        summary.append(reiconOutline("list"));
+        const groupLabel = document.createElement("span");
+        groupLabel.textContent = `${group.items.length} ${group.items.length === 1 ? "item" : "items"}`;
+        summary.append(groupLabel);
+        summary.setAttribute(
+          "aria-label",
+          `Repeating group: ${group.items.length} ${group.items.length === 1 ? "item" : "items"}`,
+        );
+        summary.toggleAttribute("data-selected", outlineSelectedGroupId === group.id);
+        summary.setAttribute("aria-current", String(outlineSelectedGroupId === group.id));
+        summary.addEventListener("click", () => {
+          outlineSelectedGroupId = group.id;
+          outlineSelectedId = group.sectionId;
+          structureSelectedId = group.sectionId;
+          renderStructurePanel(drawer);
+          applyOutlineSelectionHighlight();
+        });
+        groupItem.append(summary);
+        childList.append(groupItem);
+      }
+      item.append(childList);
+    }
+    tree.append(item);
   }
-  const capability = layoutCapability(layoutTarget);
-  const layout = document.createElement("div");
-  layout.className = "xyle-structure-layout";
-  layout.setAttribute("role", "group");
-  layout.setAttribute("aria-label", `${selectedName} layout`);
-  const layoutLabel = document.createElement("strong");
-  layoutLabel.textContent = "Layout";
-  layout.append(layoutLabel);
-  for (const [preset, label] of [
-    ["stacked", "Stack"],
-    ["two-column", "Split"],
-  ] as const) {
-    const button = structureActionButton(
-      label,
-      `${selected.meta.id}:layout:${preset}`,
-      capability.supported ? () => setLayoutPreset(selected.meta.id, preset) : null,
-      capability.reason,
-    );
-    button.setAttribute("aria-pressed", String(capability.current === preset));
-    layout.append(button);
-  }
-  const currentOrder = regionOrderInDom(layoutTarget);
-  const nextOrder: RegionOrder = currentOrder === "swapped" ? "original" : "swapped";
-  const orderSupported = capability.supported && canSetRegionOrder(layoutTarget, nextOrder);
-  layout.append(
-    structureActionButton(
-      currentOrder === "swapped" ? "Restore sides" : "Swap sides",
-      `${selected.meta.id}:layout:order`,
-      orderSupported ? () => setRegionOrder(selected.meta.id, nextOrder) : null,
-      capability.reason ?? "Region order is unavailable",
-    ),
+  list.append(tree);
+  list.scrollTop = previousScroll;
+
+  const selectedGroup = state.current.groups.find(
+    (candidate) => candidate.id === outlineSelectedGroupId,
   );
-  inspector.append(layout);
-  if (!capability.supported && capability.reason) {
-    const message = document.createElement("p");
-    message.className = "xyle-structure-reason";
-    message.textContent = capability.reason;
-    inspector.append(message);
+  if (selectedGroup) {
+    renderOutlineGroupInspector(inspector, drawer, selectedGroup);
+  } else {
+    const selectedEntry = entries.find(({ meta }) => meta.id === structureSelectedId);
+    if (selectedEntry?.element && !selectedEntry.deleted) {
+      renderOutlineLayoutChoices(inspector, selectedEntry.meta);
+    }
   }
+  applyOutlineSelectionHighlight();
 }
-
 function refreshStructurePanelIfOpen(): void {
   const drawer = document.getElementById("xyle-structure-drawer");
   if (drawer) renderStructurePanel(drawer);
@@ -4527,9 +5000,9 @@ function openStructurePanel(): void {
     <strong id="xyle-structure-title"><span>Outline</span></strong>
     <button class="xyle-icon-button" type="button" data-close aria-label="Close outline">×</button>
   </header>
-  <p class="xyle-media-help">Choose a section, then adjust its position, visibility, or layout.</p>
+  <p class="xyle-media-help">Find page content, change its order, or choose actions for a larger area.</p>
   <div class="xyle-structure-list" data-structure-list></div>
-  <section class="xyle-structure-inspector" data-structure-inspector aria-label="Selected section controls"></section>`;
+  <section class="xyle-structure-inspector" data-structure-inspector aria-label="Selected area controls"></section>`;
   const closeButton = drawer.querySelector<HTMLButtonElement>("[data-close]");
   if (!closeButton) return;
   closeButton.addEventListener("click", () => closeStructurePanel());
@@ -4540,8 +5013,16 @@ function openStructurePanel(): void {
 }
 
 function sectionPreview(element: HTMLElement): string {
-  const heading = element.querySelector("h1,h2,h3,h4,h5,h6");
-  return heading?.textContent?.trim() || element.getAttribute("aria-label") || "Section";
+  const normalize = (value: string | null | undefined): string | null => {
+    const text = value?.replace(/\s+/g, " ").trim();
+    return text ? text.slice(0, 80) : null;
+  };
+  const heading = normalize(element.querySelector("h1,h2,h3,h4,h5,h6")?.textContent);
+  if (heading) return heading;
+  const text = normalize(element.querySelector("p,blockquote,figcaption")?.textContent);
+  if (text) return text;
+  const image = normalize(element.querySelector("img[alt]")?.getAttribute("alt"));
+  return image || normalize(element.getAttribute("aria-label")) || "Untitled area";
 }
 
 let mediaManagementUnavailable = false;
@@ -4843,7 +5324,7 @@ function cleanupUnreachableAssets(includeHistory = true): void {
 
 function operationMatchesAuthoredBaseline(pagePath: string, op: Op): boolean {
   if (op.type === "setBlockFormat") return op.targets.length === 0;
-  if (op.type === "replaceTextBlock") return false;
+  if (op.type === "replaceTextBlock" || op.type === "deleteSection") return false;
   if (isRichContentOp(op)) {
     const region =
       regionForNode(pagePath, richNodeIds(op)[0]!) ?? ensureRichContentRegion(pagePath, op);
@@ -5074,6 +5555,7 @@ function stripPreviewInstrumentation(
       GENERATED_CLASS_WAS_PRESENT,
       "data-xyle-generated-aria-description",
       "data-xyle-generated-aria-keyshortcuts",
+      "data-xyle-outline-selected",
       "data-xyle-keyboard-target",
       "data-xyle-group",
       "data-xyle-group-item",
@@ -5469,8 +5951,220 @@ function updateSectionVisibility(
   const before = previous?.op.type === "sectionVisibility" ? previous.op.before : !element.hidden;
   const operation: Op = { type: "sectionVisibility", nodeId, visible, before };
   applyOpToDom(current.pagePath, operation);
-  applyOp(current.pagePath, operation, visible ? "Show section" : "Hide section");
+  applyOp(current.pagePath, operation, visible ? "Show area" : "Hide area");
   return { id: nodeId, visible };
+}
+
+function sectionDeleteIssue(section: HTMLElement): string | null {
+  const parent = section.parentElement;
+  if (!parent || sectionChildren(parent).length !== parent.children.length) {
+    return "This area cannot be deleted because its parent contains unsupported content.";
+  }
+  const ids = new Set(
+    [section, ...section.querySelectorAll<HTMLElement>("[id]")]
+      .map((element) => element.id)
+      .filter(Boolean),
+  );
+  if (ids.size === 0) return null;
+  for (const element of section.ownerDocument.querySelectorAll<HTMLElement>("*")) {
+    if (section.contains(element)) continue;
+    for (const attribute of [...element.attributes]) {
+      const name = attribute.name.toLowerCase();
+      const referenced =
+        name === "href" && attribute.value.startsWith("#")
+          ? [attribute.value.slice(1)]
+          : STRUCTURAL_ID_REFERENCE_ATTRIBUTES.has(name)
+            ? attribute.value.split(/\s+/).filter(Boolean)
+            : [];
+      if (referenced.some((id) => ids.has(id))) {
+        return `This area cannot be deleted because ${name} refers to its content.`;
+      }
+      if (
+        name !== "id" &&
+        name !== "href" &&
+        !STRUCTURAL_ID_REFERENCE_ATTRIBUTES.has(name) &&
+        [...ids].some((id) => attribute.value.includes(`#${id}`))
+      ) {
+        return `This area cannot be deleted because ${name} contains an unsupported local reference.`;
+      }
+    }
+  }
+  return null;
+}
+
+function setCreatedSectionDeleted(record: DeletedCreatedSectionRecord, deleted: boolean): void {
+  const createdIds = new Set([
+    record.duplicate.op.createdId,
+    ...Object.values(record.duplicate.op.nodeMap),
+  ]);
+  if (deleted) {
+    for (const entry of [record.duplicate, ...record.dependents]) {
+      removeOpsFor(entry.pagePath, opKey(entry.op));
+    }
+    revertOpInDom(record.duplicate.pagePath, record.duplicate.op);
+    deletedCreatedSections.set(record.duplicate.op.createdId, record);
+  } else {
+    deletedCreatedSections.delete(record.duplicate.op.createdId);
+    if (!state.ops.some((entry) => entry === record.duplicate)) state.ops.push(record.duplicate);
+    applyOpToDom(record.duplicate.pagePath, record.duplicate.op);
+    for (const entry of record.dependents) {
+      if (!state.ops.some((active) => active === entry)) state.ops.push(entry);
+      if (operationNodeIds(entry.op).some((id) => createdIds.has(id.split("#")[0]!))) {
+        applyOpToDom(entry.pagePath, entry.op);
+      }
+    }
+  }
+  structureSelectedId = record.duplicate.op.createdId;
+  outlineSelectedId = record.duplicate.op.createdId;
+  updateDirtyUi();
+  refreshStructurePanelIfOpen();
+}
+
+function restoreDeletedCreatedSection(nodeId: string): void {
+  const record = deletedCreatedSections.get(nodeId);
+  if (!record) throw new Error(`Unknown deleted Xyle area ${nodeId}`);
+  if (
+    state.ops.some(
+      (entry) =>
+        entry.pagePath === record.duplicate.pagePath && entry.op.type === "duplicateSection",
+    )
+  ) {
+    throw new Error("Delete or publish the pending duplication before restoring this area");
+  }
+  setCreatedSectionDeleted(record, false);
+  pushHistory({
+    label: "Restore duplicated area",
+    assetPaths: [],
+    undo: () => setCreatedSectionDeleted(record, true),
+    redo: () => setCreatedSectionDeleted(record, false),
+  });
+}
+
+function deleteSection(nodeId: string): { id: string; deleted: boolean } {
+  const current = state.current;
+  const element = currentNodeElement(nodeId);
+  if (!current || !element || !sectionMeta(nodeId)) {
+    throw new Error(`Unknown Xyle section ${nodeId}`);
+  }
+  const createdIndex = state.ops.findIndex(
+    (entry) =>
+      entry.pagePath === current.pagePath &&
+      entry.op.type === "duplicateSection" &&
+      entry.op.createdId === nodeId,
+  );
+  if (createdIndex >= 0) {
+    const duplicate = state.ops[createdIndex] as PendingOp & {
+      op: Extract<Op, { type: "duplicateSection" }>;
+    };
+    const meta = current.nodes.find((candidate) => candidate.id === nodeId);
+    if (!meta) throw new Error(`Unknown duplicated Xyle area ${nodeId}`);
+    const createdIds = new Set([duplicate.op.createdId, ...Object.values(duplicate.op.nodeMap)]);
+    const dependents = state.ops.filter(
+      (entry) =>
+        entry !== duplicate &&
+        entry.pagePath === current.pagePath &&
+        entry.op.type !== "duplicateSection" &&
+        entry.op.type !== "duplicateGroupItem" &&
+        operationNodeIds(entry.op).some((id) => createdIds.has(id.split("#")[0]!)),
+    );
+    const record: DeletedCreatedSectionRecord = {
+      duplicate,
+      dependents,
+      meta: structuredClone(meta),
+      label: sectionPreview(element),
+      position: element.parentElement ? sectionChildren(element.parentElement).indexOf(element) : 0,
+    };
+    setCreatedSectionDeleted(record, true);
+    pushHistory({
+      label: "Delete duplicated area",
+      assetPaths: [],
+      undo: () => setCreatedSectionDeleted(record, false),
+      redo: () => setCreatedSectionDeleted(record, true),
+    });
+    return { id: nodeId, deleted: true };
+  }
+  const issue = sectionDeleteIssue(element);
+  if (issue) throw new Error(issue);
+  const authoredSection = sectionMeta(nodeId);
+  const sectionStart = authoredSection?.elementStart;
+  const sectionEnd = authoredSection?.elementEnd;
+  if (sectionStart === undefined || sectionEnd === undefined) {
+    throw new Error("Section source mapping is unavailable");
+  }
+  const descendantNodeIds = current.nodes
+    .filter(
+      (candidate) =>
+        candidate.elementStart !== undefined &&
+        candidate.elementStart >= sectionStart &&
+        (candidate.elementEnd ?? candidate.sourceEnd ?? candidate.elementStart) <= sectionEnd,
+    )
+    .map((candidate) => candidate.id);
+  const operation: DeleteSectionOperation = {
+    type: "deleteSection",
+    nodeId,
+    descendantNodeIds: [...new Set(descendantNodeIds)],
+    sequence: allocateStructuralSequence(),
+  };
+  deletedSectionLabels.set(nodeId, sectionPreview(element));
+  deletedSectionPositions.set(
+    nodeId,
+    element.parentElement ? sectionChildren(element.parentElement).indexOf(element) : 0,
+  );
+  applyOpToDom(current.pagePath, operation);
+  applyOp(current.pagePath, operation, "Delete area");
+  structureSelectedId = nodeId;
+  refreshStructurePanelIfOpen();
+  return { id: nodeId, deleted: true };
+}
+
+function restoreDeletedSection(nodeId: string): void {
+  if (deletedCreatedSections.has(nodeId)) {
+    restoreDeletedCreatedSection(nodeId);
+    return;
+  }
+  const index = state.ops.findIndex(
+    (entry) =>
+      entry.pagePath === state.current?.pagePath &&
+      entry.op.type === "deleteSection" &&
+      entry.op.nodeId === nodeId,
+  );
+  if (index < 0) return;
+  revertPendingOperation(index);
+  structureSelectedId = nodeId;
+  refreshStructurePanelIfOpen();
+}
+
+function canMoveSectionTo(nodeId: string, targetId: string): boolean {
+  const current = state.current;
+  const source = currentNodeElement(nodeId);
+  const target = currentNodeElement(targetId);
+  const parent = source?.parentElement;
+  const createdSource = current?.pagePath
+    ? state.ops.some(
+        (entry) =>
+          entry.pagePath === current.pagePath &&
+          entry.op.type === "duplicateSection" &&
+          entry.op.createdId === nodeId,
+      )
+    : false;
+  const otherPendingMove = current?.pagePath
+    ? state.ops.some(
+        (entry) =>
+          entry.pagePath === current.pagePath &&
+          entry.op.type === "moveSection" &&
+          entry.op.nodeId !== nodeId,
+      )
+    : false;
+  return Boolean(
+    source &&
+      target &&
+      source !== target &&
+      parent &&
+      !createdSource &&
+      !otherPendingMove &&
+      target.parentElement === parent &&
+      sectionChildren(parent).length === parent.children.length,
+  );
 }
 
 function moveSection(
@@ -5481,6 +6175,22 @@ function moveSection(
   const current = state.current;
   const source = currentNodeElement(nodeId);
   const target = currentNodeElement(targetId);
+  const createdSource = current
+    ? state.ops.some(
+        (entry) =>
+          entry.pagePath === current.pagePath &&
+          entry.op.type === "duplicateSection" &&
+          entry.op.createdId === nodeId,
+      )
+    : false;
+  const otherPendingMove = current
+    ? state.ops.some(
+        (entry) =>
+          entry.pagePath === current.pagePath &&
+          entry.op.type === "moveSection" &&
+          entry.op.nodeId !== nodeId,
+      )
+    : false;
   if (
     !current ||
     !source ||
@@ -5488,7 +6198,9 @@ function moveSection(
     !sectionMeta(nodeId) ||
     !sectionMeta(targetId) ||
     source === target ||
-    source.parentElement !== target.parentElement
+    source.parentElement !== target.parentElement ||
+    createdSource ||
+    otherPendingMove
   ) {
     throw new Error("Sections must be safe siblings in one parent");
   }
@@ -5516,8 +6228,25 @@ function moveSection(
     sequence: allocateStructuralSequence(),
   };
   applyOpToDom(current.pagePath, operation);
-  applyOp(current.pagePath, operation, before ? "Move section before" : "Move section after");
+  applyOp(current.pagePath, operation, before ? "Move area before" : "Move area after");
   return { id: nodeId, targetId, before };
+}
+
+function assertNoUnsupportedLocalIdReferences(
+  root: HTMLElement,
+  sourceIds: ReadonlySet<string>,
+): void {
+  for (const element of [root, ...root.querySelectorAll<HTMLElement>("*")]) {
+    for (const attribute of [...element.attributes]) {
+      const name = attribute.name.toLowerCase();
+      if (name === "id" || name === "href" || STRUCTURAL_ID_REFERENCE_ATTRIBUTES.has(name)) {
+        continue;
+      }
+      if ([...sourceIds].some((id) => attribute.value.includes(`#${id}`))) {
+        throw new Error(`Unsupported local id reference in ${name}`);
+      }
+    }
+  }
 }
 
 function duplicateSection(nodeId: string): { id: string; sourceId: string } {
@@ -5527,6 +6256,13 @@ function duplicateSection(nodeId: string): { id: string; sourceId: string } {
     throw new Error("Only safe sections can be duplicated");
   if (state.ops.some(({ op }) => op.type === "duplicateSection" && op.createdId === nodeId))
     throw new Error("Created sections cannot be duplicated yet");
+  if (
+    state.ops.some(
+      (entry) => entry.pagePath === current.pagePath && entry.op.type === "duplicateSection",
+    )
+  ) {
+    throw new Error("Publish the pending duplication before duplicating another area");
+  }
   if (source.querySelector("section, script, form, iframe, video, canvas"))
     throw new Error("Only safe sections can be duplicated");
   const parent = source.parentElement;
@@ -5550,6 +6286,7 @@ function duplicateSection(nodeId: string): { id: string; sourceId: string } {
   if (new Set(sourceIdValues).size !== sourceIdValues.length)
     throw new Error("Duplicate section contains duplicate HTML ids");
   const sourceIds = new Set(sourceIdValues);
+  assertNoUnsupportedLocalIdReferences(source, sourceIds);
   const idMap = duplicateIdMap(createdId, sourceIds, "section");
   const documentIds = new Set(
     [...source.ownerDocument.querySelectorAll<HTMLElement>("[id]")]
@@ -5617,7 +6354,7 @@ function duplicateSection(nodeId: string): { id: string; sourceId: string } {
       ),
     ].map((assetId) => ({ assetId })),
   };
-  applyOp(current.pagePath, operation, "Duplicate section");
+  applyOp(current.pagePath, operation, "Duplicate area");
   return { id: createdId, sourceId: nodeId };
 }
 
@@ -5679,6 +6416,7 @@ function duplicateGroupItem(
   ];
   if (new Set(sourceIdValues).size !== sourceIdValues.length)
     throw new Error("Group item contains duplicate HTML ids");
+  assertNoUnsupportedLocalIdReferences(source, new Set(sourceIdValues));
   const snapshotOperations = state.ops
     .filter(
       ({ pagePath, op }) =>
@@ -5740,6 +6478,7 @@ function duplicateGroupItem(
   const operation: Op = {
     type: "duplicateGroupItem",
     groupId,
+    sectionId: group.sectionId,
     sourceItemId: itemId,
     sourceItemIndex: item.index,
     groupSignature: group.signature,
@@ -6047,7 +6786,7 @@ function groupMoveCapability(group: GroupDescriptor): GroupMoveCapability {
   }
   if (["block", "flow-root", "inline-block"].includes(display)) {
     if (containerStyle.columnCount !== "auto" && containerStyle.columnCount !== "1") {
-      return { supported: false, reason: "Group uses unsupported CSS columns" };
+      return { supported: false, reason: "Group uses an unsupported multi-column arrangement" };
     }
     const inOrder = rects.every((rect, index) => {
       const previous = rects[index - 1];
@@ -6074,9 +6813,10 @@ function listEditableContent(): EditableContent[] {
   return current.nodes
     .filter(
       (meta) =>
-        meta.kind === "image" ||
-        meta.kind === "section" ||
-        ((meta.kind === "text" || meta.kind === "link") && meta.textEditable === true),
+        currentNodeElement(meta.id) !== null &&
+        (meta.kind === "image" ||
+          meta.kind === "section" ||
+          ((meta.kind === "text" || meta.kind === "link") && meta.textEditable === true)),
     )
     .map((meta) => {
       const element = currentNodeElement(meta.id);
@@ -6093,7 +6833,7 @@ function listEditableContent(): EditableContent[] {
         return {
           id: meta.id,
           type: meta.kind,
-          preview: heading?.textContent?.trim() || element?.getAttribute("aria-label") || "Section",
+          preview: heading?.textContent?.trim() || element?.getAttribute("aria-label") || "Area",
         };
       }
       return { id: meta.id, type: meta.kind, preview: element?.textContent ?? "" };
@@ -6101,6 +6841,19 @@ function listEditableContent(): EditableContent[] {
 }
 
 function changeInfoForOp(changeId: string, pagePath: string, op: Op, entry: PendingOp): ChangeInfo {
+  if (op.type === "deleteSection") {
+    const label = deletedSectionLabels.get(op.nodeId) ?? "Untitled area";
+    return {
+      changeId: changeId || stableChangeId(pagePath, "section-delete", op.nodeId),
+      elementId: op.nodeId,
+      type: op.type,
+      before: label,
+      after: "Deleted",
+      ...(entry.changeSetId
+        ? { changeSetId: entry.changeSetId, changeSetLabel: entry.changeSetLabel }
+        : {}),
+    };
+  }
   if (op.type === "duplicateSection") {
     return {
       changeId: changeId || stableChangeId(pagePath, "section-duplicate", op.createdId),
@@ -6221,6 +6974,7 @@ function groupMoveChanges(): Array<UserChange & { order: number }> {
       .filter(
         ({ entry }) =>
           entry.pagePath === current.pagePath &&
+          !operationSuppressedByDeletion(entry) &&
           ((entry.op.type === "moveGroupItem" && entry.op.groupId === group.id) ||
             (entry.op.type === "duplicateGroupItem" && entry.op.groupId === group.id)),
       );
@@ -6289,6 +7043,28 @@ function groupMoveChanges(): Array<UserChange & { order: number }> {
   return changes;
 }
 
+function operationNodeIds(op: Op): string[] {
+  if (op.type === "toggleList") return op.nodeIds;
+  if (op.type === "setBlockFormat") return op.targets.map((target) => target.nodeId);
+  if (op.type === "duplicateGroupItem") return [op.sectionId, op.groupId, op.sourceItemId];
+  if (op.type === "moveGroupItem") return [op.sectionId, op.groupId, op.itemId, op.targetItemId];
+  if (op.type === "moveSection") return [op.nodeId, op.targetId];
+  if (op.type === "duplicateSection") return [];
+  return "nodeId" in op ? [op.nodeId] : [];
+}
+
+function operationSuppressedByDeletion(entry: PendingOp): boolean {
+  if (entry.op.type === "deleteSection") return false;
+  const ids = operationNodeIds(entry.op).map((id) => id.split("#")[0]!);
+  return state.ops.some((candidate) => {
+    if (candidate.pagePath !== entry.pagePath || candidate.op.type !== "deleteSection") {
+      return false;
+    }
+    const deletion = candidate.op;
+    return ids.some((id) => deletion.descendantNodeIds.includes(id));
+  });
+}
+
 function buildUserChanges(): UserChange[] {
   reconcileRichContent();
   const changes: Array<UserChange & { order: number }> = [];
@@ -6298,6 +7074,7 @@ function buildUserChanges(): UserChange[] {
       .filter(
         ({ entry }) =>
           entry.pagePath === region.pagePath &&
+          !operationSuppressedByDeletion(entry) &&
           isRichContentOp(entry.op) &&
           richNodeIds(entry.op).some((id) => region.nodeIds.includes(id)),
       );
@@ -6327,7 +7104,12 @@ function buildUserChanges(): UserChange[] {
   }
   changes.push(...groupMoveChanges());
   for (const [index, entry] of state.ops.entries()) {
-    if (isRichContentOp(entry.op) || entry.op.type === "moveGroupItem") continue;
+    if (
+      operationSuppressedByDeletion(entry) ||
+      isRichContentOp(entry.op) ||
+      entry.op.type === "moveGroupItem"
+    )
+      continue;
     changes.push({
       order: index,
       pagePath: entry.pagePath,
@@ -6411,15 +7193,7 @@ function revertPendingOperation(index: number): void {
         )
           return false;
         const createdIds = new Set([duplicate.createdId, ...Object.values(duplicate.nodeMap)]);
-        const ids =
-          op.type === "toggleList"
-            ? op.nodeIds
-            : op.type === "setBlockFormat"
-              ? op.targets.map((target) => target.nodeId)
-              : "nodeId" in op
-                ? [op.nodeId]
-                : [];
-        return ids.some((id) => createdIds.has(id.split("#")[0]!));
+        return operationNodeIds(op).some((id) => createdIds.has(id.split("#")[0]!));
       })
     : [];
   const removed = [entry, ...dependent];
@@ -7332,6 +8106,16 @@ function buildChrome(): void {
     $("[data-action=live]").remove();
     $("[data-action=logout]").textContent = "Reset demo";
   }
+  const menuIcons: Record<string, ReiconOutlineName> = {
+    exit: "x",
+    live: "link",
+    logout: demoTransport ? "refresh" : "x",
+  };
+  for (const item of document.querySelectorAll<HTMLButtonElement>("#xyle-menu [data-action]")) {
+    const label = document.createElement("span");
+    label.textContent = item.textContent;
+    item.replaceChildren(reiconOutline(menuIcons[item.dataset.action!]!), label);
+  }
   const shellStyles = document.createElement("style");
   shellStyles.id = "xyle-shell-styles";
   shellStyles.textContent = editorStyles;
@@ -7523,14 +8307,17 @@ function confirmDiscard(action: string, onConfirm: () => void): boolean {
   $("#xyle-discard-confirmation")?.remove();
   const noun = count === 1 ? "change" : "changes";
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const prompt = document.createElement("aside");
+  const prompt = document.createElement("dialog");
   prompt.id = "xyle-discard-confirmation";
   prompt.className = "xyle-inline-confirmation";
   prompt.setAttribute("role", "alertdialog");
-  prompt.setAttribute("aria-label", "Confirm discard");
+  prompt.setAttribute("aria-modal", "true");
+  prompt.setAttribute("aria-labelledby", "xyle-discard-title");
+  prompt.setAttribute("aria-describedby", "xyle-discard-message");
   prompt.replaceChildren(
     document.createRange().createContextualFragment(`
-    <p>Discard ${count} unpublished ${noun} and ${action}?</p>
+    <h2 id="xyle-discard-title">Discard unpublished changes?</h2>
+    <p id="xyle-discard-message">${count} unpublished ${noun} will be removed before you ${action}.</p>
     <div class="xyle-inline-confirmation-actions">
       <button class="xyle-dialog-button" type="button" data-keep>Keep editing</button>
       <button class="xyle-dialog-button xyle-dialog-button--accent" type="button" data-discard>Discard</button>
@@ -7538,20 +8325,22 @@ function confirmDiscard(action: string, onConfirm: () => void): boolean {
   );
   const keepEditing = prompt.querySelector<HTMLButtonElement>("[data-keep]");
   const closePrompt = (): void => {
+    if (prompt.open) prompt.close();
     prompt.remove();
     returnFocus?.focus();
   };
   keepEditing?.addEventListener("click", closePrompt);
-  prompt.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
+  prompt.addEventListener("cancel", (event) => {
     event.preventDefault();
     closePrompt();
   });
   prompt.querySelector<HTMLButtonElement>("[data-discard]")?.addEventListener("click", () => {
+    if (prompt.open) prompt.close();
     prompt.remove();
     onConfirm();
   });
   document.body.append(prompt);
+  prompt.showModal();
   keepEditing?.focus();
   return false;
 }
@@ -7588,6 +8377,9 @@ function discardAll(): void {
   originalSeo.clear();
   originalMarkups.clear();
   duplicateSourceLabels.clear();
+  deletedSectionLabels.clear();
+  deletedSectionPositions.clear();
+  deletedCreatedSections.clear();
   originalFormats.clear();
   originalBlockTags.clear();
   originalListStates.clear();
@@ -7737,13 +8529,13 @@ function displayNameForElement(element: Element | null | undefined): string {
   const heading = element?.querySelector("h1,h2,h3,h4,h5,h6");
   const value = heading?.textContent ?? element?.textContent ?? "";
   const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized ? normalized.slice(0, 80) : "Untitled section";
+  return normalized ? normalized.slice(0, 80) : "Untitled area";
 }
 
 function displayNameForNode(pagePath: string, nodeId: string): string {
   return pagePath === state.current?.pagePath
     ? displayNameForElement(currentNodeElement(nodeId))
-    : "Untitled section";
+    : "Untitled area";
 }
 
 function displayNameForGroupItem(pagePath: string, groupId: string, itemId: string): string {
@@ -7783,7 +8575,8 @@ function changeTypeLabel(type: ChangeInfo["type"]): string {
     case "sectionVisibility":
     case "moveSection":
     case "duplicateSection":
-      return "Section";
+    case "deleteSection":
+      return "Area";
     case "duplicateGroupItem":
     case "moveGroupItem":
       return "Group item";
@@ -7823,11 +8616,13 @@ function opLabel(op: Op): string {
     case "seo":
       return "SEO metadata";
     case "sectionVisibility":
-      return "Section visibility";
+      return "Area visibility";
     case "moveSection":
-      return "Section order";
+      return "Area order";
     case "duplicateSection":
-      return "Duplicate section";
+      return "Duplicate area";
+    case "deleteSection":
+      return "Delete area";
     case "duplicateGroupItem":
       return "Duplicate Group item";
     case "moveGroupItem":
@@ -7871,6 +8666,7 @@ function originalValue(pagePath: string, op: Op): string {
   }
   if (op.type === "seo") return originalSeo.get(seoIdentity(pagePath, op.field)) ?? "";
   if (op.type === "sectionVisibility") return op.before ? "visible" : "hidden";
+  if (op.type === "deleteSection") return deletedSectionLabels.get(op.nodeId) ?? "Untitled area";
   if (op.type === "moveSection") return "original position";
   if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") return "";
   if (op.type === "moveGroupItem" || op.type === "setLayoutPreset" || op.type === "setRegionOrder")
@@ -7988,7 +8784,7 @@ function openChangesDrawer(): void {
       !confirmDiscard("reload the published page", () => {
         if (session) revertEdit();
         discardAll();
-        drawer.remove();
+        closeChangesDrawer(false);
         updateDirtyUi();
         void loadPage(state.current?.pagePath ?? "/index.html", { pushHistory: false });
       })
@@ -7996,7 +8792,7 @@ function openChangesDrawer(): void {
       return;
     if (session) revertEdit();
     discardAll();
-    drawer.remove();
+    closeChangesDrawer(false);
     updateDirtyUi();
     void loadPage(state.current?.pagePath ?? "/index.html", { pushHistory: false });
   });
@@ -8047,7 +8843,7 @@ function openChangesDrawer(): void {
           event.stopPropagation();
           try {
             undoChangeSet(change.info.changeSetId!);
-            drawer.remove();
+            closeChangesDrawer(false);
             updateDirtyUi();
             openChangesDrawer();
           } catch (error) {
@@ -8227,6 +9023,11 @@ function applyOpToDom(pagePath: string, op: Op): void {
     if (el) el.hidden = !op.visible;
     return;
   }
+  if (op.type === "deleteSection") {
+    currentNodeElement(op.nodeId)?.remove();
+    refreshStructurePanelIfOpen();
+    return;
+  }
   if (op.type === "duplicateGroupItem") {
     applyGroupItemDuplicateToDom(pagePath, op);
     applyGroupOrderToDom(op.groupId);
@@ -8322,6 +9123,8 @@ function revertOpInDom(pagePath: string, op: Op): void {
   } else if (op.type === "sectionVisibility") {
     const el = currentNodeElement(op.nodeId);
     if (el) el.hidden = !op.before;
+  } else if (op.type === "deleteSection") {
+    renderPreview();
   } else if (op.type === "duplicateGroupItem") {
     doc
       .querySelector<HTMLElement>(`[data-xyle-group-item="${CSS.escape(op.createdId)}"]`)
@@ -8382,6 +9185,7 @@ const createdMedia = new Map<string, MediaState>();
 const originalSeo = new Map<string, string>();
 const originalMarkups = new Map<string, string>();
 const duplicateSourceLabels = new Map<string, string>();
+const deletedSectionLabels = new Map<string, string>();
 const originalFormats = new Map<string, InlineFormat | "none">();
 const originalBlockTags = new Map<string, BlockTag>();
 const originalListStates = new Map<string, "plain" | "ul" | "ol">();
@@ -9098,6 +9902,8 @@ function restoreOpsIntoDom(): void {
     } else if (op.type === "sectionVisibility") {
       const el = currentNodeElement(op.nodeId);
       if (el) el.hidden = !op.visible;
+    } else if (op.type === "deleteSection") {
+      currentNodeElement(op.nodeId)?.remove();
     } else if (op.type === "moveGroupItem") {
       applyGroupOrderToDom(op.groupId);
     } else if (op.type === "setLayoutPreset") {
@@ -9178,7 +9984,7 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
           const source = op.value.source;
           return source.kind === "staged" ? [source.assetId] : [];
         }
-        if (op.type === "duplicateSection") {
+        if (op.type === "duplicateSection" || op.type === "duplicateGroupItem") {
           return op.assetRefs.map((asset) => asset.assetId);
         }
         return [];
@@ -9238,6 +10044,9 @@ async function publish(sourceButton?: HTMLButtonElement): Promise<void> {
     originalSeo.clear();
     originalMarkups.clear();
     duplicateSourceLabels.clear();
+    deletedSectionLabels.clear();
+    deletedSectionPositions.clear();
+    deletedCreatedSections.clear();
     originalFormats.clear();
     originalBlockTags.clear();
     originalListStates.clear();
@@ -9267,6 +10076,7 @@ function commitActiveEditsAndCollect(): boolean {
 function collectPageOps(): PageOps[] {
   const byPage = new Map<string, PendingOp[]>();
   for (const entry of state.ops) {
+    if (operationSuppressedByDeletion(entry)) continue;
     const list = byPage.get(entry.pagePath) ?? [];
     list.push(entry);
     byPage.set(entry.pagePath, list);

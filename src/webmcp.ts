@@ -27,6 +27,7 @@ import {
   parseFormattingInput,
   parseGroupItemInput,
   parseIdInput,
+  parseLayoutOutcomeInput,
   parseLayoutTargetInput,
   parseLinkUpdateInput,
   parseListFormattingInput,
@@ -34,8 +35,6 @@ import {
   parseMoveGroupItemInput,
   parseMoveSectionInput,
   parseSeoInput,
-  parseSetLayoutInput,
-  parseSetRegionOrderInput,
   parseSectionVisibilityInput,
   parseTextUpdateInput,
   parseTextInsertionInput,
@@ -577,6 +576,28 @@ export async function registerWebMcpTools(
         { signal: controller.signal },
       );
     }
+    if (bridge.deleteSection) {
+      await registerReportingTool(
+        context,
+        {
+          name: "delete_section",
+          description: "Delete one safe Xyle area from the draft. A human must publish the change.",
+          inputSchema: {
+            type: "object",
+            properties: { id: { type: "string", description: "The safe area to delete." } },
+            required: ["id"],
+          },
+          annotations: { untrustedContentHint: true },
+          execute: async (input, context) => {
+            if (context?.signal?.aborted)
+              throw new DOMException("Tool execution canceled", "AbortError");
+            const parsed = parseIdInput(input, "delete_section");
+            return textResult(JSON.stringify(bridge.deleteSection!(parsed)));
+          },
+        },
+        { signal: controller.signal },
+      );
+    }
     if (bridge.duplicateGroupItem) {
       await registerReportingTool(
         context,
@@ -609,7 +630,7 @@ export async function registerWebMcpTools(
         context,
         {
           name: "list_layout_options",
-          description: "List the safe Stack and Split options for one Structural Block.",
+          description: "List the safe layout options for one validated area.",
           inputSchema: {
             type: "object",
             properties: { targetId: { type: "string", description: "The safe section id." } },
@@ -627,54 +648,31 @@ export async function registerWebMcpTools(
         { signal: controller.signal },
       );
     }
-    if (bridge.setLayoutPreset) {
+    if (bridge.applyLayoutOutcome) {
       await registerReportingTool(
         context,
         {
-          name: "set_layout",
-          description: "Set one safe Structural Block to Stack or Split.",
+          name: "change_layout",
+          description:
+            "Change a validated area to Above and below, Text left, or Image left as one reversible draft action.",
           inputSchema: {
             type: "object",
             properties: {
-              targetId: { type: "string", description: "The safe section id." },
-              preset: { type: "string", enum: ["stacked", "two-column"] },
+              targetId: { type: "string", description: "The safe area id." },
+              outcome: {
+                type: "string",
+                enum: ["above-and-below", "text-left", "image-left"],
+              },
             },
-            required: ["targetId", "preset"],
+            required: ["targetId", "outcome"],
           },
           annotations: { untrustedContentHint: true },
           execute: async (input, context) => {
             if (context?.signal?.aborted)
               throw new DOMException("Tool execution canceled", "AbortError");
-            const parsed = parseSetLayoutInput(input);
+            const parsed = parseLayoutOutcomeInput(input);
             return textResult(
-              JSON.stringify(bridge.setLayoutPreset!(parsed.targetId, parsed.preset)),
-            );
-          },
-        },
-        { signal: controller.signal },
-      );
-    }
-    if (bridge.setRegionOrder) {
-      await registerReportingTool(
-        context,
-        {
-          name: "set_region_order",
-          description: "Set one safe Layout target to its original or swapped region order.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              targetId: { type: "string", description: "The safe section id." },
-              order: { type: "string", enum: ["original", "swapped"] },
-            },
-            required: ["targetId", "order"],
-          },
-          annotations: { untrustedContentHint: true },
-          execute: async (input, context) => {
-            if (context?.signal?.aborted)
-              throw new DOMException("Tool execution canceled", "AbortError");
-            const parsed = parseSetRegionOrderInput(input);
-            return textResult(
-              JSON.stringify(bridge.setRegionOrder!(parsed.targetId, parsed.order)),
+              JSON.stringify(bridge.applyLayoutOutcome!(parsed.targetId, parsed.outcome)),
             );
           },
         },

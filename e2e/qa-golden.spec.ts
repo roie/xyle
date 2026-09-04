@@ -85,37 +85,34 @@ test("golden human walkthrough covers the exposed editor contract", async ({ pag
   await expect(focusEditor).toHaveCount(0);
 
   const items = preview.locator("[data-xyle-group-item]");
-  const selectGroupItem = async (index: number): Promise<void> => {
-    await items.nth(index).focus();
-    await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
-  };
   await expect(items).toHaveCount(2);
-  await selectGroupItem(0);
-  await page
-    .locator(".xyle-group-item-tools")
-    .getByRole("button", { name: "Duplicate item" })
-    .click();
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-structure-shortcut").click();
+  const outline = page.getByRole("dialog", { name: "Outline" });
+  const collapsed = outline.locator(
+    '.xyle-outline-disclosure:not(:disabled)[aria-expanded="false"]',
+  );
+  while ((await collapsed.count()) > 0) await collapsed.first().click();
+  await outline.locator(".xyle-outline-group-summary").click();
+  const groupInspector = outline.locator(".xyle-outline-group-inspector");
+  await expect(groupInspector).toBeVisible();
+  await groupInspector.getByRole("button", { name: "Duplicate item" }).first().click();
   await expect(items).toHaveCount(3);
-  await selectGroupItem(0);
-  const moveLater = page
-    .locator(".xyle-group-item-tools")
-    .getByRole("button", { name: "Move later" });
+  const moveLater = groupInspector.getByRole("button", { name: "Move later" }).first();
   await expect(moveLater).toBeDisabled();
   await expect(moveLater).toHaveAttribute("title", /unpublished items/);
 
-  const duplicateTarget = preview.locator("#qa-duplicate");
-  await preview.locator("body").click({ position: { x: 1, y: 1 } });
-  await duplicateTarget.focus();
-  await page.keyboard.press("Enter");
-  await expect(page.locator(".xyle-section-tools")).toBeVisible();
-  await page.getByRole("button", { name: "Duplicate section" }).click();
+  const duplicateRow = outline
+    .locator(".xyle-outline-node")
+    .filter({ hasText: "A section worth repeating" });
+  await duplicateRow.locator(".xyle-outline-menu-trigger").click();
+  await duplicateRow.getByRole("menuitem", { name: "Duplicate", exact: true }).click();
   await expect(preview.locator("main > section[data-xyle-node]")).toHaveCount(6);
 
   const layout = preview.locator("#qa-layout");
-  await layout.press("Enter");
-  await page.locator(".xyle-layout-tools").getByRole("button", { name: "Split" }).click();
-  await layout.press("Enter");
-  await page.locator(".xyle-layout-tools").getByRole("button", { name: "Swap sides" }).click();
+  const layoutRow = outline.locator(".xyle-outline-node").filter({ hasText: "Two useful regions" });
+  await layoutRow.locator(".xyle-outline-select").click();
+  await outline.getByRole("button", { name: "Image left" }).click();
   await expect(layout.locator("> div").first()).toHaveClass(/qa-layout-image/);
 
   await page.locator("#xyle-changes").click();
@@ -124,7 +121,7 @@ test("golden human walkthrough covers the exposed editor contract", async ({ pag
   await expect(changes).toContainText("Formatting");
   await expect(changes).toContainText("Link");
   await expect(changes).toContainText("Image");
-  await expect(changes).toContainText("Section");
+  await expect(changes).toContainText("Area");
   await expect(changes).toContainText("Group item");
   await expect(changes).toContainText("Layout");
 

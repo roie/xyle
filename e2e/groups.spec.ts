@@ -1,5 +1,13 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { clickOutsideToCommit, editNode, loginAndOpenEditor, setSelection } from "./helpers.ts";
+
+async function openGroupInspector(page: Page): Promise<void> {
+  await page.locator("#xyle-structure-shortcut").click();
+  const collapsed = page.locator('.xyle-outline-disclosure:not(:disabled)[aria-expanded="false"]');
+  while ((await collapsed.count()) > 0) await collapsed.first().click();
+  await page.locator(".xyle-outline-group-summary").click();
+  await expect(page.locator(".xyle-outline-group-inspector")).toBeVisible();
+}
 
 test("discovers and duplicates a source-backed Group item through the human UI", async ({
   page,
@@ -13,9 +21,11 @@ test("discovers and duplicates a source-backed Group item through the human UI",
 
   const firstItemId = await items.first().getAttribute("data-xyle-group-item");
   expect(firstItemId).toBeTruthy();
-  await items.first().focus();
-  await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
-  await page.locator(".xyle-group-item-tools button", { hasText: "Duplicate item" }).click();
+  await openGroupInspector(page);
+  await page
+    .locator(".xyle-outline-group-inspector button", { hasText: "Duplicate item" })
+    .first()
+    .click();
   await expect(items).toHaveCount(3, { timeout: 10_000 });
 
   const createdId = await page.evaluate((sourceId) => {
@@ -120,15 +130,44 @@ test("discovers and duplicates a source-backed Group item through the human UI",
   await expect(publishedPanel.locator("xpath=..")).toContainText("Repair details");
 });
 
+test("publishes area deletion after duplicating a draft-only Group item", async ({ page }) => {
+  await loginAndOpenEditor(page, "/groups.html");
+  await openGroupInspector(page);
+  await page
+    .locator(".xyle-outline-group-inspector button", { hasText: "Duplicate item" })
+    .first()
+    .click();
+  await expect(page.frameLocator("#xyle-preview").locator("[data-xyle-group-item]")).toHaveCount(3);
+
+  const sectionRow = page.getByRole("dialog", { name: "Outline" }).locator(".xyle-outline-node");
+  await sectionRow.locator(".xyle-outline-menu-trigger").click();
+  await sectionRow.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  const publishResponse = page.waitForResponse((response) =>
+    response.url().includes("/__xyle/api/publish"),
+  );
+  await page.locator("#xyle-publish").click();
+  expect((await publishResponse).ok()).toBe(true);
+  await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+  const source = await (await page.request.get("/groups.html")).text();
+  expect(source).not.toContain("<section");
+  expect(source).not.toContain("data-xyle-group-item");
+});
+
 test("moves a source-backed Group item later through publication", async ({ page }) => {
   await loginAndOpenEditor(page, "/groups-move.html");
   const preview = page.frameLocator("#xyle-preview");
   const items = preview.locator("[data-xyle-group-item]");
   await expect(items).toHaveCount(2);
-  await expect(items.first()).toHaveAttribute("data-xyle-keyboard-target", "");
-  await items.first().press("Enter");
-  await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
-  await page.locator(".xyle-group-item-tools button", { hasText: "Move later" }).click();
+  await expect(items.first()).not.toHaveAttribute("data-xyle-keyboard-target", "");
+  const firstItemId = await items.first().getAttribute("data-xyle-group-item");
+  expect(firstItemId).toBeTruthy();
+  await openGroupInspector(page);
+  await page
+    .locator(`[data-outline-group-item="${firstItemId}"][data-outline-group-action="later"]`)
+    .click();
+  await expect(
+    page.locator(`[data-outline-group-item="${firstItemId}"][data-outline-group-action="earlier"]`),
+  ).toBeFocused();
   await expect
     .poll(() => items.evaluateAll((elements) => elements.map((item) => item.textContent)))
     .toEqual([expect.stringContaining("Water heaters"), expect.stringContaining("Leaks")]);
@@ -171,9 +210,8 @@ test("moves an edited source-backed Group item through the human UI", async ({ p
   await page.keyboard.insertText("Moved service");
   await clickOutsideToCommit(page);
 
-  await items.nth(1).focus();
-  await expect(page.locator(".xyle-group-item-tools")).toBeVisible();
-  await page.locator(".xyle-group-item-tools button", { hasText: "Move earlier" }).click();
+  await openGroupInspector(page);
+  await page.getByRole("button", { name: "Move earlier" }).nth(1).click();
   await expect
     .poll(() => items.evaluateAll((elements) => elements.map((item) => item.textContent)))
     .toEqual([expect.stringContaining("Moved service"), expect.stringContaining("Leaks")]);

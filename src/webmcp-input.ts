@@ -1,4 +1,4 @@
-import type { LayoutPreset, RegionOrder, SeoField } from "./types.ts";
+import type { LayoutOutcome, LayoutPreset, RegionOrder, SeoField } from "./types.ts";
 import type { ChangeSetOperation, Formatting, MediaPatchInput } from "./webmcp-contracts.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -108,6 +108,19 @@ export function parseLayoutTargetInput(value: unknown): string {
     throw new Error("layout target requires a string targetId");
   }
   return value.targetId;
+}
+
+export function parseLayoutOutcomeInput(value: unknown): {
+  targetId: string;
+  outcome: LayoutOutcome;
+} {
+  if (!isRecord(value) || typeof value.targetId !== "string" || typeof value.outcome !== "string") {
+    throw new Error("change_layout requires string targetId and outcome");
+  }
+  if (!(["above-and-below", "text-left", "image-left"] as string[]).includes(value.outcome)) {
+    throw new Error("change_layout outcome is not supported");
+  }
+  return { targetId: value.targetId, outcome: value.outcome as LayoutOutcome };
 }
 
 export function parseSetRegionOrderInput(value: unknown): { targetId: string; order: RegionOrder } {

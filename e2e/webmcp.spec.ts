@@ -1061,6 +1061,13 @@ test.describe("WebMCP editor tools", () => {
 
     await invokeTool(page, "move_section", { id: second!.id, targetId: first!.id, before: true });
     await expect.poll(sectionOrder).toEqual([second!.id, first!.id, ...originalOrder.slice(2)]);
+    await expect(
+      invokeTool(page, "move_section", {
+        id: first!.id,
+        targetId: sections[2]!.id,
+        before: false,
+      }),
+    ).resolves.toEqual({ error: expect.stringMatching(/safe siblings/) });
     const moveChanges = (await invokeTool(page, "list_changes", {})) as Array<{
       changeId: string;
       type: string;
@@ -1069,6 +1076,48 @@ test.describe("WebMCP editor tools", () => {
     expect(moveEntry?.changeId).toBeTruthy();
     await invokeTool(page, "revert_change", { changeId: moveEntry!.changeId });
     await expect.poll(sectionOrder).toEqual(originalOrder);
+  });
+
+  test("deletes a safe area through WebMCP while keeping publication human-controlled", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== "chromium" || test.info().project.name !== "webmcp",
+      "Run this test in the dedicated Chrome WebMCP project",
+    );
+    await loginAndOpenEditor(page, "/index.html");
+    const content = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+      type: string;
+    }>;
+    const section = content.find((item) => item.type === "section");
+    expect(section?.id).toBeTruthy();
+
+    await expect(invokeTool(page, "delete_section", { id: section!.id })).resolves.toEqual({
+      id: section!.id,
+      deleted: true,
+    });
+    await expect(
+      page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${section!.id}"]`),
+    ).toHaveCount(0);
+    const remainingContent = (await invokeTool(page, "list_editable_content", {})) as Array<{
+      id: string;
+    }>;
+    expect(remainingContent.some((item) => item.id === section!.id)).toBe(false);
+    const changes = (await invokeTool(page, "list_changes", {})) as Array<{
+      type: string;
+      after: string;
+    }>;
+    expect(changes).toContainEqual(
+      expect.objectContaining({ type: "deleteSection", after: "Deleted" }),
+    );
+
+    await expect(invokeTool(page, "publish", {})).rejects.toThrow(/was not registered/);
+    await page.locator("#xyle-publish").click();
+    await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+    await page.goto("/index.html");
+    await expect(page.locator("main > section")).toHaveCount(4);
   });
 
   test("duplicates a safe section and edits its created descendant through WebMCP", async ({
@@ -1093,6 +1142,20 @@ test.describe("WebMCP editor tools", () => {
       sourceId: string;
     };
     expect(duplicate.sourceId).toBe(sourceSection!.id);
+    const otherSection = content.find(
+      (item) => item.type === "section" && item.id !== sourceSection!.id,
+    );
+    expect(otherSection?.id).toBeTruthy();
+    await expect(invokeTool(page, "duplicate_section", { id: otherSection!.id })).resolves.toEqual({
+      error: expect.stringMatching(/pending duplication/),
+    });
+    await expect(
+      invokeTool(page, "move_section", {
+        id: duplicate.id,
+        targetId: otherSection!.id,
+        before: true,
+      }),
+    ).resolves.toEqual({ error: expect.stringMatching(/safe siblings/) });
 
     const createdText = await page.evaluate((createdId) => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
@@ -1317,7 +1380,7 @@ test.describe("WebMCP editor tools", () => {
     );
   });
 
-  test("sets a physical region order through WebMCP", async ({ page, browserName }) => {
+  test("applies Text left as one layout outcome through WebMCP", async ({ page, browserName }) => {
     test.skip(
       browserName !== "chromium" || test.info().project.name !== "webmcp",
       "Run this test in the dedicated Chrome WebMCP project",
@@ -1333,8 +1396,8 @@ test.describe("WebMCP editor tools", () => {
     );
     expect(section?.id).toBeTruthy();
     await expect(
-      invokeTool(page, "set_region_order", { targetId: section!.id, order: "swapped" }),
-    ).resolves.toMatchObject({ id: section!.id, order: "swapped" });
+      invokeTool(page, "change_layout", { targetId: section!.id, outcome: "text-left" }),
+    ).resolves.toMatchObject({ id: section!.id, outcome: "text-left" });
     const preview = page.frameLocator("#xyle-preview");
     await expect(preview.locator("#layout-basic > div").nth(0)).toHaveClass(/layout-content/);
     await expect(preview.locator("#layout-basic > div").nth(1)).toHaveClass(/layout-image/);
@@ -1343,7 +1406,7 @@ test.describe("WebMCP editor tools", () => {
     );
   });
 
-  test("lists and sets a safe layout preset through WebMCP", async ({ page, browserName }) => {
+  test("lists and applies safe layout outcomes through WebMCP", async ({ page, browserName }) => {
     test.skip(
       browserName !== "chromium" || test.info().project.name !== "webmcp",
       "Run this test in the dedicated Chrome WebMCP project",
@@ -1362,12 +1425,12 @@ test.describe("WebMCP editor tools", () => {
       invokeTool(page, "list_layout_options", { targetId: section!.id }),
     ).resolves.toMatchObject({
       id: section!.id,
-      current: "stacked",
-      options: ["stacked", "two-column"],
+      current: "above-and-below",
+      options: ["above-and-below", "text-left", "image-left"],
     });
     await expect(
-      invokeTool(page, "set_layout", { targetId: section!.id, preset: "two-column" }),
-    ).resolves.toMatchObject({ id: section!.id, preset: "two-column" });
+      invokeTool(page, "change_layout", { targetId: section!.id, outcome: "image-left" }),
+    ).resolves.toMatchObject({ id: section!.id, outcome: "image-left" });
     await expect(page.frameLocator("#xyle-preview").locator("#layout-basic")).toHaveAttribute(
       "data-xyle-layout",
       "split",

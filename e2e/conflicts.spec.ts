@@ -237,9 +237,8 @@ test.describe("conflicts and recovery", () => {
     await loginAndOpenEditor(page, "/about.html");
     const before = await (await page.request.get("/about.html")).text();
 
-    const id = await findNodeByText(page, "family-owned");
-    void id;
-    const pId = await findNodeByText(page, "We are a");
+    const pId = await findNodeByText(page, "This Xyle demo starts");
+    expect(pId).toBeTruthy();
     await editNode(page, pId!);
     await focusCaret(page, pId!, "end");
     await page.keyboard.type(" DISCARDED");

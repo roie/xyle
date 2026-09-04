@@ -1308,6 +1308,7 @@ describe("Group item duplication", () => {
     return {
       type: "duplicateGroupItem" as const,
       groupId: group.id,
+      sectionId: group.sectionId,
       sourceItemId: item.id,
       sourceItemIndex: item.index,
       groupSignature: group.signature,
@@ -1353,6 +1354,18 @@ describe("Group item duplication", () => {
     expect((output.match(new RegExp(`id="${idMap["card-a"]}"`, "g")) ?? []).length).toBe(1);
   });
 
+  it("rejects unsupported Group references to non-letter-leading ids", async () => {
+    const source = `<main><section><div><article id="1card" data-target="#1card"><h3>A</h3><p>One</p></article><article id="2card" data-target="#2card"><h3>B</h3><p>Two</p></article></div></section></main>`;
+    const createdId = "x-1234567890abcdef";
+    const operation = {
+      ...operationFor(source, createdId),
+      idMap: { "1card": duplicateGroupHtmlId(createdId, "1card") },
+    };
+    await expect(patchSource(source, [operation])).rejects.toThrow(
+      /unsupported local id reference in data-target/,
+    );
+  });
+
   it("keeps repeated duplicates in sequence order", async () => {
     const source = `<main><section><div><article><h3>A</h3><p>One</p></article><article><h3>B</h3><p>Two</p></article></div></section></main>`;
     const first = operationFor(source, "x-1234567890abcdef");
@@ -1361,6 +1374,30 @@ describe("Group item duplication", () => {
     expect(output.indexOf('data-xyle-group-item="')).toBe(-1);
     expect(output.indexOf("<h3>A</h3>")).toBeLessThan(output.indexOf("<h3>B</h3>"));
     expect(output.split("<h3>A</h3>").length - 1).toBe(3);
+  });
+
+  it("suppresses Group operations inside a deleted area", async () => {
+    const source = `<main><section><div><article><h3>A</h3></article><article><h3>B</h3></article></div></section></main>`;
+    const analysis = analyzePage(source);
+    const section = [...analysis.candidates.values()].find(
+      (candidate) => candidate.kind === "section",
+    )!;
+    const output = await patchAndGetText(source, [
+      operationFor(source, "x-1234567890abcdef"),
+      {
+        type: "deleteSection",
+        nodeId: section.id,
+        descendantNodeIds: [...analysis.candidates.values()]
+          .filter(
+            (candidate) =>
+              candidate.startTagStart >= section.startTagStart &&
+              (candidate.elementEnd ?? candidate.startTagEnd) <= section.elementEnd!,
+          )
+          .map((candidate) => candidate.id),
+        sequence: 2,
+      },
+    ]);
+    expect(output).toBe("<main></main>");
   });
 });
 
@@ -1396,6 +1433,110 @@ describe("safe structural patches", () => {
     expect(shown).not.toContain('<section id="first" hidden>');
   });
 
+  it("deletes only the exact safe section and preserves surrounding source", async () => {
+    const [first] = sectionIds();
+    const deleted = await patchAndGetText(source, [
+      {
+        type: "deleteSection",
+        nodeId: first!,
+        descendantNodeIds: ["s1", "n1"],
+      },
+    ]);
+    expect(deleted).toBe('<main>\n  \n  <section id="second"><h2>Second</h2></section>\n</main>');
+  });
+
+  it("allows internal fragment references but rejects references from outside a deleted section", async () => {
+    const internal =
+      '<main><section id="first"><h2 id="title">First</h2><a href="#title">Jump</a></section><section>Second</section></main>';
+    const internalCandidates = [...analyzePage(internal).candidates.values()];
+    const internalSection = internalCandidates.find((candidate) => candidate.kind === "section")!;
+    await expect(
+      patchAndGetText(internal, [
+        {
+          type: "deleteSection",
+          nodeId: internalSection.id,
+          descendantNodeIds: internalCandidates
+            .filter(
+              (candidate) =>
+                candidate.startTagStart >= internalSection.startTagStart &&
+                (candidate.elementEnd ?? candidate.startTagEnd) <=
+                  (internalSection.elementEnd ?? internalSection.startTagEnd),
+            )
+            .map((candidate) => candidate.id),
+        },
+      ]),
+    ).resolves.toBe("<main><section>Second</section></main>");
+
+    const referenced =
+      '<main><a href="#first">Jump</a><section id="first"><h2 id="title">First</h2></section></main>';
+    const referencedCandidates = [...analyzePage(referenced).candidates.values()];
+    const referencedSection = referencedCandidates.find(
+      (candidate) => candidate.kind === "section",
+    )!;
+    await expect(
+      patchSource(referenced, [
+        {
+          type: "deleteSection",
+          nodeId: referencedSection.id,
+          descendantNodeIds: referencedCandidates
+            .filter(
+              (candidate) =>
+                candidate.startTagStart >= referencedSection.startTagStart &&
+                (candidate.elementEnd ?? candidate.startTagEnd) <=
+                  (referencedSection.elementEnd ?? referencedSection.startTagEnd),
+            )
+            .map((candidate) => candidate.id),
+        },
+      ]),
+    ).rejects.toThrow(/referenced by href outside/);
+  });
+
+  it("rejects deletion when an outside ARIA relationship targets a descendant", async () => {
+    const referenced =
+      '<main><button aria-controls="details">Open</button><section><div id="details">Details</div></section></main>';
+    const candidates = [...analyzePage(referenced).candidates.values()];
+    const section = candidates.find((candidate) => candidate.kind === "section")!;
+    await expect(
+      patchSource(referenced, [
+        {
+          type: "deleteSection",
+          nodeId: section.id,
+          descendantNodeIds: candidates
+            .filter(
+              (candidate) =>
+                candidate.startTagStart >= section.startTagStart &&
+                (candidate.elementEnd ?? candidate.startTagEnd) <=
+                  (section.elementEnd ?? section.startTagEnd),
+            )
+            .map((candidate) => candidate.id),
+        },
+      ]),
+    ).rejects.toThrow(/referenced by aria-controls/);
+  });
+
+  it("rejects deletion when an outside custom attribute references a descendant id", async () => {
+    const referenced =
+      '<main><button data-target="#details">Open</button><section><div id="details">Details</div></section></main>';
+    const candidates = [...analyzePage(referenced).candidates.values()];
+    const section = candidates.find((candidate) => candidate.kind === "section")!;
+    await expect(
+      patchSource(referenced, [
+        {
+          type: "deleteSection",
+          nodeId: section.id,
+          descendantNodeIds: candidates
+            .filter(
+              (candidate) =>
+                candidate.startTagStart >= section.startTagStart &&
+                (candidate.elementEnd ?? candidate.startTagEnd) <=
+                  (section.elementEnd ?? section.startTagEnd),
+            )
+            .map((candidate) => candidate.id),
+        },
+      ]),
+    ).rejects.toThrow(/unsupported local reference in data-target/);
+  });
+
   it("duplicates a safe section after its source with deterministic id remapping", async () => {
     const [first] = sectionIds();
     const createdId = "x-1234567890abcdef";
@@ -1420,6 +1561,65 @@ describe("safe structural patches", () => {
     expect((duplicated.match(new RegExp(`id="${cloneId}"`, "g")) ?? []).length).toBe(1);
     expect(duplicated).toContain(`href="#${cloneId}"`);
     expect(duplicated.indexOf(`id="first"`)).toBeLessThan(duplicated.indexOf(`id="${cloneId}"`));
+  });
+
+  it("rejects unsupported section references to non-letter-leading ids", async () => {
+    const unsafeReference =
+      '<main><section id="1panel" data-target="#1panel"><h2>First</h2></section></main>';
+    const section = [...analyzePage(unsafeReference).candidates.values()].find(
+      (candidate) => candidate.kind === "section",
+    )!;
+    const createdId = "x-1234567890abcdef";
+    await expect(
+      patchSource(unsafeReference, [
+        {
+          type: "duplicateSection",
+          sourceId: section.id,
+          createdId,
+          sequence: 1,
+          insert: "after",
+          snapshotOperations: [],
+          nodeMap: {},
+          idMap: { "1panel": duplicateHtmlId(createdId, "1panel") },
+          assetRefs: [],
+        },
+      ]),
+    ).rejects.toThrow(/unsupported local id reference in data-target/);
+  });
+
+  it("keeps an unpublished duplicate when its authored source is deleted", async () => {
+    const candidates = [...analyzePage(source).candidates.values()];
+    const first = candidates.find((candidate) => candidate.kind === "section")!;
+    const createdId = "x-1234567890abcdef";
+    const output = await patchAndGetText(source, [
+      {
+        type: "duplicateSection",
+        sourceId: first.id,
+        createdId,
+        sequence: 1,
+        insert: "after",
+        snapshotOperations: [],
+        nodeMap: {},
+        idMap: { first: duplicateHtmlId(createdId, "first") },
+        assetRefs: [],
+      },
+      {
+        type: "deleteSection",
+        nodeId: first.id,
+        descendantNodeIds: candidates
+          .filter(
+            (candidate) =>
+              candidate.startTagStart >= first.startTagStart &&
+              (candidate.elementEnd ?? candidate.startTagEnd) <=
+                (first.elementEnd ?? first.startTagEnd),
+          )
+          .map((candidate) => candidate.id),
+        sequence: 2,
+      },
+    ]);
+    expect(output).not.toContain('id="first"');
+    expect(output).toContain(`id="${duplicateHtmlId(createdId, "first")}"`);
+    expect(output).toContain('id="second"');
   });
 
   it("replays edits scoped to the created duplicate", async () => {
@@ -1505,6 +1705,84 @@ describe("safe structural patches", () => {
     const cloneId = duplicateHtmlId("x-1234567890abcdef", "first");
     expect(duplicated.indexOf(`id="${cloneId}"`)).toBeLessThan(duplicated.indexOf('id="second"'));
     expect(duplicated.lastIndexOf('id="first"')).toBeGreaterThan(duplicated.indexOf('id="second"'));
+  });
+
+  it("keeps a duplicate beside its own source when moving another area", async () => {
+    const [first, second] = sectionIds();
+    const createdId = "x-1234567890abcdef";
+    const output = await patchAndGetText(source, [
+      {
+        type: "duplicateSection",
+        sourceId: second!,
+        createdId,
+        sequence: 1,
+        insert: "after",
+        snapshotOperations: [],
+        nodeMap: {},
+        idMap: { second: duplicateHtmlId(createdId, "second") },
+        assetRefs: [],
+      },
+      {
+        type: "moveSection",
+        nodeId: first!,
+        targetId: second!,
+        before: false,
+        originalIndex: 0,
+        sequence: 2,
+      },
+    ]);
+    const secondIndex = output.indexOf('id="second"');
+    const firstIndex = output.indexOf('id="first"');
+    const duplicateIndex = output.indexOf(`id="${duplicateHtmlId(createdId, "second")}"`);
+    expect(secondIndex).toBeLessThan(firstIndex);
+    expect(firstIndex).toBeLessThan(duplicateIndex);
+  });
+
+  it("applies a later duplicate beside its source after an earlier move", async () => {
+    const [first, second] = sectionIds();
+    const createdId = "x-1234567890abcdef";
+    const output = await patchAndGetText(source, [
+      {
+        type: "moveSection",
+        nodeId: first!,
+        targetId: second!,
+        before: false,
+        originalIndex: 0,
+        sequence: 1,
+      },
+      {
+        type: "duplicateSection",
+        sourceId: second!,
+        createdId,
+        sequence: 2,
+        insert: "after",
+        snapshotOperations: [],
+        nodeMap: {},
+        idMap: { second: duplicateHtmlId(createdId, "second") },
+        assetRefs: [],
+      },
+    ]);
+    const secondIndex = output.indexOf('id="second"');
+    const duplicateIndex = output.indexOf(`id="${duplicateHtmlId(createdId, "second")}"`);
+    const firstIndex = output.indexOf('id="first"');
+    expect(secondIndex).toBeLessThan(duplicateIndex);
+    expect(duplicateIndex).toBeLessThan(firstIndex);
+  });
+
+  it("rejects a stale created move target without a surviving duplicate", async () => {
+    const [first] = sectionIds();
+    await expect(
+      patchSource(source, [
+        {
+          type: "moveSection",
+          nodeId: first!,
+          targetId: "x-1234567890abcdef",
+          before: true,
+          originalIndex: 0,
+          sequence: 1,
+        },
+      ]),
+    ).rejects.toThrow(/not owned by a surviving duplicate/);
   });
 
   it("moves only safe sibling sections while preserving their contents", async () => {

@@ -3,6 +3,7 @@ import type {
   GroupDescriptor,
   MediaCapabilities,
   Point,
+  LayoutOutcome,
   LayoutPreset,
   RegionOrder,
   SeoField,
@@ -110,6 +111,7 @@ export interface ChangeInfo {
     | "sectionVisibility"
     | "moveSection"
     | "duplicateSection"
+    | "deleteSection"
     | "duplicateGroupItem"
     | "moveGroupItem"
     | "setLayoutPreset"
@@ -168,6 +170,7 @@ export interface WebMcpBridge {
     before: boolean,
   ) => { id: string; targetId: string; before: boolean };
   duplicateSection?: (id: string) => { id: string; sourceId: string };
+  deleteSection?: (id: string) => { id: string; deleted: boolean };
   duplicateGroupItem?: (
     groupId: string,
     itemId: string,
@@ -180,10 +183,13 @@ export interface WebMcpBridge {
   ) => { id: string; targetItemId: string; position: "before" | "after" };
   listLayoutOptions?: (targetId: string) => {
     id: string;
-    current: LayoutPreset;
-    baseline: LayoutPreset;
-    options: LayoutPreset[];
+    current: LayoutOutcome;
+    options: LayoutOutcome[];
   };
+  applyLayoutOutcome?: (
+    targetId: string,
+    outcome: LayoutOutcome,
+  ) => { id: string; outcome: LayoutOutcome };
   setLayoutPreset?: (
     targetId: string,
     preset: LayoutPreset,

@@ -108,6 +108,7 @@ export interface GroupMoveCapability {
 
 export type LayoutPreset = "stacked" | "two-column";
 export type RegionOrder = "original" | "swapped";
+export type LayoutOutcome = "above-and-below" | "text-left" | "image-left";
 
 export type PageOperation =
   | { type: "text"; nodeId: string; value: string }
@@ -138,6 +139,7 @@ export type PageOperation =
   | { type: "src"; nodeId: string; value: string }
   | { type: "alt"; nodeId: string; value: string }
   | { type: "sectionVisibility"; nodeId: string; visible: boolean; before: boolean }
+  | DeleteSectionOperation
   | {
       type: "moveSection";
       nodeId: string;
@@ -151,6 +153,14 @@ export type PageOperation =
   | MoveGroupItemOperation
   | SetLayoutPresetOperation
   | SetRegionOrderOperation;
+
+export interface DeleteSectionOperation {
+  type: "deleteSection";
+  nodeId: string;
+  /** Preview identities hidden while the parent deletion is pending. */
+  descendantNodeIds: string[];
+  sequence?: number;
+}
 
 export interface DuplicateSectionOperation {
   type: "duplicateSection";
@@ -170,6 +180,7 @@ export interface DuplicateSectionOperation {
 export interface DuplicateGroupItemOperation {
   type: "duplicateGroupItem";
   groupId: string;
+  sectionId: string;
   sourceItemId: string;
   sourceItemIndex: number;
   groupSignature: string;
@@ -189,6 +200,7 @@ export interface DuplicateGroupItemOperation {
 export interface MoveGroupItemOperation {
   type: "moveGroupItem";
   groupId: string;
+  sectionId: string;
   itemId: string;
   targetItemId: string;
   position: "before" | "after";

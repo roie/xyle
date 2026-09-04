@@ -257,6 +257,9 @@ test.describe("chrome layout rules", () => {
     await page.locator("#xyle-control-hitbox").hover();
     await page.locator("#xyle-menu-btn").click();
     await expect(page.locator("#xyle-menu")).toBeVisible();
+    const menuItems = page.locator("#xyle-menu [role=menuitem]");
+    await expect(menuItems.first().locator("svg")).toBeVisible();
+    await expect(menuItems.last().locator("svg")).toBeVisible();
     await page
       .frameLocator("#xyle-preview")
       .locator("h1")
@@ -299,14 +302,46 @@ test.describe("chrome layout rules", () => {
     const drawerCloseBox = await drawerClose.boundingBox();
     expect(drawerCloseBox?.width).toBeGreaterThanOrEqual(43.9);
     expect(drawerCloseBox?.height).toBeGreaterThanOrEqual(43.9);
-    const hideButton = touchPage
-      .locator(".xyle-structure-row")
-      .first()
-      .getByRole("button", { name: "Hide", exact: true });
+    await expect(drawerClose).toBeFocused();
+    await touchPage.keyboard.press("Shift+Tab");
+    expect(
+      await touchPage.evaluate(() =>
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement.getClientRects().length
+          : 0,
+      ),
+    ).toBeGreaterThan(0);
+    await touchPage.keyboard.press("Tab");
+    await expect(drawerClose).toBeFocused();
+    const firstArea = touchPage.locator(".xyle-outline-node").first();
+    const disclosure = firstArea.locator(".xyle-outline-disclosure");
+    const children = firstArea.locator(":scope > .xyle-outline-children");
+    await expect(children).toBeHidden();
+    await disclosure.focus();
+    await touchPage.keyboard.press("Enter");
+    await expect(children).toBeVisible();
+    await expect(disclosure).toBeFocused();
+    await expect(children.locator(".xyle-outline-child svg").first()).toBeVisible();
+    await touchPage.keyboard.press("Space");
+    await expect(children).toBeHidden();
+    await expect(disclosure).toBeFocused();
+
+    const menuTrigger = firstArea.locator(".xyle-outline-menu-trigger");
+    await menuTrigger.tap();
+    await touchPage.locator("[data-structure-list]").dispatchEvent("scroll");
+    await expect(menuTrigger).toHaveAttribute("aria-expanded", "false");
+    await menuTrigger.tap();
+    await touchPage.setViewportSize({ width: 391, height: 844 });
+    await expect(menuTrigger).toHaveAttribute("aria-expanded", "false");
+    await menuTrigger.tap();
+    await expect(menuTrigger).toHaveAttribute("aria-haspopup", "menu");
+    await expect(menuTrigger).toHaveAttribute("aria-expanded", "true");
+    await expect(firstArea.getByRole("menu")).toBeVisible();
+    const hideButton = firstArea.getByRole("menuitem", { name: "Hide", exact: true });
     const hideButtonBox = await hideButton.boundingBox();
     expect(hideButtonBox?.width).toBeGreaterThanOrEqual(43.9);
     expect(hideButtonBox?.height).toBeGreaterThanOrEqual(43.9);
-    await touchPage.locator(".xyle-structure-locate").first().tap();
+    await firstArea.locator(".xyle-outline-select").tap();
     await expect(touchPage.getByRole("dialog", { name: "Outline" })).toHaveCount(0);
     await expect(touchPage.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await context.close();
@@ -623,9 +658,13 @@ test.describe("editing affordances", () => {
     const destination = `/about.html?from=${info.project.name}`;
     await hrefInput.fill(destination);
     await panel.getByRole("button", { name: "Save" }).click();
+    await panel.getByRole("button", { name: "Edit URL" }).click();
+    const finalDestination = `${destination}&reopened=1`;
+    await panel.getByRole("textbox", { name: "Link destination" }).fill(finalDestination);
+    await panel.getByRole("button", { name: "Save" }).click();
 
     await expect(link).toHaveText(originalLabel ?? "");
-    await expect(link).toHaveAttribute("href", destination);
+    await expect(link).toHaveAttribute("href", finalDestination);
     await expect(page.locator(".xyle-img-tools")).toHaveCount(0);
     const ops = await page.evaluate(
       () =>
@@ -797,8 +836,9 @@ test.describe("changes drawer and undo", () => {
     await expect(linkRow.locator(".xyle-change-before")).toContainText(originalHref);
     await expect(linkRow.locator(".xyle-change-after")).toContainText(updatedHref);
     await expect(indexGroup.locator(".xyle-change-arrow")).toHaveCount(2);
-    await expect(aboutGroup.locator(".xyle-change-before")).toContainText(
-      "Xyle demo starts with ordinary static HTML and assets.",
+    await expect(aboutGroup.locator(".xyle-change-before")).toHaveAttribute(
+      "aria-label",
+      /Xyle demo starts with ordinary HTML and assets\./,
     );
     await expect(aboutGroup.locator(".xyle-change-after")).toContainText("GROUPED-ABOUT");
 
@@ -940,33 +980,41 @@ test.describe("changes drawer and undo", () => {
 
     await page.click("#xyle-changes");
     await page.click("#xyle-discard");
-    const confirmation = page.getByRole("alertdialog", { name: "Confirm discard" });
+    const confirmation = page.getByRole("alertdialog", {
+      name: "Discard unpublished changes?",
+    });
     await expect(confirmation.getByRole("button", { name: "Keep editing" })).toBeFocused();
+    await expect(confirmation).toContainText(
+      "1 unpublished change will be removed before you reload the published page.",
+    );
     const appearance = await confirmation.evaluate((element) => {
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
       return {
-        background: style.backgroundColor,
         boxSizing: style.boxSizing,
         boxShadow: style.boxShadow,
+        height: rect.height,
         left: rect.left,
         right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
       };
     });
-    expect(appearance).toMatchObject({
-      background: "rgb(16, 19, 17)",
-      boxSizing: "border-box",
-      boxShadow: "none",
-    });
+    expect(appearance).toMatchObject({ boxSizing: "border-box", boxShadow: "none" });
     expect(appearance.left).toBeGreaterThanOrEqual(16);
     expect(appearance.right).toBeLessThanOrEqual(464);
+    expect(appearance.height).toBeLessThan(240);
+    expect(Math.abs((appearance.top + appearance.bottom) / 2 - 350)).toBeLessThan(2);
     await page.keyboard.press("Escape");
     await expect(confirmation).toHaveCount(0);
+    await expect(page.locator("#xyle-discard")).toBeFocused();
     await expect(page.locator("#xyle-dirty")).toBeVisible();
 
     await page.click("#xyle-discard");
     await confirmation.getByRole("button", { name: "Discard", exact: true }).click();
     await expect(page.locator("#xyle-dirty")).toBeHidden();
+    await expect(page.locator("#xyle-changes-drawer")).toHaveCount(0);
+    await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await page.waitForFunction(
       ({ nodeId, expected }) => {
         const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument;
@@ -1535,26 +1583,22 @@ test.describe("changes drawer and undo", () => {
     await expect(page.locator("#xyle-shell")).not.toHaveAttribute("inert", "");
     await expect(page.locator("html")).not.toHaveAttribute("data-xyle-companion-open", "");
 
-    const rows = structure.locator(".xyle-structure-row");
+    const rows = structure.locator(".xyle-outline-node");
     const initialOrder = await rows.evaluateAll((items) =>
       items.map((item) => item.getAttribute("data-section-id")),
     );
-    await rows.first().locator(".xyle-structure-select").click();
-    const firstUp = rows.first().getByRole("button", { name: "Up", exact: true });
+    await rows.first().locator(".xyle-outline-select").click();
+    const firstUp = rows.first().getByRole("button", { name: "Move up", exact: true });
     await expect(firstUp).toBeDisabled();
-    await expect(firstUp).toHaveAttribute("aria-describedby", /xyle-structure-unavailable/);
-    await expect(structure.locator(".xyle-structure-unavailable")).toContainText("Already first");
-    await rows.first().getByRole("button", { name: "Down", exact: true }).click();
+    await expect(firstUp).toHaveAttribute("title", "Already first");
+    await rows.first().getByRole("button", { name: "Move down", exact: true }).click();
     const movedOrder = await rows.evaluateAll((items) =>
       items.map((item) => item.getAttribute("data-section-id")),
     );
     expect(movedOrder).toEqual([initialOrder[1], initialOrder[0], ...initialOrder.slice(2)]);
-    await expect(rows.nth(0).locator(".xyle-structure-position")).toHaveText("01");
-    await expect(rows.nth(1).locator(".xyle-structure-position")).toHaveText("02");
-    await structure
-      .locator(`.xyle-structure-row[data-section-id="${initialOrder[0]}"]`)
-      .getByRole("button", { name: "Up", exact: true })
-      .click();
+    const movedRow = structure.locator(`.xyle-outline-node[data-section-id="${initialOrder[0]}"]`);
+    await movedRow.locator(".xyle-outline-select").click();
+    await movedRow.getByRole("button", { name: "Move up", exact: true }).click();
     await expect
       .poll(() =>
         rows.evaluateAll((items) => items.map((item) => item.getAttribute("data-section-id"))),
@@ -1564,7 +1608,8 @@ test.describe("changes drawer and undo", () => {
     const beforeDuplicate = await rows.evaluateAll((items) =>
       items.map((item) => item.getAttribute("data-section-id")),
     );
-    await rows.first().getByRole("button", { name: "Duplicate", exact: true }).click();
+    await rows.first().locator(".xyle-outline-menu-trigger").click();
+    await rows.first().getByRole("menuitem", { name: "Duplicate", exact: true }).click();
     const afterDuplicate = await rows.evaluateAll((items) =>
       items.map((item) => item.getAttribute("data-section-id")),
     );
@@ -1580,22 +1625,9 @@ test.describe("changes drawer and undo", () => {
 
     await page.evaluate(() => {
       const frame = document.querySelector("#xyle-preview") as HTMLIFrameElement;
-      frame.contentWindow?.scrollTo(0, 0);
+      frame.contentWindow?.scrollTo(0, 500);
     });
-    const previewBox = await page.locator("#xyle-preview").boundingBox();
-    expect(previewBox).not.toBeNull();
-    await page.mouse.move(previewBox!.x + 100, previewBox!.y + previewBox!.height / 2);
-    await page.mouse.wheel(0, 500);
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentWindow?.scrollY ??
-            0,
-        ),
-      )
-      .toBeGreaterThan(0);
-    await structure.locator(".xyle-structure-locate").first().click();
+    await rows.first().locator(".xyle-outline-select").click();
     await expect
       .poll(() =>
         page.evaluate(() => {
@@ -1609,8 +1641,8 @@ test.describe("changes drawer and undo", () => {
         }),
       )
       .toBe(true);
-    await expect(structure).toHaveCount(0);
-    await expect(structureShortcut).toHaveAttribute("aria-expanded", "false");
+    await expect(structure).toBeVisible();
+    await expect(structureShortcut).toHaveAttribute("aria-expanded", "true");
 
     const id = await findNodeByText(page, "Edit your static site visually");
     expect(id).toBeTruthy();
@@ -1695,9 +1727,11 @@ test("publishes ordinary section movement through public reload", async ({ page 
       (section) => section.getAttribute("data-xyle-node")!,
     );
   });
-  const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${sectionIds[0]}"]`);
-  await first.click({ position: { x: 2, y: 2 } });
-  await page.getByRole("button", { name: "Move down" }).click();
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-structure-shortcut").click();
+  const firstRow = page.locator(`.xyle-outline-node[data-section-id="${sectionIds[0]}"]`);
+  await firstRow.locator(".xyle-outline-select").click();
+  await firstRow.getByRole("button", { name: "Move down", exact: true }).click();
   expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["moveSection"]);
 
   await page.locator("#xyle-changes").click();
@@ -1725,9 +1759,13 @@ test("publishes ordinary section movement through public reload", async ({ page 
 
 test("publishes section visibility through public reload", async ({ page }) => {
   await loginAndOpenEditor(page, "/index.html");
-  const hero = page.frameLocator("#xyle-preview").locator("main > section.hero");
-  await hero.click({ position: { x: 2, y: 2 } });
-  await page.getByRole("button", { name: "Hide section" }).click();
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-structure-shortcut").click();
+  const heroRow = page
+    .locator(".xyle-outline-node")
+    .filter({ hasText: "Edit your static site visually" });
+  await heroRow.locator(".xyle-outline-menu-trigger").click();
+  await heroRow.getByRole("menuitem", { name: "Hide", exact: true }).click();
   expect((await currentOps(page)).map((entry) => entry.op.type)).toEqual(["sectionVisibility"]);
 
   await page.locator("#xyle-changes").click();
@@ -1749,6 +1787,108 @@ test("publishes section visibility through public reload", async ({ page }) => {
   await expect(page.locator("main > section.hero")).toBeHidden();
 });
 
+test("reorders safe sibling areas by dragging in Outline", async ({ page }) => {
+  await loginAndOpenEditor(page, "/index.html");
+  const originalOrder = await page.evaluate(() => {
+    const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
+    return [...doc.querySelectorAll("main > section[data-xyle-node]")].map((section) =>
+      section.getAttribute("data-xyle-node"),
+    );
+  });
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-structure-shortcut").click();
+  const outline = page.getByRole("dialog", { name: "Outline" });
+  const rows = outline.locator(".xyle-outline-node");
+  const secondRowBox = await rows.nth(1).locator(".xyle-outline-row").boundingBox();
+  expect(secondRowBox).not.toBeNull();
+  await rows
+    .first()
+    .locator(".xyle-outline-drag")
+    .dragTo(rows.nth(1).locator(".xyle-outline-row"), {
+      targetPosition: { x: 20, y: secondRowBox!.height - 2 },
+    });
+  await expect
+    .poll(() =>
+      rows.evaluateAll((items) => items.map((item) => item.getAttribute("data-section-id"))),
+    )
+    .toEqual([originalOrder[1], originalOrder[0], ...originalOrder.slice(2)]);
+  await expect(page.locator("#xyle-count")).toHaveText("1");
+});
+
+test("deletes, restores, and publishes a safe area from Outline", async ({ page }) => {
+  await loginAndOpenEditor(page, "/index.html");
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-structure-shortcut").click();
+  const outline = page.getByRole("dialog", { name: "Outline" });
+  const heroRow = outline
+    .locator(".xyle-outline-node")
+    .filter({ hasText: "Edit your static site visually" });
+
+  await heroRow.locator(".xyle-outline-menu-trigger").click();
+  await heroRow.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await expect(page.frameLocator("#xyle-preview").locator("main > section.hero")).toHaveCount(0);
+  await expect(heroRow).toHaveAttribute("data-deleted", "");
+  await expect(heroRow).toContainText("Deleted");
+  await expect(heroRow.locator("button.xyle-outline-disclosure")).toHaveCount(0);
+  await heroRow.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(page.frameLocator("#xyle-preview").locator("main > section.hero")).toHaveCount(1);
+  await expect.poll(async () => opsCount(page)).toBe(0);
+
+  await heroRow.locator(".xyle-outline-menu-trigger").click();
+  await heroRow.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await page.locator("#xyle-changes").click();
+  const deletion = page.locator('.xyle-change-row[aria-label*="Delete area"]');
+  await expect(deletion).toContainText("Edit your static site visually");
+  await expect(deletion).toContainText("Deleted");
+  await page.locator("#xyle-changes-close").click();
+
+  await page.locator("#xyle-publish").click();
+  await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
+  const source = await (await page.request.get("/index.html")).text();
+  expect(source).not.toContain('class="hero"');
+  expect(source).toContain('class="proof-strip"');
+  await page.goto("/index.html");
+  await expect(page.locator("main > section.hero")).toHaveCount(0);
+});
+
+test("temporarily suppresses descendant edits while an area is deleted", async ({ page }) => {
+  await loginAndOpenEditor(page, "/index.html");
+  const headingId = await findNodeByText(page, "Edit your static site visually");
+  expect(headingId).toBeTruthy();
+  await editNode(page, headingId!);
+  await setSelection(page, { nodeId: headingId!, selectAll: true });
+  await page.keyboard.insertText("Edited before deletion");
+  await clickOutsideCommit(page);
+
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-structure-shortcut").click();
+  const outline = page.getByRole("dialog", { name: "Outline" });
+  const heroRow = outline
+    .locator(".xyle-outline-node")
+    .filter({ hasText: "Edited before deletion" });
+  await heroRow.locator(".xyle-outline-menu-trigger").click();
+  await heroRow.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await page.locator("#xyle-changes").click();
+  const changes = page.getByRole("dialog", { name: "Changes" });
+  await expect(changes.locator('.xyle-change-row[aria-label*="Delete area"]')).toHaveCount(1);
+  await expect(changes.locator(".xyle-change-type").filter({ hasText: "Text" })).toHaveCount(0);
+  await page.locator("#xyle-changes-close").click();
+
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-structure-shortcut").click();
+  const deletedRow = page.locator(".xyle-outline-node[data-deleted]");
+  await deletedRow.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(
+    page.frameLocator("#xyle-preview").getByRole("heading", { name: "Edited before deletion" }),
+  ).toBeVisible();
+  await page.locator("#xyle-changes").click();
+  await expect(page.locator(".xyle-change-type").filter({ hasText: "Text" })).toHaveCount(1);
+  await expect(page.locator('.xyle-change-row[aria-label*="Delete area"]')).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Changes" })).not.toContainText(
+    "data-xyle-outline-selected",
+  );
+});
+
 test("hides and reorders safe sibling sections", async ({ page }) => {
   await loginAndOpenEditor(page, "/index.html");
   const sectionIds = await page.evaluate(() => {
@@ -1759,9 +1899,14 @@ test("hides and reorders safe sibling sections", async ({ page }) => {
   });
   expect(sectionIds.length).toBeGreaterThanOrEqual(2);
   const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${sectionIds[0]}"]`);
-  await first.click({ position: { x: 2, y: 2 } });
-  await expect(page.locator(".xyle-section-tools")).toBeVisible();
-  await page.getByRole("button", { name: "Move down" }).click();
+  await page.locator("#xyle-control-hitbox").hover();
+  await page.locator("#xyle-structure-shortcut").click();
+  const firstRow = page.locator(`.xyle-outline-node[data-section-id="${sectionIds[0]}"]`);
+  await firstRow.locator(".xyle-outline-select").click();
+  await firstRow.getByRole("button", { name: "Move down", exact: true }).click();
+  const secondRow = page.locator(`.xyle-outline-node[data-section-id="${sectionIds[1]}"]`);
+  await secondRow.locator(".xyle-outline-select").click();
+  await expect(secondRow.getByRole("button", { name: "Move down", exact: true })).toBeDisabled();
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -1787,17 +1932,20 @@ test("hides and reorders safe sibling sections", async ({ page }) => {
     )
     .toEqual(sectionIds);
 
-  await first.click({ position: { x: 2, y: 2 } });
-  await page.getByRole("button", { name: "Hide section" }).click();
-  await expect(first).toHaveJSProperty("hidden", true);
   await page.locator("#xyle-control-hitbox").hover();
   await page.locator("#xyle-structure-shortcut").click();
   const structurePanel = page.getByRole("dialog", { name: "Outline" });
-  await expect(structurePanel).toBeVisible();
-  const heroRow = structurePanel
-    .locator(".xyle-structure-row")
-    .filter({ hasText: "Edit your static site visually" });
-  await heroRow.getByRole("button", { name: "Show", exact: true }).click();
+  const restoredFirstRow = structurePanel.locator(
+    `.xyle-outline-node[data-section-id="${sectionIds[0]}"]`,
+  );
+  await restoredFirstRow.locator(".xyle-outline-menu-trigger").click();
+  await restoredFirstRow.getByRole("menuitem", { name: "Hide", exact: true }).click();
+  await expect(first).toHaveJSProperty("hidden", true);
+  const hiddenFirstRow = structurePanel.locator(
+    `.xyle-outline-node[data-section-id="${sectionIds[0]}"]`,
+  );
+  await hiddenFirstRow.locator(".xyle-outline-menu-trigger").click();
+  await hiddenFirstRow.getByRole("menuitem", { name: "Show", exact: true }).click();
   await expect(first).toHaveJSProperty("hidden", false);
 });
 

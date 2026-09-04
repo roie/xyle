@@ -311,6 +311,7 @@ function validatePublishMetadata(value: unknown): PublishMetadata | null {
             "seo",
             "toggleList",
             "sectionVisibility",
+            "deleteSection",
             "moveSection",
             "duplicateSection",
             "duplicateGroupItem",

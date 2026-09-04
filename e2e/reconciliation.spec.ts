@@ -8,15 +8,6 @@ import {
   setSelection,
 } from "./helpers.ts";
 
-async function openSectionTools(
-  page: import("@playwright/test").Page,
-  selector: string,
-): Promise<void> {
-  const section = page.frameLocator("#xyle-preview").locator(selector);
-  await section.press("Enter");
-  await expect(page.locator(".xyle-section-tools")).toBeVisible();
-}
-
 test.describe("canonical net reconciliation", () => {
   test("unchanged and restored link destinations stay clean", async ({ page }) => {
     await loginAndOpenEditor(page, "/index.html");
@@ -54,18 +45,16 @@ test.describe("canonical net reconciliation", () => {
     });
     expect(sectionIds.length).toBeGreaterThanOrEqual(2);
     const first = page.frameLocator("#xyle-preview").locator(`[data-xyle-node="${sectionIds[0]}"]`);
+    await page.locator("#xyle-control-hitbox").hover();
+    await page.locator("#xyle-structure-shortcut").click();
+    const structure = page.getByRole("dialog", { name: "Outline" });
+    const firstRow = structure.locator(`.xyle-outline-node[data-section-id="${sectionIds[0]}"]`);
+    await firstRow.locator(".xyle-outline-select").click();
 
     for (let cycle = 0; cycle < 2; cycle += 1) {
-      await expect(page.locator(".xyle-section-tools")).toHaveCount(0);
-      await first.press("Enter");
-      const tools = page.locator(".xyle-section-tools");
-      await expect(tools).toBeVisible();
-      await tools.getByRole("button", { name: "Move down" }).click({ force: true });
+      await firstRow.getByRole("button", { name: "Move down", exact: true }).click();
       await expect.poll(async () => opsCount(page)).toBe(1);
-      await expect(tools).toHaveCount(0);
-      await first.press("Enter");
-      await expect(tools).toBeVisible();
-      await tools.getByRole("button", { name: "Move up" }).click({ force: true });
+      await firstRow.getByRole("button", { name: "Move up", exact: true }).click();
       await expect.poll(async () => opsCount(page)).toBe(0);
       await expect
         .poll(() =>
@@ -80,15 +69,12 @@ test.describe("canonical net reconciliation", () => {
         .toEqual(sectionIds);
     }
 
-    await first.press("Enter");
-    await page.getByRole("button", { name: "Hide section" }).click();
+    await firstRow.locator(".xyle-outline-menu-trigger").click();
+    await firstRow.getByRole("menuitem", { name: "Hide", exact: true }).click();
     await expect.poll(async () => opsCount(page)).toBe(1);
     await expect(first).toHaveJSProperty("hidden", true);
-    await page.locator("#xyle-control-hitbox").hover();
-    await page.locator("#xyle-structure-shortcut").click();
-    const structure = page.getByRole("dialog", { name: "Outline" });
-    const firstRow = structure.locator(`.xyle-structure-row[data-section-id="${sectionIds[0]}"]`);
-    await firstRow.getByRole("button", { name: "Show", exact: true }).click();
+    await firstRow.locator(".xyle-outline-menu-trigger").click();
+    await firstRow.getByRole("menuitem", { name: "Show", exact: true }).click();
 
     await expect(first).toHaveJSProperty("hidden", false);
     await expect.poll(async () => opsCount(page)).toBe(0);
@@ -259,26 +245,26 @@ test.describe("canonical net reconciliation", () => {
   test("layout and region order restore to the authored baseline", async ({ page }) => {
     await loginAndOpenEditor(page, "/layouts.html");
     const section = page.frameLocator("#xyle-preview").locator("#layout-basic");
+    await page.locator("#xyle-control-hitbox").hover();
+    await page.locator("#xyle-structure-shortcut").click();
+    const outline = page.getByRole("dialog", { name: "Outline" });
+    const safeLayout = outline.locator(".xyle-outline-node").filter({ hasText: "Safe layout" });
+    await safeLayout.locator(".xyle-outline-select").click();
 
-    await openSectionTools(page, "#layout-basic");
-    await page.locator(".xyle-layout-tools").getByRole("button", { name: "Stack" }).click();
+    await outline.getByRole("button", { name: "Above and below" }).click();
     await expect.poll(async () => opsCount(page)).toBe(0);
 
-    await openSectionTools(page, "#layout-basic");
-    await page.locator(".xyle-layout-tools").getByRole("button", { name: "Split" }).click();
+    await outline.getByRole("button", { name: "Image left" }).click();
     await expect.poll(async () => opsCount(page)).toBe(1);
     await expect(section).toHaveAttribute("data-xyle-layout", "split");
 
-    await openSectionTools(page, "#layout-basic");
-    await page.locator(".xyle-layout-tools").getByRole("button", { name: "Stack" }).click();
+    await outline.getByRole("button", { name: "Above and below" }).click();
     await expect.poll(async () => opsCount(page)).toBe(0);
     await expect(section).not.toHaveAttribute("data-xyle-layout", "split");
 
-    await openSectionTools(page, "#layout-basic");
-    await page.locator(".xyle-layout-tools").getByRole("button", { name: "Swap sides" }).click();
-    await expect.poll(async () => opsCount(page)).toBe(1);
-    await openSectionTools(page, "#layout-basic");
-    await page.locator(".xyle-layout-tools").getByRole("button", { name: "Swap sides" }).click();
+    await outline.getByRole("button", { name: "Text left" }).click();
+    await expect.poll(async () => opsCount(page)).toBe(2);
+    await outline.getByRole("button", { name: "Above and below" }).click();
     await expect.poll(async () => opsCount(page)).toBe(0);
   });
 });

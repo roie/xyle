@@ -31,7 +31,7 @@ normal public pages.
 - Discard, stale-session `409 Conflict` handling, first-publish-wins
 - per-file atomic replacement with rollback for filesystem publication
 - browser-native WebMCP tools for shared human and agent editing
-- safe section visibility, sibling reordering, duplication, Groups, and Layout controls with shared undo/history
+- a curated Outline for safe reordering, duplication, reversible deletion, Groups, and visual layout choices with shared undo/history
 
 ## Quick start
 
