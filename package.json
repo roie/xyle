@@ -49,19 +49,19 @@
     "release:check": "node scripts/release-check.mjs"
   },
   "dependencies": {
-    "@noble/hashes": "^2.3.0",
+    "@noble/hashes": "^2.4.0",
     "blake3-wasm": "2.1.5",
     "parse5": "^8.0.1",
     "sharp": "^0.35.4",
     "wrangler": "^4.128.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.9",
+    "@biomejs/biome": "^2.5.12",
     "@playwright/test": "^1.62.1",
     "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "^4.1.11",
-    "rolldown": "^1.2.5",
-    "tsx": "^4.23.12",
+    "rolldown": "^1.2.7",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   }
