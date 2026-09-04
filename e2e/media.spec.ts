@@ -558,7 +558,7 @@ test.describe("media editing", () => {
 
   test("media drawer lists site images anywhere in the tree", async ({ page }) => {
     await loginAndOpenEditor(page, "/about.html");
-    const teamId = await findNodeByText(page, "The Xyle demo team");
+    const teamId = await findNodeByText(page, "People and agents share one draft");
     void teamId;
 
     // open drawer through the image tools of the team photo
@@ -792,7 +792,10 @@ test.describe("media editing", () => {
     await page.goto("/index.html");
     const publishedImage = page.locator(`img[src="${uploadedPath}"]`);
     await expect(publishedImage).toHaveCount(1);
-    await expect(publishedImage).toHaveAttribute("alt", "A careful repair in progress");
+    await expect(publishedImage).toHaveAttribute(
+      "alt",
+      "A draft moves through visible changes to human-approved publication",
+    );
     await expect(publishedImage).not.toHaveAttribute("data-xyle-node");
   });
 
@@ -802,7 +805,10 @@ test.describe("media editing", () => {
       const doc = (document.querySelector("#xyle-preview") as HTMLIFrameElement).contentDocument!;
       const images = [...doc.querySelectorAll("img[data-xyle-node]")] as HTMLImageElement[];
       const image =
-        images.find((candidate) => candidate.alt === "A careful repair in progress") ?? images[0];
+        images.find(
+          (candidate) =>
+            candidate.alt === "A draft moves through visible changes to human-approved publication",
+        ) ?? images[0];
       return {
         id: image?.getAttribute("data-xyle-node"),
         src: image?.getAttribute("src") ?? "",
@@ -825,7 +831,9 @@ test.describe("media editing", () => {
     await expect(page.locator("#xyle-publish")).toContainText("Published", { timeout: 10_000 });
     const html = await (await page.request.get("/index.html")).text();
     const targetTag =
-      html.match(/<img\b(?=[^>]*alt="A careful repair in progress")[^>]*>/i)?.[0] ?? "";
+      html.match(
+        /<img\b(?=[^>]*alt="A draft moves through visible changes to human-approved publication")[^>]*>/i,
+      )?.[0] ?? "";
     expect(targetTag).toMatch(/src="\/__media\/[0-9a-f]{64}\.webp"/);
     if (/object-fit\s*:\s*cover/i.test(selected.style)) {
       expect(targetTag).toContain("object-fit: cover");
@@ -838,7 +846,9 @@ test.describe("media editing", () => {
     expect(derivedPath).toMatch(/^\/__media\/[0-9a-f]{64}\.webp$/);
 
     await page.goto("/index.html");
-    const publishedImage = page.locator('img[alt="A careful repair in progress"]');
+    const publishedImage = page.locator(
+      'img[alt="A draft moves through visible changes to human-approved publication"]',
+    );
     await expect(publishedImage).toHaveAttribute("src", derivedPath!);
     await expect(publishedImage).toHaveCSS("object-position", "70% 30%");
     await expect(publishedImage).not.toHaveAttribute("data-xyle-node");
