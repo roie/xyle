@@ -1296,6 +1296,25 @@ export const editorStyles = `
     stroke-width: 1.8;
   }
 
+  .xyle-media-search {
+    width: 100%;
+    min-height: 2.5rem;
+    margin: 0 0 0.65rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid var(--xyle-line);
+    border-radius: var(--xyle-radius-sm);
+    background: var(--xyle-raised);
+    color: var(--xyle-ink);
+    font: 500 13px / 1.2 var(--xyle-font-ui);
+  }
+  .xyle-media-search::placeholder {
+    color: var(--xyle-muted);
+  }
+  .xyle-media-tabs {
+    display: flex;
+    gap: 0.35rem;
+    margin: 0 0 0.65rem;
+  }
   .xyle-media-help {
     margin: -0.2rem 0 0.8rem;
     color: var(--xyle-muted);

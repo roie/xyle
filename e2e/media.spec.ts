@@ -49,6 +49,21 @@ test.describe("media editing", () => {
 
     await tools.getByRole("button", { name: "Media" }).click();
     const mediaDrawer = page.getByRole("dialog", { name: "Media" });
+    const mediaLayout = await mediaDrawer.evaluate((drawer) => {
+      const search = drawer.querySelector<HTMLInputElement>(".xyle-media-search")!;
+      const tabs = [...drawer.querySelectorAll<HTMLElement>(".xyle-media-tab")];
+      const searchRect = search.getBoundingClientRect();
+      const tabRects = tabs.map((tab) => tab.getBoundingClientRect());
+      return {
+        availableWidth: drawer.clientWidth - 32,
+        searchWidth: searchRect.width,
+        tabTops: tabRects.map((rect) => rect.top),
+        tabWidths: tabRects.map((rect) => rect.width),
+      };
+    });
+    expect(mediaLayout.searchWidth).toBeGreaterThanOrEqual(mediaLayout.availableWidth - 2);
+    expect(new Set(mediaLayout.tabTops).size).toBe(1);
+    expect(Math.min(...mediaLayout.tabWidths)).toBeGreaterThan(90);
     const currentImage = mediaDrawer.getByRole("button", {
       name: "Choose /assets/hero-fallback.jpg (currently used)",
     });
