@@ -49,6 +49,7 @@ test.describe("media editing", () => {
 
     await tools.getByRole("button", { name: "Media" }).click();
     const mediaDrawer = page.getByRole("dialog", { name: "Media" });
+    await expect(mediaDrawer.locator(".xyle-media-search")).toBeVisible();
     const mediaLayout = await mediaDrawer.evaluate((drawer) => {
       const search = drawer.querySelector<HTMLInputElement>(".xyle-media-search")!;
       const tabs = [...drawer.querySelectorAll<HTMLElement>(".xyle-media-tab")];
